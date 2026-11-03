@@ -4,13 +4,16 @@ local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
 local old = CoreGui:FindFirstChild("BloxFruitsHalloweenGUI")
 if old then old:Destroy() end
+
+-- Lấy sẵn Remote đánh thường vừa tìm được
+local registerAttackRemote = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Net"):WaitForChild("RE"):WaitForChild("RegisterAttack")
 
 -- ================= GUI (Blue Neon Cyberpunk Theme) =================
 local gui = Instance.new("ScreenGui")
@@ -31,7 +34,6 @@ local mainCorner = Instance.new("UICorner")
 mainCorner.CornerRadius = UDim.new(0, 8)
 mainCorner.Parent = main
 
--- Đổi viền sang xanh nước biển
 local mainStroke = Instance.new("UIStroke")
 mainStroke.Color = Color3.fromRGB(0, 136, 255)
 mainStroke.Thickness = 1.5
@@ -176,31 +178,22 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ================= Auto Collect Pumpkin (Anti-Jitter) =================
+-- ================= Auto Collect Pumpkin (Remote Event M1 Integrated) =================
 local enabled = false
 local SPEED = 300
 local noclipConn
-
-local function centerOfCursor()
-    local p, s = cursor.AbsolutePosition, cursor.AbsoluteSize
-    return p.X + s.X / 2, p.Y + s.Y / 2
-end
 
 local function pivotPos(obj)
     return obj:GetPivot().Position
 end
 
+-- Thay vì dùng VirtualInputManager click chuột ảo, gọi thẳng RemoteEvent RegisterAttack
 local function clickLoop()
     while enabled do
-        local x, y = centerOfCursor()
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        if not enabled then
-            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        else
-            task.wait(0.01)
-            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-            task.wait(0.09)
-        end
+        pcall(function()
+            registerAttackRemote:FireServer()
+        end)
+        task.wait(0.1) -- Tốc độ gọi lệnh đánh
     end
 end
 
@@ -255,12 +248,10 @@ local function farmLoop(root, bodyVel, bodyGyro)
                 local dist = diff.Magnitude
 
                 if dist > 4 then
-                    -- Giảm tốc độ mượt mà khi đến gần để chống giật cục
                     local currentSpeed = math.min(SPEED, dist * 25)
                     bodyVel.Velocity = diff.Unit * currentSpeed
                     bodyGyro.CFrame = CFrame.new(root.Position, tpos)
                 else
-                    -- Lực đẩy nhẹ nhàng bám sát tại chỗ nhặt bí ngô
                     bodyVel.Velocity = diff.Unit * 15
                 end
                 task.wait()
