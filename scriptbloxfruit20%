@@ -102,17 +102,6 @@ toggleStroke.Color = Color3.fromRGB(255, 100, 120)
 toggleStroke.Thickness = 1
 toggleStroke.Parent = toggleBtn
 
--- Tạo ảo để giữ cấu trúc không lỗi
-local cursor = Instance.new("ImageLabel")
-cursor.Name = "VirtualCursor"
-cursor.Size = UDim2.new(0, 28, 0, 28)
-cursor.Position = UDim2.new(0.5, -14, 0.4, -14)
-cursor.BackgroundTransparency = 1
-cursor.Image = "rbxassetid://100054563"
-cursor.ImageColor3 = Color3.fromRGB(0, 136, 255)
-cursor.Visible = false -- Ẩn đi vì dùng Remote rồi
-cursor.Parent = gui
-
 local footer = Instance.new("TextLabel")
 footer.Name = "FooterLabel"
 footer.Size = UDim2.new(1, -20, 0, 22)
@@ -175,7 +164,7 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ================= Auto Collect Pumpkin (Remote Event M1 Integrated safely) =================
+-- ================= Auto Collect Pumpkin & Safe Remote Attack =================
 local enabled = false
 local SPEED = 300
 local noclipConn
@@ -184,16 +173,19 @@ local function pivotPos(obj)
     return obj:GetPivot().Position
 end
 
--- Tự động gọi RemoteEvent RegisterAttack an toàn không làm sập GUI
+-- Gọi Remote an toàn có khoảng nghỉ chống tràn hàng đợi (Queue)
 local function clickLoop()
     while enabled do
         pcall(function()
-            local remote = ReplicatedStorage.Modules.Net.RE.RegisterAttack
+            local remote = ReplicatedStorage:FindFirstChild("Modules") 
+                and ReplicatedStorage.Modules:FindFirstChild("Net") 
+                and ReplicatedStorage.Modules.Net.RE:FindFirstChild("RegisterAttack")
+            
             if remote then
                 remote:FireServer()
             end
         end)
-        task.wait(0.1)
+        task.wait(0.2) -- Giữ khoảng nghỉ 0.2 giây mỗi lần gọi để server không bị nghẽn
     end
 end
 
