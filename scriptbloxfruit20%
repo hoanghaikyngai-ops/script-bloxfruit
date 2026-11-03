@@ -31,7 +31,6 @@ local mainCorner = Instance.new("UICorner")
 mainCorner.CornerRadius = UDim.new(0, 8)
 mainCorner.Parent = main
 
--- Viền Neon phát sáng nhẹ
 local mainStroke = Instance.new("UIStroke")
 mainStroke.Color = Color3.fromRGB(0, 255, 200)
 mainStroke.Thickness = 1.5
@@ -176,7 +175,7 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ================= Auto Collect Pumpkin (Optimized) =================
+-- ================= Auto Collect Pumpkin (Fixed Logic) =================
 local enabled = false
 local SPEED = 300
 local noclipConn
@@ -194,22 +193,21 @@ local function clickLoop()
     while enabled do
         local x, y = centerOfCursor()
         VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        task.wait(0.01)
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        task.wait(0.09)
+        if not enabled then
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        else
+            task.wait(0.01)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            task.wait(0.09)
+        end
     end
 end
 
 local function farmLoop(root, bodyVel, bodyGyro)
-    while enabled do
-        local folder = Workspace:FindFirstChild("PumpkinHunt")
-        if not folder then
-            bodyVel.Velocity = Vector3.new(0, 0, 0)
-            task.wait(0.5)
-            continue
-        end
-
+    local folder = Workspace:WaitForChild("PumpkinHunt", 5)
+    while enabled and folder do
         local target, minDist = nil, math.huge
+
         for _, obj in ipairs(folder:GetChildren()) do
             local pos
             if obj:IsA("Model") then
@@ -222,7 +220,6 @@ local function farmLoop(root, bodyVel, bodyGyro)
             elseif obj:IsA("BasePart") then
                 pos = obj.Position
             end
-
             if pos then
                 local d = (root.Position - pos).Magnitude
                 if d < minDist then
@@ -233,8 +230,7 @@ local function farmLoop(root, bodyVel, bodyGyro)
         end
 
         if not target then
-            bodyVel.Velocity = Vector3.new(0, 0, 0)
-            task.wait(0.3)
+            task.wait(0.5)
         else
             while enabled and target and target.Parent do
                 local tpos
@@ -260,14 +256,12 @@ local function farmLoop(root, bodyVel, bodyGyro)
                     bodyGyro.CFrame = CFrame.new(root.Position, tpos)
                 else
                     bodyVel.Velocity = Vector3.new(0, 0, 0)
-                    break -- Đã đến gần mục tiêu, quét lại tìm quả khác
                 end
-                task.run(RunService.Stepped)
+                task.wait()
             end
         end
         task.wait()
     end
-    -- Reset vận tốc khi tắt
     if bodyVel then bodyVel.Velocity = Vector3.new(0, 0, 0) end
 end
 
@@ -277,8 +271,8 @@ toggleBtn.MouseButton1Click:Connect(function()
         toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 255, 120)
         toggleStroke.Color = Color3.fromRGB(100, 255, 170)
         
-        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local root = char:FindFirstChild("HumanoidRootPart")
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
         if root then
             local bVel = root:FindFirstChild("HalloweenVelocity") or Instance.new("BodyVelocity")
             bVel.Name = "HalloweenVelocity"
@@ -294,9 +288,8 @@ toggleBtn.MouseButton1Click:Connect(function()
             
             if not noclipConn then
                 noclipConn = RunService.Stepped:Connect(function()
-                    local c = LocalPlayer.Character
-                    if c then
-                        for _, v in ipairs(c:GetChildren()) do
+                    if char then
+                        for _, v in ipairs(char:GetChildren()) do
                             if v:IsA("BasePart") then
                                 v.CanCollide = false
                             end
