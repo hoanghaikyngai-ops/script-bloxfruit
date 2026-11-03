@@ -12,7 +12,7 @@ local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local old = CoreGui:FindFirstChild("BloxFruitsHalloweenGUI")
 if old then old:Destroy() end
 
--- ================= GUI (Cyberpunk Neon Theme) =================
+-- ================= GUI (Blue Neon Cyberpunk Theme) =================
 local gui = Instance.new("ScreenGui")
 gui.Name = "BloxFruitsHalloweenGUI"
 gui.ResetOnSpawn = false
@@ -31,8 +31,9 @@ local mainCorner = Instance.new("UICorner")
 mainCorner.CornerRadius = UDim.new(0, 8)
 mainCorner.Parent = main
 
+-- Đổi viền sang xanh nước biển
 local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(0, 255, 200)
+mainStroke.Color = Color3.fromRGB(0, 136, 255)
 mainStroke.Thickness = 1.5
 mainStroke.Parent = main
 
@@ -48,7 +49,7 @@ titleLabel.Size = UDim2.new(1, -35, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Text = "H-HUB // HALLOWEEN"
-titleLabel.TextColor3 = Color3.fromRGB(0, 255, 200)
+titleLabel.TextColor3 = Color3.fromRGB(0, 136, 255)
 titleLabel.TextSize = 11
 titleLabel.Font = Enum.Font.LuckiestGuy
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -60,7 +61,7 @@ minBtn.Size = UDim2.new(0, 26, 0, 26)
 minBtn.Position = UDim2.new(1, -30, 0.5, -13)
 minBtn.BackgroundTransparency = 1
 minBtn.Text = "-"
-minBtn.TextColor3 = Color3.fromRGB(0, 255, 200)
+minBtn.TextColor3 = Color3.fromRGB(0, 136, 255)
 minBtn.TextSize = 18
 minBtn.Font = Enum.Font.LuckiestGuy
 minBtn.Parent = titleBar
@@ -107,7 +108,7 @@ cursor.Size = UDim2.new(0, 28, 0, 28)
 cursor.Position = UDim2.new(0.5, -14, 0.4, -14)
 cursor.BackgroundTransparency = 1
 cursor.Image = "rbxassetid://100054563"
-cursor.ImageColor3 = Color3.fromRGB(0, 255, 200)
+cursor.ImageColor3 = Color3.fromRGB(0, 136, 255)
 cursor.Active = true
 cursor.Draggable = true
 cursor.ZIndex = 10
@@ -175,7 +176,7 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ================= Auto Collect Pumpkin (Fixed Logic) =================
+-- ================= Auto Collect Pumpkin (Anti-Jitter) =================
 local enabled = false
 local SPEED = 300
 local noclipConn
@@ -236,26 +237,31 @@ local function farmLoop(root, bodyVel, bodyGyro)
                 local tpos
                 if target:IsA("Model") then
                     if target.PrimaryPart then
-                        tpos = target.PrimaryPart.Position + Vector3.new(0, 3, 0)
+                        tpos = target.PrimaryPart.Position + Vector3.new(0, 2, 0)
                     else
                         local ok, p = pcall(function()
-                            return target:GetPivot().Position + Vector3.new(0, 3, 0)
+                            return target:GetPivot().Position + Vector3.new(0, 2, 0)
                         end)
                         if not ok then break end
                         tpos = p
                     end
                 elseif target:IsA("BasePart") then
-                    tpos = target.Position + Vector3.new(0, 3, 0)
+                    tpos = target.Position + Vector3.new(0, 2, 0)
                 else
                     break
                 end
 
                 local diff = tpos - root.Position
-                if diff.Magnitude > 3 then
-                    bodyVel.Velocity = diff.Unit * SPEED
+                local dist = diff.Magnitude
+
+                if dist > 4 then
+                    -- Giảm tốc độ mượt mà khi đến gần để chống giật cục
+                    local currentSpeed = math.min(SPEED, dist * 25)
+                    bodyVel.Velocity = diff.Unit * currentSpeed
                     bodyGyro.CFrame = CFrame.new(root.Position, tpos)
                 else
-                    bodyVel.Velocity = Vector3.new(0, 0, 0)
+                    -- Lực đẩy nhẹ nhàng bám sát tại chỗ nhặt bí ngô
+                    bodyVel.Velocity = diff.Unit * 15
                 end
                 task.wait()
             end
