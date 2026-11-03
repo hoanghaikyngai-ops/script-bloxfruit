@@ -12,9 +12,6 @@ local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local old = CoreGui:FindFirstChild("BloxFruitsHalloweenGUI")
 if old then old:Destroy() end
 
--- Lấy sẵn Remote đánh thường vừa tìm được
-local registerAttackRemote = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Net"):WaitForChild("RE"):WaitForChild("RegisterAttack")
-
 -- ================= GUI (Blue Neon Cyberpunk Theme) =================
 local gui = Instance.new("ScreenGui")
 gui.Name = "BloxFruitsHalloweenGUI"
@@ -34,6 +31,7 @@ local mainCorner = Instance.new("UICorner")
 mainCorner.CornerRadius = UDim.new(0, 8)
 mainCorner.Parent = main
 
+-- Viền xanh nước biển
 local mainStroke = Instance.new("UIStroke")
 mainStroke.Color = Color3.fromRGB(0, 136, 255)
 mainStroke.Thickness = 1.5
@@ -104,6 +102,7 @@ toggleStroke.Color = Color3.fromRGB(255, 100, 120)
 toggleStroke.Thickness = 1
 toggleStroke.Parent = toggleBtn
 
+-- Tạo ảo để giữ cấu trúc không lỗi
 local cursor = Instance.new("ImageLabel")
 cursor.Name = "VirtualCursor"
 cursor.Size = UDim2.new(0, 28, 0, 28)
@@ -111,9 +110,7 @@ cursor.Position = UDim2.new(0.5, -14, 0.4, -14)
 cursor.BackgroundTransparency = 1
 cursor.Image = "rbxassetid://100054563"
 cursor.ImageColor3 = Color3.fromRGB(0, 136, 255)
-cursor.Active = true
-cursor.Draggable = true
-cursor.ZIndex = 10
+cursor.Visible = false -- Ẩn đi vì dùng Remote rồi
 cursor.Parent = gui
 
 local footer = Instance.new("TextLabel")
@@ -178,7 +175,7 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ================= Auto Collect Pumpkin (Remote Event M1 Integrated) =================
+-- ================= Auto Collect Pumpkin (Remote Event M1 Integrated safely) =================
 local enabled = false
 local SPEED = 300
 local noclipConn
@@ -187,13 +184,16 @@ local function pivotPos(obj)
     return obj:GetPivot().Position
 end
 
--- Thay vì dùng VirtualInputManager click chuột ảo, gọi thẳng RemoteEvent RegisterAttack
+-- Tự động gọi RemoteEvent RegisterAttack an toàn không làm sập GUI
 local function clickLoop()
     while enabled do
         pcall(function()
-            registerAttackRemote:FireServer()
+            local remote = ReplicatedStorage.Modules.Net.RE.RegisterAttack
+            if remote then
+                remote:FireServer()
+            end
         end)
-        task.wait(0.1) -- Tốc độ gọi lệnh đánh
+        task.wait(0.1)
     end
 end
 
@@ -268,8 +268,8 @@ toggleBtn.MouseButton1Click:Connect(function()
         toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 255, 120)
         toggleStroke.Color = Color3.fromRGB(100, 255, 170)
         
-        local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local root = char:FindFirstChild("HumanoidRootPart")
         if root then
             local bVel = root:FindFirstChild("HalloweenVelocity") or Instance.new("BodyVelocity")
             bVel.Name = "HalloweenVelocity"
@@ -285,8 +285,9 @@ toggleBtn.MouseButton1Click:Connect(function()
             
             if not noclipConn then
                 noclipConn = RunService.Stepped:Connect(function()
-                    if char then
-                        for _, v in ipairs(char:GetChildren()) do
+                    local c = LocalPlayer.Character
+                    if c then
+                        for _, v in ipairs(c:GetChildren()) do
                             if v:IsA("BasePart") then
                                 v.CanCollide = false
                             end
