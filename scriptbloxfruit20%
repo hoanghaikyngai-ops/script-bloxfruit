@@ -1,0 +1,303 @@
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+
+local old = CoreGui:FindFirstChild("BloxFruitsHalloweenGUI")
+if old then old:Destroy() end
+
+-- ================= GUI =================
+local gui = Instance.new("ScreenGui")
+gui.Name = "BloxFruitsHalloweenGUI"
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+local main = Instance.new("Frame")
+main.Name = "MainFrame"
+main.Size = UDim2.new(0, 220, 0, 150)
+main.Position = UDim2.new(0.5, -110, 0.5, -75)
+main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 8)
+mainCorner.Parent = main
+
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 36)
+titleBar.BackgroundTransparency = 1
+titleBar.Parent = main
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "TitleLabel"
+titleLabel.Size = UDim2.new(1, -35, 1, 0)
+titleLabel.Position = UDim2.new(0, 8, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "BLOX FRUITS HALLOWEEN"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 11
+titleLabel.Font = Enum.Font.LuckiestGuy
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local minBtn = Instance.new("TextButton")
+minBtn.Name = "MinimizeBtn"
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -30, 0.5, -13)
+minBtn.BackgroundTransparency = 1
+minBtn.Text = "-"
+minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minBtn.TextSize = 18
+minBtn.Font = Enum.Font.LuckiestGuy
+minBtn.Parent = titleBar
+
+local container = Instance.new("Frame")
+container.Name = "Container"
+container.Size = UDim2.new(1, 0, 0, 50)
+container.Position = UDim2.new(0, 0, 0.5, -25)
+container.BackgroundTransparency = 1
+container.Parent = main
+
+local label = Instance.new("TextLabel")
+label.Size = UDim2.new(0, 140, 0, 40)
+label.Position = UDim2.new(0, 10, 0.5, -20)
+label.BackgroundTransparency = 1
+label.Text = "AUTO COLLECT PUMPKIN"
+label.TextColor3 = Color3.fromRGB(255, 255, 255)
+label.TextScaled = true
+label.Font = Enum.Font.LuckiestGuy
+label.TextXAlignment = Enum.TextXAlignment.Left
+label.TextWrapped = true
+label.Parent = container
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 30, 0, 30)
+toggleBtn.Position = UDim2.new(1, -40, 0.5, -15)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+toggleBtn.Text = ""
+toggleBtn.AutoButtonColor = false
+toggleBtn.Parent = container
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 6)
+toggleCorner.Parent = toggleBtn
+
+local cursor = Instance.new("ImageLabel")
+cursor.Name = "VirtualCursor"
+cursor.Size = UDim2.new(0, 28, 0, 28)
+cursor.Position = UDim2.new(0.5, -14, 0.4, -14)
+cursor.BackgroundTransparency = 1
+cursor.Image = "rbxassetid://100054563"
+cursor.ImageColor3 = Color3.fromRGB(255, 255, 255)
+cursor.Active = true
+cursor.Draggable = true
+cursor.ZIndex = 10
+cursor.Parent = gui
+
+local footer = Instance.new("TextLabel")
+footer.Name = "FooterLabel"
+footer.Size = UDim2.new(1, -20, 0, 22)
+footer.Position = UDim2.new(0, 10, 1, -25)
+footer.BackgroundTransparency = 1
+footer.Text = "YOUTUBE: SPIRITUAL GAMING"
+footer.TextColor3 = Color3.fromRGB(255, 255, 255)
+footer.TextScaled = true
+footer.Font = Enum.Font.LuckiestGuy
+footer.Parent = main
+
+-- ================= Kéo GUI bằng thanh tiêu đề =================
+local dragging, dragInput, dragStart, startPos
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- ================= Thu nhỏ / mở rộng =================
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        container.Visible = false
+        footer.Visible = false
+        main.Size = UDim2.new(0, 220, 0, 36)
+        minBtn.Text = "+"
+    else
+        main.Size = UDim2.new(0, 220, 0, 150)
+        minBtn.Text = "-"
+        container.Visible = true
+        footer.Visible = true
+    end
+end)
+
+-- ================= Auto Collect Pumpkin =================
+local enabled = false
+local SPEED = 300
+local noclipConn
+
+local function centerOfCursor()
+    local p, s = cursor.AbsolutePosition, cursor.AbsoluteSize
+    return p.X + s.X / 2, p.Y + s.Y / 2
+end
+
+local function pivotPos(obj)
+    return obj:GetPivot().Position
+end
+
+local function clickLoop()
+    while enabled do
+        local x, y = centerOfCursor()
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        if not enabled then
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        else
+            task.wait(0.01)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            task.wait(0.09)
+        end
+    end
+end
+
+local function farmLoop(root, bodyVel, bodyGyro)
+    local folder = Workspace:WaitForChild("PumpkinHunt", 5)
+    while enabled and folder do
+        local target, minDist = nil, math.huge
+
+        for _, obj in ipairs(folder:GetChildren()) do
+            local pos
+            if obj:IsA("Model") then
+                if obj.PrimaryPart then
+                    pos = obj.PrimaryPart.Position
+                else
+                    local ok, p = pcall(pivotPos, obj)
+                    if ok then pos = p end
+                end
+            elseif obj:IsA("BasePart") then
+                pos = obj.Position
+            end
+            if pos then
+                local d = (root.Position - pos).Magnitude
+                if d < minDist then
+                    minDist = d
+                    target = obj
+                end
+            end
+        end
+
+        if not target then
+            task.wait(0.5)
+        else
+            while enabled and target and target.Parent do
+                local tpos
+                if target:IsA("Model") then
+                    if target.PrimaryPart then
+                        tpos = target.PrimaryPart.Position + Vector3.new(0, 3, 0)
+                    else
+                        local ok, p = pcall(function()
+                            return target:GetPivot().Position + Vector3.new(0, 3, 0)
+                        end)
+                        if not ok then break end
+                        tpos = p
+                    end
+                elseif target:IsA("BasePart") then
+                    tpos = target.Position + Vector3.new(0, 3, 0)
+                else
+                    break
+                end
+
+                local diff = tpos - root.Position
+                if diff.Magnitude > 3 then
+                    bodyVel.Velocity = diff.Unit * SPEED
+                    bodyGyro.CFrame = CFrame.new(root.Position, tpos)
+                else
+                    bodyVel.Velocity = Vector3.new(0, 0, 0)
+                end
+                task.wait()
+            end
+        end
+        task.wait()
+    end
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+    enabled = not enabled
+    if enabled then
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+        
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            local bVel = root:FindFirstChild("HalloweenVelocity") or Instance.new("BodyVelocity")
+            bVel.Name = "HalloweenVelocity"
+            bVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            bVel.Velocity = Vector3.new(0, 0, 0)
+            bVel.Parent = root
+
+            local bGyro = root:FindFirstChild("HalloweenGyro") or Instance.new("BodyGyro")
+            bGyro.Name = "HalloweenGyro"
+            bGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            bGyro.CFrame = root.CFrame
+            bGyro.Parent = root
+            
+            noclipConn = RunService.Stepped:Connect(function()
+                if char then
+                    for _, v in ipairs(char:GetChildren()) do
+                        if v:IsA("BasePart") then
+                            v.CanCollide = false
+                        end
+                    end
+                end
+            end)
+            
+            task.spawn(clickLoop)
+            task.spawn(farmLoop, root, bVel, bGyro)
+        end
+    else
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+        
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            local bVel = root:FindFirstChild("HalloweenVelocity")
+            if bVel then bVel:Destroy() end
+            local bGyro = root:FindFirstChild("HalloweenGyro")
+            if bGyro then bGyro:Destroy() end
+        end
+    end
+end)
