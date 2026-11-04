@@ -274,7 +274,7 @@ local function triggerScreenClick()
     end)
 end
 
--- Tự quét và bắt Remote an toàn tuyệt đối (Không bị lỗi nil)
+-- Tự quét và bắt Remote an toàn tuyệt đối
 task.spawn(function()
     pcall(function()
         for _, descendant in ipairs(Rep:GetDescendants()) do
@@ -328,9 +328,9 @@ local function hitMobs(list)
     
     local myPos = hrp().Position
     for _, m in ipairs(list) do
-        local part = m:FindFirstChild("LeftLowerLeg") 
-                  or m:FindFirstChild("HumanoidRootPart") 
-                  or m:FindFirstChild("UpperTorso")
+        local part = m:FindFirstChild("HumanoidRootPart") 
+                  or m:FindFirstChild("UpperTorso") 
+                  or m:FindFirstChild("LeftLowerLeg")
                   
         if part and (part.Position - myPos).Magnitude <= Cfg.HitRange then
             pcall(function()
@@ -340,7 +340,29 @@ local function hitMobs(list)
     end
 end
 
--- Farm level tối ưu hóa an toàn
+-- Quản lý BodyVelocity để bay lơ lửng mượt mà trên đầu quái
+local function ensureFarmMover(root)
+    local bv = root:FindFirstChild("HHubFarmVelocity")
+    if not bv then
+        bv = new("BodyVelocity", {
+            Name = "HHubFarmVelocity",
+            MaxForce = Vector3.new(math.huge, math.huge, math.huge),
+            Velocity = Vector3.zero
+        }, root)
+    end
+    return bv
+end
+
+local function removeFarmMover()
+    local c = lp.Character
+    local root = c and c:FindFirstChild("HumanoidRootPart")
+    if root then
+        local bv = root:FindFirstChild("HHubFarmVelocity")
+        if bv then bv:Destroy() end
+    end
+end
+
+-- Farm level tối ưu hóa (Sửa lỗi BringMob không làm quái bị bất tử)
 task.spawn(function()
     while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
@@ -367,26 +389,48 @@ task.spawn(function()
                 end
 
                 local mob = nearest(list)
-                if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
+                if not mob or not mob:FindFirstChild("HumanoidRootPart") then 
+                    removeFarmMover()
+                    return 
+                end
 
-                if Cfg.BringMob then
-                    local center = mob.HumanoidRootPart.CFrame
+                -- Sửa cơ chế BringMob: Đặt quái ngay sát dưới chân bạn thay vì khóa cứng đè lên một điểm
+                if Cfg.BringMob and hrp() then
+                    local myPos = hrp().Position
                     for _, m in ipairs(list) do
-                        if m:FindFirstChild("HumanoidRootPart") then
-                            m.HumanoidRootPart.CFrame = center
-                            m.HumanoidRootPart.CanCollide = false
+                        local mr = m:FindFirstChild("HumanoidRootPart")
+                        local mh = m:FindFirstChildOfClass("Humanoid")
+                        if mr and mh and mh.Health > 0 then
+                            -- Cho phép quái di chuyển tự nhiên quanh bạn thay vì khóa cứng cframe tuyệt đối
+                            if (mr.Position - myPos).Magnitude > 15 then
+                                mr.CFrame = CFrame.new(myPos + Vector3.new(math.random(-5,5), 0, math.random(-5,5)))
+                            end
+                            mr.CanCollide = false
                         end
                     end
                 end
 
                 local root = hrp()
                 if root then
-                    root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
-                    root.AssemblyLinearVelocity = Vector3.zero
+                    local bv = ensureFarmMover(root)
+                    local targetPos = mob.HumanoidRootPart.Position + Vector3.new(0, Cfg.FarmHeight, 0)
+                    local currentPos = root.Position
+                    local distance = (targetPos - currentPos).Magnitude
+                    
+                    if distance > 3 then
+                        local dir = (targetPos - currentPos).Unit
+                        bv.Velocity = dir * math.min(300, distance * 20)
+                        root.CFrame = CFrame.new(currentPos, targetPos)
+                    else
+                        bv.Velocity = Vector3.zero
+                        root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
+                    end
                 end
                 
                 hitMobs(list)
             end)
+        else
+            removeFarmMover()
         end
     end
 end)
@@ -494,7 +538,7 @@ local pFarm = addTab("Farm")
 addToggle(pFarm, "Auto Farm Level", false, function(v) Cfg.AutoFarm = v end)
 addToggle(pFarm, "Auto Quest", true, function(v) Cfg.AutoQuest = v end)
 addToggle(pFarm, "Nói chuyện NPC trước khi nhận quest", false, function(v) Cfg.TalkFirst = v end)
-addToggle(pFarm, "Bring Mob (gom quái)", true, function(v) Cfg.BringMob = v end)
+addToggle(pFarm, "Bring Mob (gom quái thông minh)", true, function(v) Cfg.BringMob = v end)
 addToggle(pFarm, "Auto Equip vũ khí", true, function(v) Cfg.AutoEquip = v end)
 addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 10, function(v) Cfg.FarmHeight = v end)
 addStepper(pFarm, "Tầm đánh", 20, 150, 5, 60, function(v) Cfg.HitRange = v end)
