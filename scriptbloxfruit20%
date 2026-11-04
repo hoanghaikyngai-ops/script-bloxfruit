@@ -12,7 +12,7 @@ if env.__HHubGui then pcall(function() env.__HHubGui:Destroy() end) end
 
 local Cfg = {
     AutoFarm = false, AutoQuest = true, TalkFirst = false, BringMob = true, AutoEquip = true,
-    FarmHeight = 10, HitRange = 60, Delay = 0.1, HitKey = "19357ac5",
+    FarmHeight = 15, HitRange = 100, Delay = 0.05, HitKey = "19357ac5",
     AutoStat = false, StatName = "Melee",
     AutoPumpkin = false, PumpkinSpeed = 300, PumpkinAttack = true,
 }
@@ -238,8 +238,8 @@ local function equip()
     if t then hum:EquipTool(t) end
 end
 
--- Lấy danh sách quái thông minh chống kẹt
-local function getAvailableMobs(targetName)
+-- Lấy danh sách quái chọn lọc chuẩn xác 100% theo tên nhiệm vụ
+local function getFilteredMobs(targetName)
     local out = {}
     local folder = workspace:FindFirstChild("Enemies")
     if not folder then return out end
@@ -253,17 +253,6 @@ local function getAvailableMobs(targetName)
             end
         end
     end
-    
-    if #out == 0 then
-        for _, m in ipairs(folder:GetChildren()) do
-            local h = m:FindFirstChildOfClass("Humanoid")
-            local r = m:FindFirstChild("HumanoidRootPart")
-            if h and r and h.Health > 0 then
-                out[#out + 1] = m
-            end
-        end
-    end
-    
     return out
 end
 
@@ -281,22 +270,7 @@ local function nearest(list)
     return best
 end
 
--- Hàm giả lập click an toàn để ép sinh KeyHit mới
-local function triggerScreenClick()
-    pcall(function()
-        if VIM then
-            VIM:SendMouseButtonEvent(500, 100, 0, true, game, 0)
-            task.wait(0.05)
-            VIM:SendMouseButtonEvent(500, 100, 0, false, game, 0)
-        else
-            VU:Button1Down(Vector2.new(500, 100))
-            task.wait(0.05)
-            VU:Button1Up(Vector2.new(500, 100))
-        end
-    end)
-end
-
--- Tự quét và bắt Remote an toàn tuyệt đối
+-- Tự động quét và bắt Remote an toàn tuyệt đối
 task.spawn(function()
     pcall(function()
         for _, descendant in ipairs(Rep:GetDescendants()) do
@@ -334,31 +308,33 @@ task.spawn(function()
     end
 end)
 
-local lastKeyCheckTick = tick()
-
--- Hàm tấn công chuẩn xác
-local function hitMobs(list)
+-- VÙNG GÂY SÁT THƯƠNG (AREA DAMAGE & AUTO CLICK GÓC MÀN HÌNH SIÊU TỐC)
+local function areaClickAndHit(list)
     if not RegHit or not RegAttack then return end
-    
-    if tick() - lastKeyCheckTick > 5 then
-        triggerScreenClick()
-        lastKeyCheckTick = tick()
-    end
 
-    local character = char()
-    local root = hrp()
-    if not character or not root then return end
+    -- Auto click ẩn tại góc màn hình nhỏ (X: 50, Y: 50)
+    pcall(function()
+        if VIM then
+            VIM:SendMouseButtonEvent(50, 50, 0, true, game, 0)
+            task.wait(0.01)
+            VIM:SendMouseButtonEvent(50, 50, 0, false, game, 0)
+        else
+            VU:Button1Down(Vector2.new(50, 50))
+            task.wait(0.01)
+            VU:Button1Up(Vector2.new(50, 50))
+        end
+    end)
 
-    local tool = character:FindFirstChildOfClass("Tool")
-    if tool then
-        pcall(function() tool:Activate() end)
-    end
-
+    -- Gọi gói tin RegisterAttack tốc độ cao
     pcall(function()
         RegAttack:FireServer(0.5, 1)
     end)
     
+    local root = hrp()
+    if not root then return end
     local myPos = root.Position
+
+    -- Quét toàn bộ quái trong phạm vi `HitRange` để gây damage diện rộng
     for _, m in ipairs(list) do
         local part = m:FindFirstChild("HumanoidRootPart") 
                   or m:FindFirstChild("UpperTorso") 
@@ -370,7 +346,6 @@ local function hitMobs(list)
             local distance = (part.Position - myPos).Magnitude
             if distance <= Cfg.HitRange then
                 pcall(function()
-                    root.CFrame = CFrame.new(root.Position, Vector3.new(part.Position.X, root.Position.Y, part.Position.Z))
                     RegHit:FireServer(part, {}, nil, Cfg.HitKey)
                 end)
             end
@@ -378,9 +353,9 @@ local function hitMobs(list)
     end
 end
 
--- Farm level ổn định chống kẹt tuyệt đối
+-- Vòng lặp Farm level thông minh: Bay lên đầu trước -> Gom quái chuẩn & nhả tự do -> Gây sát thương diện rộng
 task.spawn(function()
-    while task.wait(0.1) do
+    while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
             pcall(function()
                 local root = hrp()
@@ -393,35 +368,43 @@ task.spawn(function()
                 end
                 if Cfg.AutoEquip then equip() end
 
-                local list = getAvailableMobs(q[2])
+                local list = getFilteredMobs(q[2])
                 local mob = nearest(list)
                 if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
 
-                -- BringMob chọn lọc: kéo các con quái sát dưới chân
+                local targetRoot = mob.HumanoidRootPart
+
+                -- 1. BƯỚC 1: Bay lên đầu quái TRƯỚC và ghim chặt (triệt tiêu trọng lực, chống giật)
+                root.CFrame = targetRoot.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+
+                -- 2. BƯỚC 2: Gom quái xuống dưới chân nhưng "nhả" cho di chuyển, chống kẹt bất tử
                 if Cfg.BringMob then
-                    local myPos = root.Position
+                    local basePos = root.Position
                     for _, m in ipairs(list) do
                         local mr = m:FindFirstChild("HumanoidRootPart")
                         local mh = m:FindFirstChildOfClass("Humanoid")
-                        if mr and mh and mh.Health > 0 and m ~= mob then
-                            mr.CFrame = CFrame.new(myPos + Vector3.new(0, -3, 0))
+                        if mr and mh and mh.Health > 0 then
+                            local distToMe = (mr.Position - basePos).Magnitude
+                            if distToMe > 15 then
+                                mr.CFrame = CFrame.new(basePos.X + math.random(-2,2), basePos.Y - 6, basePos.Z + math.random(-2,2))
+                            end
                             mr.CanCollide = false
                         end
                     end
                 end
-
-                -- Ghim chuẩn trên đầu quái, triệt tiêu trọng lực không bay lên trời
-                root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
-                root.AssemblyLinearVelocity = Vector3.zero
-                root.AssemblyAngularVelocity = Vector3.zero
                 
-                hitMobs(list)
+                -- 3. BƯỚC 3: Kích hoạt vùng gây sát thương (Area Damage) + Auto Click + Remote Event
+                areaClickAndHit(list)
             end)
         end
     end
 end)
 
--- Event Halloween: Auto Collect Pumpkin
+------------------------------------------------------------
+-- EVENT HALLOWEEN & CÁC TÍNH NĂNG PHỤ TRỢ (GIỮ NGUYÊN)
+------------------------------------------------------------
 local function objPos(obj)
     if obj:IsA("Model") then
         if obj.PrimaryPart then return obj.PrimaryPart.Position end
@@ -518,16 +501,16 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------
--- NỘI DUNG MENU
+-- GIAO DIỆN MENU (GIỮ NGUYÊN)
 ------------------------------------------------------------
 local pFarm = addTab("Farm")
 addToggle(pFarm, "Auto Farm Level", false, function(v) Cfg.AutoFarm = v end)
 addToggle(pFarm, "Auto Quest", true, function(v) Cfg.AutoQuest = v end)
 addToggle(pFarm, "Nói chuyện NPC trước khi nhận quest", false, function(v) Cfg.TalkFirst = v end)
-addToggle(pFarm, "Bring Mob (gom chuẩn nhiệm vụ)", true, function(v) Cfg.BringMob = v end)
+addToggle(pFarm, "Bring Mob (gom chọn lọc & thả tự do)", true, function(v) Cfg.BringMob = v end)
 addToggle(pFarm, "Auto Equip vũ khí", true, function(v) Cfg.AutoEquip = v end)
-addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 10, function(v) Cfg.FarmHeight = v end)
-addStepper(pFarm, "Tầm đánh", 20, 150, 5, 60, function(v) Cfg.HitRange = v end)
+addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 15, function(v) Cfg.FarmHeight = v end)
+addStepper(pFarm, "Tầm đánh (Vùng damage)", 50, 200, 10, 100, function(v) Cfg.HitRange = v end)
 
 local pEvent = addTab("Event")
 addToggle(pEvent, "Auto Collect Pumpkin", false, function(v)
@@ -543,7 +526,7 @@ addCycle(pMisc, "Chỉ số", {"Melee", "Defense", "Sword", "Gun", "Demon Fruit"
 
 selectTab("Farm")
 
--- Dòng trạng thái
+-- Dòng trạng thái chân menu
 task.spawn(function()
     while gui.Parent do
         pcall(function()
