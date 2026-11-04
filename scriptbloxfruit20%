@@ -1,537 +1,879 @@
--- H-HUB | Blox Fruits: Auto Farm Level + Event Halloween (menu tự tạo, không cần internet)
+--[[
+    H-HUB // BLOX FRUITS COMPANION v2.0
+    Client-side companion dashboard for Roblox.
+
+    Included:
+      * Responsive, draggable neon UI + RightShift show/hide
+      * Level / health / equipped-tool / quest HUD
+      * Nearby enemy radar + optional local Highlight markers
+      * Halloween 2026 event-object scanner (read-only)
+      * Low-effects mode with restoration when disabled / closed
+      * Optional auto-equip of the first available Tool
+      * Safe cleanup when the GUI is closed
+
+    This version deliberately does NOT forge combat remotes, hook __namecall,
+    move server-owned enemies, or bypass game validation. It is suitable as a
+    LocalScript in a Roblox experience you own, and uses ordinary client APIs.
+]]
+
 local Players = game:GetService("Players")
-local RS = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local Rep = game:GetService("ReplicatedStorage")
-local VU = game:GetService("VirtualUser")
-local VIM = game:GetService("VirtualInputManager")
-local lp = Players.LocalPlayer
-local env = (getgenv and getgenv()) or _G
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Stats = game:GetService("Stats")
+local Workspace = game:GetService("Workspace")
 
-if env.__HHubGui then pcall(function() env.__HHubGui:Destroy() end) end
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    warn("[H-HUB] LocalPlayer không tồn tại. Hãy chạy dưới dạng LocalScript.")
+    return
+end
 
-local Cfg = {
-    AutoFarm = false, AutoQuest = true, TalkFirst = false, BringMob = true, AutoEquip = true,
-    FarmHeight = 15, HitRange = 100, Delay = 0.05, HitKey = "19357ac5",
-    AutoStat = false, StatName = "Melee",
-    AutoPumpkin = false, PumpkinSpeed = 300, PumpkinAttack = true,
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local oldGui = PlayerGui:FindFirstChild("HHubCompanion")
+if oldGui then
+    oldGui:Destroy()
+end
+
+local Config = {
+    AutoEquip = false,
+    MobHighlight = true,
+    LowEffects = false,
+    ScanEvents = true,
+    ScanRadius = 2500,
 }
 
-local RegAttack, RegHit
-
-------------------------------------------------------------
--- MENU
-------------------------------------------------------------
-local C = {
-    bg = Color3.fromRGB(15, 15, 25), panel = Color3.fromRGB(24, 26, 38), panel2 = Color3.fromRGB(32, 36, 52),
-    text = Color3.fromRGB(235, 237, 245), dim = Color3.fromRGB(130, 136, 160), accent = Color3.fromRGB(0, 136, 255),
-    on = Color3.fromRGB(50, 220, 120), off = Color3.fromRGB(70, 74, 96),
+local Colors = {
+    Background = Color3.fromRGB(10, 14, 25),
+    Panel = Color3.fromRGB(18, 26, 43),
+    Panel2 = Color3.fromRGB(25, 36, 57),
+    Accent = Color3.fromRGB(0, 210, 255),
+    Gold = Color3.fromRGB(255, 190, 70),
+    Text = Color3.fromRGB(238, 245, 255),
+    Muted = Color3.fromRGB(145, 160, 182),
+    Green = Color3.fromRGB(55, 220, 145),
+    Red = Color3.fromRGB(245, 90, 105),
 }
 
-local function new(class, props, parent)
-    local o = Instance.new(class)
-    for k, v in pairs(props) do o[k] = v end
-    if parent then o.Parent = parent end
-    return o
-end
-local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 6)}, o) end
+local State = {
+    Running = true,
+    FPS = 0,
+    LastError = "",
+    LastEnemyScan = {},
+    LastEventScan = {},
+    Highlights = {},
+    SavedEffects = {},
+    EffectsConnection = nil,
+    Connections = {},
+}
 
-local gui = new("ScreenGui", {Name = "HHubGui" .. math.random(1000, 9999), ResetOnSpawn = false, DisplayOrder = 1000, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
-local par
-pcall(function() par = (gethui and gethui()) or game:GetService("CoreGui") end)
-if not par or not pcall(function() gui.Parent = par end) or not gui.Parent then
-    gui.Parent = lp:WaitForChild("PlayerGui")
-end
-env.__HHubGui = gui
-
-local main = new("Frame", {Size = UDim2.new(0, 400, 0, 320), Position = UDim2.new(0.5, -200, 0.5, -160), BackgroundColor3 = C.bg, BorderSizePixel = 0, ClipsDescendants = true}, gui)
-corner(main, 8)
-new("UIStroke", {Color = C.accent, Thickness = 1.5}, main)
-local cam = workspace.CurrentCamera
-new("UIScale", {Scale = cam and math.clamp(cam.ViewportSize.X / 650, 0.55, 1) or 1}, main)
-
-local titleBar = new("Frame", {Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.panel, BorderSizePixel = 0}, main)
-new("TextLabel", {Size = UDim2.new(1, -80, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1, Text = "H-HUB // BLOX FRUITS", TextColor3 = C.accent, Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left}, titleBar)
-
-local function smallBtn(text, x, cb, color)
-    local b = new("TextButton", {Text = text, Size = UDim2.new(0, 26, 0, 22), Position = UDim2.new(1, x, 0, 4), BackgroundColor3 = color or C.panel2, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0}, titleBar)
-    corner(b, 5)
-    b.MouseButton1Click:Connect(cb)
-    return b
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(State.Connections, connection)
+    return connection
 end
 
-local tabCol = new("Frame", {Position = UDim2.new(0, 6, 0, 36), Size = UDim2.new(0, 80, 0, 262), BackgroundTransparency = 1}, main)
-local content = new("Frame", {Position = UDim2.new(0, 92, 0, 36), Size = UDim2.new(1, -98, 0, 262), BackgroundTransparency = 1}, main)
-local footer = new("TextLabel", {Position = UDim2.new(0, 8, 1, -20), Size = UDim2.new(1, -16, 0, 18), BackgroundTransparency = 1, Text = "Đang khởi động...", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, main)
+local function make(className, properties, parent)
+    local object = Instance.new(className)
+    for key, value in pairs(properties or {}) do
+        object[key] = value
+    end
+    object.Parent = parent
+    return object
+end
 
--- Nút nổi để ẩn/hiện menu
-local floatBtn = new("TextButton", {Text = "H", Size = UDim2.new(0, 36, 0, 36), Position = UDim2.new(0, 10, 0.5, -18), BackgroundColor3 = C.accent, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 16, BorderSizePixel = 0}, gui)
-corner(floatBtn, 18)
-floatBtn.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
+local function round(object, radius)
+    make("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, object)
+end
 
-local FULL = UDim2.new(0, 400, 0, 320)
-local minimized = false
-smallBtn("X", -30, function() gui:Destroy() end, Color3.fromRGB(160, 60, 60))
-smallBtn("-", -60, function()
-    minimized = not minimized
-    tabCol.Visible, content.Visible, footer.Visible = not minimized, not minimized, not minimized
-    main.Size = minimized and UDim2.new(0, 400, 0, 30) or FULL
+local function stroke(object, color, thickness, transparency)
+    return make("UIStroke", {
+        Color = color or Colors.Accent,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+    }, object)
+end
+
+local Gui = make("ScreenGui", {
+    Name = "HHubCompanion",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 900,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+local Main = make("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(520, 390),
+    Position = UDim2.new(0.5, -260, 0.5, -195),
+    BackgroundColor3 = Colors.Background,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+}, Gui)
+round(Main, 12)
+stroke(Main, Colors.Accent, 1.5, 0.12)
+
+local Scale = make("UIScale", {Scale = 1}, Main)
+
+local TopBar = make("Frame", {
+    Name = "TopBar",
+    Size = UDim2.new(1, 0, 0, 36),
+    BackgroundColor3 = Colors.Panel,
+    BorderSizePixel = 0,
+}, Main)
+
+make("TextLabel", {
+    Name = "Title",
+    Position = UDim2.fromOffset(12, 0),
+    Size = UDim2.new(1, -150, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "H-HUB  //  BLOX FRUITS COMPANION",
+    TextColor3 = Colors.Accent,
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, TopBar)
+
+local function topButton(text, x, color, callback)
+    local button = make("TextButton", {
+        Text = text,
+        Size = UDim2.fromOffset(26, 24),
+        Position = UDim2.new(1, x, 0, 6),
+        BackgroundColor3 = color,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13,
+        BorderSizePixel = 0,
+        AutoButtonColor = true,
+    }, TopBar)
+    round(button, 6)
+    button.Activated:Connect(callback)
+    return button
+end
+
+local TabColumn = make("Frame", {
+    Position = UDim2.fromOffset(8, 44),
+    Size = UDim2.new(0, 100, 1, -76),
+    BackgroundTransparency = 1,
+}, Main)
+
+local Content = make("Frame", {
+    Position = UDim2.fromOffset(116, 44),
+    Size = UDim2.new(1, -124, 1, -76),
+    BackgroundTransparency = 1,
+}, Main)
+
+local Footer = make("TextLabel", {
+    Position = UDim2.new(0, 10, 1, -25),
+    Size = UDim2.new(1, -20, 0, 18),
+    BackgroundTransparency = 1,
+    Text = "H-HUB v2.0  |  Đang khởi động...",
+    TextColor3 = Colors.Muted,
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, Main)
+
+local FloatingButton = make("TextButton", {
+    Name = "FloatingButton",
+    Size = UDim2.fromOffset(42, 42),
+    Position = UDim2.new(0, 12, 0.5, -21),
+    BackgroundColor3 = Colors.Accent,
+    Text = "H",
+    TextColor3 = Color3.new(1, 1, 1),
+    Font = Enum.Font.GothamBlack,
+    TextSize = 18,
+    BorderSizePixel = 0,
+}, Gui)
+round(FloatingButton, 21)
+stroke(FloatingButton, Color3.fromRGB(255, 255, 255), 1, 0.45)
+FloatingButton.Activated:Connect(function()
+    Main.Visible = not Main.Visible
 end)
 
--- Kéo menu (chuột + cảm ứng)
-local dragging, dragStart, startPos
-titleBar.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-        dragging, dragStart, startPos = true, i.Position, main.Position
-        i.Changed:Connect(function()
-            if i.UserInputState == Enum.UserInputState.End then dragging = false end
+local FullSize = UDim2.fromOffset(520, 390)
+local IsMinimized = false
+local function setMinimized(value)
+    IsMinimized = value
+    TabColumn.Visible = not value
+    Content.Visible = not value
+    Footer.Visible = not value
+    Main.Size = value and UDim2.fromOffset(520, 36) or FullSize
+end
+
+topButton("X", -34, Color3.fromRGB(150, 55, 68), function()
+    Gui:Destroy()
+end)
+topButton("−", -66, Colors.Panel2, function()
+    setMinimized(not IsMinimized)
+end)
+
+-- Responsive scaling
+local viewportConnection
+local function updateScale()
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local viewport = camera.ViewportSize
+    local factor = math.min(viewport.X / 760, viewport.Y / 560)
+    Scale.Scale = math.clamp(factor, 0.55, 1)
+end
+
+local function bindCamera()
+    if viewportConnection then
+        viewportConnection:Disconnect()
+        viewportConnection = nil
+    end
+    local camera = Workspace.CurrentCamera
+    if camera then
+        viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+    end
+    updateScale()
+end
+bindCamera()
+connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
+
+-- Dragging: mouse + touch
+local Dragging = false
+local DragInput
+local DragStart
+local StartPosition
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        Dragging = true
+        DragStart = input.Position
+        StartPosition = Main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                Dragging = false
+            end
         end)
     end
 end)
-UIS.InputChanged:Connect(function(i)
-    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-        local d = i.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+TopBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        DragInput = input
+    end
+end)
+connect(UserInputService.InputChanged, function(input)
+    if Dragging and input == DragInput and DragStart and StartPosition then
+        local delta = input.Position - DragStart
+        Main.Position = UDim2.new(
+            StartPosition.X.Scale, StartPosition.X.Offset + delta.X,
+            StartPosition.Y.Scale, StartPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+connect(UserInputService.InputBegan, function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.RightShift then
+        Main.Visible = not Main.Visible
     end
 end)
 
--- Tabs
-local pages, tabBtns, tabCount = {}, {}, 0
+-- Tabs + reusable UI controls
+local Pages = {}
+local TabButtons = {}
+local TabOrder = 0
+
 local function selectTab(name)
-    for n, p in pairs(pages) do p.Visible = (n == name) end
-    for n, b in pairs(tabBtns) do
-        b.BackgroundColor3 = (n == name) and C.accent or C.panel2
-        b.TextColor3 = (n == name) and Color3.new(1, 1, 1) or C.dim
+    for tabName, page in pairs(Pages) do
+        page.Visible = (tabName == name)
+    end
+    for tabName, button in pairs(TabButtons) do
+        local selected = tabName == name
+        button.BackgroundColor3 = selected and Colors.Accent or Colors.Panel2
+        button.TextColor3 = selected and Colors.Background or Colors.Muted
     end
 end
+
 local function addTab(name)
-    local b = new("TextButton", {Text = name, Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, tabCount * 32), BackgroundColor3 = C.panel2, TextColor3 = C.dim, Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0}, tabCol)
-    corner(b, 6)
-    local page = new("ScrollingFrame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Visible = false}, content)
-    new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, page)
-    pages[name], tabBtns[name] = page, b
-    tabCount = tabCount + 1
-    b.MouseButton1Click:Connect(function() selectTab(name) end)
+    local button = make("TextButton", {
+        Text = name,
+        Size = UDim2.new(1, 0, 0, 30),
+        Position = UDim2.fromOffset(0, TabOrder * 35),
+        BackgroundColor3 = Colors.Panel2,
+        TextColor3 = Colors.Muted,
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 11,
+        BorderSizePixel = 0,
+    }, TabColumn)
+    round(button, 7)
+
+    local page = make("ScrollingFrame", {
+        Name = name .. "Page",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Colors.Accent,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Visible = false,
+    }, Content)
+    make("UIListLayout", {
+        Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, page)
+
+    Pages[name] = page
+    TabButtons[name] = button
+    TabOrder += 1
+    button.Activated:Connect(function()
+        selectTab(name)
+    end)
     return page
 end
 
-local function row(page, h)
-    local r = new("Frame", {Size = UDim2.new(1, -8, 0, h or 34), BackgroundColor3 = C.panel2, BorderSizePixel = 0}, page)
-    corner(r, 6)
-    return r
+local function addSection(page, text)
+    return make("TextLabel", {
+        Size = UDim2.new(1, -6, 0, 24),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Colors.Gold,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, page)
 end
 
-local function rowLabel(r, text, rightPad)
-    return new("TextLabel", {Size = UDim2.new(1, -(rightPad or 60), 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1, Text = text, TextColor3 = C.text, Font = Enum.Font.GothamMedium, TextSize = 12, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left}, r)
+local function addInfo(page, title, initial)
+    local box = make("Frame", {
+        Size = UDim2.new(1, -6, 0, 48),
+        BackgroundColor3 = Colors.Panel2,
+        BorderSizePixel = 0,
+    }, page)
+    round(box, 7)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(10, 5),
+        Size = UDim2.new(1, -20, 0, 14),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Colors.Muted,
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, box)
+    local value = make("TextLabel", {
+        Position = UDim2.fromOffset(10, 20),
+        Size = UDim2.new(1, -20, 0, 22),
+        BackgroundTransparency = 1,
+        Text = initial or "--",
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, box)
+    return value
 end
 
-local function addToggle(page, text, default, cb)
-    local r = row(page)
-    rowLabel(r, text, 60)
-    local btn = new("TextButton", {Size = UDim2.new(0, 40, 0, 20), Position = UDim2.new(1, -50, 0.5, -10), Text = "", BorderSizePixel = 0}, r)
-    corner(btn, 10)
-    local knob = new("Frame", {Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0}, btn)
-    corner(knob, 8)
+local function addButton(page, text, callback, tint)
+    local button = make("TextButton", {
+        Size = UDim2.new(1, -6, 0, 34),
+        BackgroundColor3 = tint or Colors.Panel2,
+        Text = text,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 11,
+        BorderSizePixel = 0,
+    }, page)
+    round(button, 7)
+    button.Activated:Connect(callback)
+    return button
+end
+
+local function addToggle(page, text, default, callback)
+    local row = make("Frame", {
+        Size = UDim2.new(1, -6, 0, 38),
+        BackgroundColor3 = Colors.Panel2,
+        BorderSizePixel = 0,
+    }, page)
+    round(row, 7)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(10, 0),
+        Size = UDim2.new(1, -66, 1, 0),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local button = make("TextButton", {
+        Size = UDim2.fromOffset(42, 22),
+        Position = UDim2.new(1, -52, 0.5, -11),
+        Text = "",
+        BackgroundColor3 = default and Colors.Green or Colors.Red,
+        BorderSizePixel = 0,
+    }, row)
+    round(button, 11)
+    local knob = make("Frame", {
+        Size = UDim2.fromOffset(16, 16),
+        Position = default and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+    }, button)
+    round(knob, 8)
+
     local state = default
     local function paint()
-        btn.BackgroundColor3 = state and C.on or C.off
-        knob.Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+        button.BackgroundColor3 = state and Colors.Green or Colors.Red
+        knob.Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
     end
-    btn.MouseButton1Click:Connect(function() state = not state paint() cb(state) end)
-    paint()
-end
-
-local function addStepper(page, text, min, max, step, default, cb)
-    local r = row(page)
-    rowLabel(r, text, 130)
-    local val = default
-    local vl = new("TextLabel", {Size = UDim2.new(0, 48, 0, 24), Position = UDim2.new(1, -84, 0.5, -12), BackgroundTransparency = 1, Text = tostring(val), TextColor3 = C.accent, Font = Enum.Font.GothamBold, TextSize = 13}, r)
-    local function mk(txt, x, d)
-        local b = new("TextButton", {Text = txt, Size = UDim2.new(0, 24, 0, 24), Position = UDim2.new(1, x, 0.5, -12), BackgroundColor3 = C.off, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 14, BorderSizePixel = 0}, r)
-        corner(b, 5)
-        b.MouseButton1Click:Connect(function()
-            val = math.clamp(val + d * step, min, max)
-            vl.Text = tostring(val)
-            cb(val)
-        end)
-    end
-    mk("-", -112, -1)
-    mk("+", -34, 1)
-end
-
-local function addCycle(page, text, options, default, cb)
-    local r = row(page)
-    rowLabel(r, text, 120)
-    local idx = table.find(options, default) or 1
-    local b = new("TextButton", {Text = options[idx], Size = UDim2.new(0, 100, 0, 24), Position = UDim2.new(1, -108, 0.5, -12), BackgroundColor3 = C.off, TextColor3 = C.text, Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0}, r)
-    corner(b, 5)
-    b.MouseButton1Click:Connect(function()
-        idx = idx % #options + 1
-        b.Text = options[idx]
-        cb(options[idx])
+    button.Activated:Connect(function()
+        state = not state
+        paint()
+        callback(state)
     end)
+    paint()
+    return function(value)
+        state = value
+        paint()
+        callback(state)
+    end
 end
 
-------------------------------------------------------------
--- LOGIC GAME
-------------------------------------------------------------
-local function char() return lp.Character or lp.CharacterAdded:Wait() end
-local function hrp() 
-    local c = lp.Character
-    return c and c:FindFirstChild("HumanoidRootPart") 
-end
-local function level()
-    local d = lp:FindFirstChild("Data")
-    return d and d:FindFirstChild("Level") and d.Level.Value or 1
+-- Player / quest helpers
+local function getCharacter()
+    return LocalPlayer.Character
 end
 
--- Danh sách nhiệm vụ
-local Quests = {
-    {1,   "Bandit",             "BanditQuest1",  1},
-    {15,  "Monkey",             "JungleQuest",   1},
-    {20,  "Gorilla",            "JungleQuest",   2},
-    {30,  "Pirate",             "BuggyQuest1",   1},
-    {40,  "Brute",              "BuggyQuest1",   2},
-    {60,  "Desert Bandit",      "DesertQuest",   1},
-    {75,  "Desert Officer",     "DesertQuest",   2},
-    {90,  "Snow Bandit",        "SnowQuest",     1},
-    {100, "Snowman",            "SnowQuest",     2},
-    {120, "Chief Petty Officer","MarineQuest2",  1},
-    {150, "Sky Bandit",         "SkyQuest",      1},
-    {175, "Dark Master",        "SkyQuest",      2},
-    {190, "Prisoner",           "PrisonerQuest", 1},
-    {210, "Dangerous Prisoner", "PrisonerQuest", 2},
+local function getRoot(character)
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getLevelText()
+    local data = LocalPlayer:FindFirstChild("Data")
+    local level = data and data:FindFirstChild("Level")
+    if level and level:IsA("ValueBase") then
+        return tostring(level.Value)
+    end
+    return "Không đọc được"
+end
+
+local function getHealthText()
+    local character = getCharacter()
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return "Chưa có nhân vật" end
+    return string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth))
+end
+
+local function getEquippedToolName()
+    local character = getCharacter()
+    local tool = character and character:FindFirstChildOfClass("Tool")
+    return tool and tool.Name or "Chưa trang bị"
+end
+
+local function getQuestText()
+    local mainGui = PlayerGui:FindFirstChild("Main")
+    local questGui = mainGui and mainGui:FindFirstChild("Quest")
+    if not questGui or not questGui.Visible then
+        return "Không có nhiệm vụ đang hiển thị"
+    end
+
+    local lines = {}
+    local seen = {}
+    for _, item in ipairs(questGui:GetDescendants()) do
+        if item:IsA("TextLabel") and item.Visible then
+            local value = string.gsub(item.Text or "", "%s+", " ")
+            value = string.gsub(value, "^%s*(.-)%s*$", "%1")
+            local lower = string.lower(value)
+            if value ~= "" and lower ~= "quest" and not seen[value] then
+                seen[value] = true
+                table.insert(lines, value)
+                if #lines >= 3 then break end
+            end
+        end
+    end
+
+    if #lines == 0 then
+        return "Có bảng nhiệm vụ nhưng chưa đọc được chữ"
+    end
+    return table.concat(lines, " | ")
+end
+
+local function getPingText()
+    local ok, result = pcall(function()
+        local network = Stats:FindFirstChild("Network")
+        local serverStats = network and network:FindFirstChild("ServerStatsItem")
+        local ping = serverStats and serverStats:FindFirstChild("Data Ping")
+        return ping and ping:GetValueString() or nil
+    end)
+    if ok and result then return tostring(result) end
+    return "Không khả dụng"
+end
+
+local function safeObjectPosition(object)
+    if object:IsA("BasePart") then
+        return object.Position
+    elseif object:IsA("Model") then
+        local ok, pivot = pcall(function()
+            return object:GetPivot()
+        end)
+        if ok and pivot then return pivot.Position end
+    end
+    return nil
+end
+
+local function scanEnemies()
+    local results = {}
+    local folder = Workspace:FindFirstChild("Enemies")
+    local root = getRoot(getCharacter())
+    if not folder or not root then
+        State.LastEnemyScan = results
+        return results, 0
+    end
+
+    local total = 0
+    for _, mob in ipairs(folder:GetChildren()) do
+        local humanoid = mob:FindFirstChildOfClass("Humanoid")
+        local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+        if humanoid and mobRoot and humanoid.Health > 0 then
+            total += 1
+            local distance = (mobRoot.Position - root.Position).Magnitude
+            if distance <= Config.ScanRadius then
+                table.insert(results, {
+                    Model = mob,
+                    Name = mob.Name,
+                    Distance = distance,
+                    Health = humanoid.Health,
+                    MaxHealth = humanoid.MaxHealth,
+                })
+            end
+        end
+    end
+
+    table.sort(results, function(a, b)
+        return a.Distance < b.Distance
+    end)
+    State.LastEnemyScan = results
+    return results, total
+end
+
+local function clearHighlights()
+    for mob, highlight in pairs(State.Highlights) do
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+        end
+        State.Highlights[mob] = nil
+    end
+end
+
+local function updateHighlights(results)
+    if not Config.MobHighlight then
+        clearHighlights()
+        return
+    end
+
+    local wanted = {}
+    for index = 1, math.min(6, #results) do
+        local mob = results[index].Model
+        wanted[mob] = true
+        if not State.Highlights[mob] then
+            local highlight = Instance.new("Highlight")
+            highlight.Name = "HHubLocalMobMarker"
+            highlight.Adornee = mob
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            highlight.FillColor = Colors.Accent
+            highlight.OutlineColor = Colors.Gold
+            highlight.FillTransparency = 0.82
+            highlight.OutlineTransparency = 0.05
+            highlight.Parent = Workspace
+            State.Highlights[mob] = highlight
+        end
+    end
+
+    for mob, highlight in pairs(State.Highlights) do
+        if not wanted[mob] or not mob.Parent then
+            pcall(function() highlight:Destroy() end)
+            State.Highlights[mob] = nil
+        end
+    end
+end
+
+local EventKeywords = {
+    "pumpkin", "harvest", "trick", "treat", "witch", "hellfire",
+    "soulfire", "werewolf", "halloween", "spooky", "candy",
 }
 
-local function currentQuest()
-    local pick = Quests[1]
-    for _, q in ipairs(Quests) do
-        if level() >= q[1] then pick = q end
+local function containsEventKeyword(name)
+    local lower = string.lower(name)
+    for _, keyword in ipairs(EventKeywords) do
+        if string.find(lower, keyword, 1, true) then
+            return true
+        end
     end
-    return pick
+    return false
 end
 
-local function hasQuest()
-    local g = lp.PlayerGui:FindFirstChild("Main")
-    local q = g and g:FindFirstChild("Quest")
-    return q and q.Visible
-end
+local function scanEventObjects()
+    local root = getRoot(getCharacter())
+    if not root then
+        State.LastEventScan = {}
+        return {}
+    end
 
-local function startQuest(q)
-    pcall(function() 
-        if Cfg.TalkFirst then
-            local npcs = workspace:FindFirstChild("NPCs")
-            local npc = npcs and npcs:FindFirstChild(q[2]) or (npcs and npcs:GetChildren()[1])
-            if npc then
-                Rep.Remotes.OnTalkToNPC:FireServer(npc)
-                task.wait(0.2)
+    local results = {}
+    local scanned = 0
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        scanned += 1
+        if scanned > 5000 then break end
+        if (object:IsA("Model") or object:IsA("BasePart")) and containsEventKeyword(object.Name) then
+            local position = safeObjectPosition(object)
+            if position then
+                local distance = (position - root.Position).Magnitude
+                table.insert(results, {
+                    Object = object,
+                    Name = object.Name,
+                    Distance = distance,
+                })
             end
         end
-        Rep.Remotes.CommF_:InvokeServer("StartQuest", q[3], q[4]) 
+    end
+
+    table.sort(results, function(a, b)
+        return a.Distance < b.Distance
     end)
+    State.LastEventScan = results
+    return results
 end
 
-local function equip()
-    local hum = char():FindFirstChildOfClass("Humanoid")
-    if not hum or char():FindFirstChildOfClass("Tool") then return end
-    local t = lp.Backpack:FindFirstChildOfClass("Tool")
-    if t then hum:EquipTool(t) end
-end
+-- Local visual performance mode; original Enabled states are restored.
+local EffectClasses = {
+    ParticleEmitter = true,
+    Trail = true,
+    Beam = true,
+    Fire = true,
+    Smoke = true,
+    Sparkles = true,
+    PointLight = true,
+    SpotLight = true,
+    SurfaceLight = true,
+}
 
--- Lấy danh sách quái chọn lọc chuẩn xác 100% theo tên nhiệm vụ
-local function getFilteredMobs(targetName)
-    local out = {}
-    local folder = workspace:FindFirstChild("Enemies")
-    if not folder then return out end
-    
-    for _, m in ipairs(folder:GetChildren()) do
-        local h = m:FindFirstChildOfClass("Humanoid")
-        local r = m:FindFirstChild("HumanoidRootPart")
-        if h and r and h.Health > 0 then
-            if m.Name == targetName then
-                out[#out + 1] = m
-            end
-        end
-    end
-    return out
-end
-
-local function nearest(list)
-    local root = hrp()
-    if not root then return nil end
-    local best, dist = nil, math.huge
-    for _, m in ipairs(list) do
-        local mr = m:FindFirstChild("HumanoidRootPart")
-        if mr then
-            local d = (mr.Position - root.Position).Magnitude
-            if d < dist then best, dist = m, d end
-        end
-    end
-    return best
-end
-
--- Tự động quét và bắt Remote an toàn tuyệt đối
-task.spawn(function()
-    pcall(function()
-        for _, descendant in ipairs(Rep:GetDescendants()) do
-            if descendant:IsA("RemoteEvent") then
-                if descendant.Name == "RegisterAttack" or descendant.Name == "RE/RegisterAttack" then
-                    RegAttack = descendant
-                elseif descendant.Name == "RegisterHit" or descendant.Name == "RE/RegisterHit" then
-                    RegHit = descendant
-                end
-            end
-        end
-        
-        if not RegHit then
-            local net = Rep:FindFirstChild("Modules") and Rep.Modules:FindFirstChild("Net")
-            if net then
-                RegAttack = net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
-                RegHit = net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
-            end
-        end
+local function disableEffect(instance)
+    if not Config.LowEffects or not EffectClasses[instance.ClassName] then return end
+    local ok, wasEnabled = pcall(function()
+        return instance.Enabled
     end)
-    
-    if RegHit then
+    if ok and wasEnabled then
+        State.SavedEffects[instance] = true
+        pcall(function() instance.Enabled = false end)
+    end
+end
+
+local function setLowEffects(enabled)
+    Config.LowEffects = enabled
+    if enabled then
+        for _, object in ipairs(Workspace:GetDescendants()) do
+            disableEffect(object)
+        end
+        if not State.EffectsConnection then
+            State.EffectsConnection = Workspace.DescendantAdded:Connect(disableEffect)
+        end
+    else
+        if State.EffectsConnection then
+            State.EffectsConnection:Disconnect()
+            State.EffectsConnection = nil
+        end
+        for object in pairs(State.SavedEffects) do
+            if object and object.Parent then
+                pcall(function() object.Enabled = true end)
+            end
+        end
+        State.SavedEffects = {}
+    end
+end
+
+local function equipTool()
+    local character = getCharacter()
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or character:FindFirstChildOfClass("Tool") then return end
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not backpack then return end
+    local tool = backpack:FindFirstChildOfClass("Tool")
+    if tool then
         pcall(function()
-            local old
-            old = hookmetamethod(game, "__namecall", function(self, ...)
-                if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
-                    local k = select(4, ...)
-                    if type(k) == "string" and #k >= 6 then 
-                        Cfg.HitKey = k 
-                    end
-                end
-                return old(self, ...)
-            end)
+            humanoid:EquipTool(tool)
         end)
     end
+end
+
+-- Pages
+local OverviewPage = addTab("Tổng quan")
+local FarmPage = addTab("Trợ lý Farm")
+local EventPage = addTab("Halloween")
+local PerformancePage = addTab("Hiệu năng")
+local SettingsPage = addTab("Cài đặt")
+
+addSection(OverviewPage, "PLAYER MONITOR")
+local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ", "Đang đọc...")
+local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
+local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
+local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ HIỆN TẠI", "Đang đọc...")
+local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
+
+addSection(FarmPage, "RADAR QUÁI - CHỈ HIỂN THỊ")
+local EnemySummary = addInfo(FarmPage, "QUÁI CÒN SỐNG / TRONG TẦM QUÉT", "Chưa quét")
+local EnemyListInfo = addInfo(FarmPage, "MỤC TIÊU GẦN NHẤT", "Chưa có dữ liệu")
+addToggle(FarmPage, "Đánh dấu 6 quái gần nhất", Config.MobHighlight, function(value)
+    Config.MobHighlight = value
+    if not value then clearHighlights() end
+end)
+addToggle(FarmPage, "Tự trang bị Tool đầu tiên", Config.AutoEquip, function(value)
+    Config.AutoEquip = value
+end)
+addButton(FarmPage, "QUÉT QUÁI NGAY", function()
+    local results, total = scanEnemies()
+    updateHighlights(results)
+    EnemySummary.Text = string.format("%d quái sống | %d trong bán kính %d", total, #results, Config.ScanRadius)
+    if #results > 0 then
+        EnemyListInfo.Text = string.format("%s  •  %.0f studs", results[1].Name, results[1].Distance)
+    else
+        EnemyListInfo.Text = "Không thấy quái trong vùng quét"
+    end
+end, Colors.Panel)
+addInfo(FarmPage, "LƯU Ý", "Bản này không tự đánh, không dịch chuyển hoặc kéo quái bằng Remote.")
+
+addSection(EventPage, "HALLOWEEN 2026 - EVENT RADAR")
+local EventSummary = addInfo(EventPage, "ĐỐI TƯỢNG LIÊN QUAN ĐƯỢC PHÁT HIỆN", "Chưa quét")
+local EventListInfo = addInfo(EventPage, "ĐỐI TƯỢNG GẦN NHẤT", "Chưa có dữ liệu")
+addToggle(EventPage, "Tự quét đối tượng sự kiện", Config.ScanEvents, function(value)
+    Config.ScanEvents = value
+end)
+addButton(EventPage, "QUÉT EVENT NGAY", function()
+    local results = scanEventObjects()
+    EventSummary.Text = tostring(#results) .. " đối tượng có tên khớp từ khóa event"
+    if #results > 0 then
+        local entries = {}
+        for index = 1, math.min(4, #results) do
+            table.insert(entries, string.format("%s (%.0f)", results[index].Name, results[index].Distance))
+        end
+        EventListInfo.Text = table.concat(entries, " | ")
+    else
+        EventListInfo.Text = "Chưa phát hiện tên đối tượng phù hợp"
+    end
+end, Colors.Panel)
+addInfo(EventPage, "TỪ KHÓA DÒ TÌM", "Pumpkin • Harvest • Trick • Treat • Witch • Hellfire • Werewolf")
+addInfo(EventPage, "GIỚI HẠN", "Radar chỉ đọc tên đối tượng trong Workspace; không tự tham gia hoặc nhận thưởng event.")
+
+addSection(PerformancePage, "TỐI ƯU HIỂN THỊ LOCAL")
+local EffectsInfo = addInfo(PerformancePage, "HIỆU ỨNG ĐANG TẮT", "0")
+addToggle(PerformancePage, "Giảm hiệu ứng hạt / ánh sáng", Config.LowEffects, function(value)
+    setLowEffects(value)
+    EffectsInfo.Text = tostring((function()
+        local count = 0
+        for _ in pairs(State.SavedEffects) do count += 1 end
+        return count
+    end)())
+end)
+addButton(PerformancePage, "KHÔI PHỤC HIỆU ỨNG GỐC", function()
+    setLowEffects(false)
+    EffectsInfo.Text = "Đã khôi phục"
+end, Colors.Panel)
+addInfo(PerformancePage, "GHI CHÚ", "Chỉ tắt hiệu ứng hiển thị ở máy bạn; không thay đổi chỉ số hoặc dữ liệu máy chủ.")
+
+addSection(SettingsPage, "ĐIỀU KHIỂN")
+addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
+    Main.Visible = not Main.Visible
+end)
+addButton(SettingsPage, "XÓA TẤT CẢ ĐÁNH DẤU QUÁI", clearHighlights, Colors.Panel)
+addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", function()
+    Gui:Destroy()
+end, Color3.fromRGB(130, 48, 60))
+addInfo(SettingsPage, "PHÍM TẮT", "RightShift: ẩn / hiện menu")
+addInfo(SettingsPage, "PHIÊN BẢN", "H-HUB Companion v2.0 | Client-only")
+
+selectTab("Tổng quan")
+
+-- Runtime updater
+local frameCount = 0
+local fpsStart = os.clock()
+connect(RunService.RenderStepped, function()
+    frameCount += 1
+    local now = os.clock()
+    if now - fpsStart >= 1 then
+        State.FPS = math.floor(frameCount / (now - fpsStart) + 0.5)
+        frameCount = 0
+        fpsStart = now
+    end
 end)
 
--- VÙNG GÂY SÁT THƯƠNG (AREA DAMAGE & AUTO CLICK GÓC MÀN HÌNH SIÊU TỐC)
-local function areaClickAndHit(list)
-    if not RegHit or not RegAttack then return end
-
-    -- Auto click ẩn tại góc màn hình nhỏ (X: 50, Y: 50)
-    pcall(function()
-        if VIM then
-            VIM:SendMouseButtonEvent(50, 50, 0, true, game, 0)
-            task.wait(0.01)
-            VIM:SendMouseButtonEvent(50, 50, 0, false, game, 0)
-        else
-            VU:Button1Down(Vector2.new(50, 50))
-            task.wait(0.01)
-            VU:Button1Up(Vector2.new(50, 50))
-        end
-    end)
-
-    -- Gọi gói tin RegisterAttack tốc độ cao
-    pcall(function()
-        RegAttack:FireServer(0.5, 1)
-    end)
-    
-    local root = hrp()
-    if not root then return end
-    local myPos = root.Position
-
-    -- Quét toàn bộ quái trong phạm vi `HitRange` để gây damage diện rộng
-    for _, m in ipairs(list) do
-        local part = m:FindFirstChild("HumanoidRootPart") 
-                  or m:FindFirstChild("UpperTorso") 
-                  or m:FindFirstChild("LeftLowerLeg")
-                  
-        local hum = m:FindFirstChildOfClass("Humanoid")
-        
-        if part and hum and hum.Health > 0 then
-            local distance = (part.Position - myPos).Magnitude
-            if distance <= Cfg.HitRange then
-                pcall(function()
-                    RegHit:FireServer(part, {}, nil, Cfg.HitKey)
-                end)
-            end
-        end
-    end
-end
-
--- Vòng lặp Farm level thông minh: Bay lên đầu trước -> Gom quái chuẩn & nhả tự do -> Gây sát thương diện rộng
 task.spawn(function()
-    while task.wait(Cfg.Delay) do
-        if Cfg.AutoFarm and not Cfg.AutoPumpkin then
-            pcall(function()
-                local root = hrp()
-                if not root then return end
+    local lastEnemyScan = 0
+    local lastEventScan = 0
+    while State.Running and Gui.Parent do
+        local ok, err = pcall(function()
+            LevelInfo.Text = getLevelText()
+            HealthInfo.Text = getHealthText()
+            ToolInfo.Text = getEquippedToolName()
+            QuestInfo.Text = getQuestText()
+            NetworkInfo.Text = getPingText() .. "  |  " .. tostring(State.FPS) .. " FPS"
 
-                local q = currentQuest()
-                if Cfg.AutoQuest and not hasQuest() then
-                    startQuest(q)
-                    task.wait(0.3)
-                end
-                if Cfg.AutoEquip then equip() end
-
-                local list = getFilteredMobs(q[2])
-                local mob = nearest(list)
-                if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
-
-                local targetRoot = mob.HumanoidRootPart
-
-                -- 1. BƯỚC 1: Bay lên đầu quái TRƯỚC và ghim chặt (triệt tiêu trọng lực, chống giật)
-                root.CFrame = targetRoot.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
-                root.AssemblyLinearVelocity = Vector3.zero
-                root.AssemblyAngularVelocity = Vector3.zero
-
-                -- 2. BƯỚC 2: Gom quái xuống dưới chân nhưng "nhả" cho di chuyển, chống kẹt bất tử
-                if Cfg.BringMob then
-                    local basePos = root.Position
-                    for _, m in ipairs(list) do
-                        local mr = m:FindFirstChild("HumanoidRootPart")
-                        local mh = m:FindFirstChildOfClass("Humanoid")
-                        if mr and mh and mh.Health > 0 then
-                            local distToMe = (mr.Position - basePos).Magnitude
-                            if distToMe > 15 then
-                                mr.CFrame = CFrame.new(basePos.X + math.random(-2,2), basePos.Y - 6, basePos.Z + math.random(-2,2))
-                            end
-                            mr.CanCollide = false
-                        end
+            local now = os.clock()
+            if now - lastEnemyScan >= 1.5 then
+                local results, total = scanEnemies()
+                updateHighlights(results)
+                EnemySummary.Text = string.format("%d quái sống | %d trong bán kính %d", total, #results, Config.ScanRadius)
+                if #results > 0 then
+                    local top = {}
+                    for index = 1, math.min(4, #results) do
+                        table.insert(top, string.format("%s %.0f", results[index].Name, results[index].Distance))
                     end
-                end
-                
-                -- 3. BƯỚC 3: Kích hoạt vùng gây sát thương (Area Damage) + Auto Click + Remote Event
-                areaClickAndHit(list)
-            end)
-        end
-    end
-end)
-
-------------------------------------------------------------
--- EVENT HALLOWEEN & CÁC TÍNH NĂNG PHỤ TRỢ (GIỮ NGUYÊN)
-------------------------------------------------------------
-local function objPos(obj)
-    if obj:IsA("Model") then
-        if obj.PrimaryPart then return obj.PrimaryPart.Position end
-        local ok, p = pcall(function() return obj:GetPivot().Position end)
-        return ok and p or nil
-    elseif obj:IsA("BasePart") then
-        return obj.Position
-    end
-end
-
-local function ensureMovers(root)
-    local bv = root:FindFirstChild("HHubVelocity")
-    if not bv then
-        bv = new("BodyVelocity", {Name = "HHubVelocity", MaxForce = Vector3.new(math.huge, math.huge, math.huge), Velocity = Vector3.zero}, root)
-    end
-    local bg = root:FindFirstChild("HHubGyro")
-    if not bg then
-        bg = new("BodyGyro", {Name = "HHubGyro", MaxTorque = Vector3.new(math.huge, math.huge, math.huge), CFrame = root.CFrame}, root)
-    end
-    return bv, bg
-end
-
-local function stopMovers()
-    local c = lp.Character
-    local root = c and c:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    for _, n in ipairs({"HHubVelocity", "HHubGyro"}) do
-        local o = root:FindFirstChild(n)
-        if o then o:Destroy() end
-    end
-end
-
-task.spawn(function()
-    while task.wait() do
-        if Cfg.AutoPumpkin then
-            pcall(function()
-                local folder = workspace:FindFirstChild("PumpkinHunt")
-                local root = char():FindFirstChild("HumanoidRootPart")
-                if not folder or not root then return end
-                local bv, bg = ensureMovers(root)
-
-                local target, best = nil, math.huge
-                for _, o in ipairs(folder:GetChildren()) do
-                    local p = objPos(o)
-                    if p then
-                        local d = (root.Position - p).Magnitude
-                        if d < best then best, target = d, o end
-                    end
-                end
-                if not target then bv.Velocity = Vector3.zero return end
-
-                local tpos = objPos(target) + Vector3.new(0, 2, 0)
-                local diff = tpos - root.Position
-                local dist = diff.Magnitude
-                if dist > 4 then
-                    bv.Velocity = diff.Unit * math.min(Cfg.PumpkinSpeed, dist * 25)
-                    bg.CFrame = CFrame.new(root.Position, tpos)
+                    EnemyListInfo.Text = table.concat(top, " | ")
                 else
-                    bv.Velocity = diff.Unit * 15
+                    EnemyListInfo.Text = "Không thấy quái trong vùng quét"
                 end
-            end)
-        end
-    end
-end)
+                lastEnemyScan = now
+            end
 
-task.spawn(function()
-    while task.wait(0.2) do
-        if Cfg.AutoPumpkin and Cfg.PumpkinAttack and RegAttack then
-            pcall(function() RegAttack:FireServer(0.5, 1) end)
-        end
-    end
-end)
+            if Config.ScanEvents and now - lastEventScan >= 5 then
+                local results = scanEventObjects()
+                EventSummary.Text = tostring(#results) .. " đối tượng có tên khớp từ khóa event"
+                if #results > 0 then
+                    local entries = {}
+                    for index = 1, math.min(4, #results) do
+                        table.insert(entries, string.format("%s (%.0f)", results[index].Name, results[index].Distance))
+                    end
+                    EventListInfo.Text = table.concat(entries, " | ")
+                else
+                    EventListInfo.Text = "Chưa phát hiện tên đối tượng phù hợp"
+                end
+                lastEventScan = now
+            end
 
--- Noclip dùng chung
-RS.Stepped:Connect(function()
-    if (Cfg.AutoFarm or Cfg.AutoPumpkin) and lp.Character then
-        for _, p in ipairs(lp.Character:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-    end
-end)
+            if Config.AutoEquip then
+                equipTool()
+            end
 
-lp.Idled:Connect(function()
-    VU:CaptureController()
-    VU:ClickButton2(Vector2.new())
-end)
-
-task.spawn(function()
-    while task.wait(3) do
-        if Cfg.AutoStat then
-            pcall(function() Rep.Remotes.CommF_:InvokeServer("AddPoint", Cfg.StatName, 3) end)
-        end
-    end
-end)
-
-------------------------------------------------------------
--- GIAO DIỆN MENU (GIỮ NGUYÊN)
-------------------------------------------------------------
-local pFarm = addTab("Farm")
-addToggle(pFarm, "Auto Farm Level", false, function(v) Cfg.AutoFarm = v end)
-addToggle(pFarm, "Auto Quest", true, function(v) Cfg.AutoQuest = v end)
-addToggle(pFarm, "Nói chuyện NPC trước khi nhận quest", false, function(v) Cfg.TalkFirst = v end)
-addToggle(pFarm, "Bring Mob (gom chọn lọc & thả tự do)", true, function(v) Cfg.BringMob = v end)
-addToggle(pFarm, "Auto Equip vũ khí", true, function(v) Cfg.AutoEquip = v end)
-addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 15, function(v) Cfg.FarmHeight = v end)
-addStepper(pFarm, "Tầm đánh (Vùng damage)", 50, 200, 10, 100, function(v) Cfg.HitRange = v end)
-
-local pEvent = addTab("Event")
-addToggle(pEvent, "Auto Collect Pumpkin", false, function(v)
-    Cfg.AutoPumpkin = v
-    if not v then stopMovers() end
-end)
-addToggle(pEvent, "Đánh khi thu bí ngô", true, function(v) Cfg.PumpkinAttack = v end)
-addStepper(pEvent, "Tốc độ bay", 100, 400, 10, 300, function(v) Cfg.PumpkinSpeed = v end)
-
-local pMisc = addTab("Misc")
-addToggle(pMisc, "Auto cộng điểm", false, function(v) Cfg.AutoStat = v end)
-addCycle(pMisc, "Chỉ số", {"Melee", "Defense", "Sword", "Gun", "Demon Fruit"}, "Melee", function(v) Cfg.StatName = v end)
-
-selectTab("Farm")
-
--- Dòng trạng thái chân menu
-task.spawn(function()
-    while gui.Parent do
-        pcall(function()
-            footer.Text = "Lv " .. level() .. "  |  remote: " .. ((RegAttack and RegHit) and "OK" or "chưa tìm thấy") .. "  |  key: " .. Cfg.HitKey
+            Footer.Text = string.format(
+                "H-HUB v2.0  |  Level %s  |  FPS %d  |  RightShift: ẩn/hiện",
+                getLevelText(), State.FPS
+            )
         end)
-        task.wait(1)
+        if not ok then
+            State.LastError = tostring(err)
+            Footer.Text = "H-HUB cảnh báo: " .. string.sub(State.LastError, 1, 90)
+        end
+        task.wait(0.5)
     end
 end)
+
+Gui.Destroying:Connect(function()
+    State.Running = false
+    Config.AutoEquip = false
+    Config.MobHighlight = false
+    clearHighlights()
+    setLowEffects(false)
+    if viewportConnection then
+        viewportConnection:Disconnect()
+        viewportConnection = nil
+    end
+    for _, connection in ipairs(State.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    State.Connections = {}
+end)
+
+print("[H-HUB] Companion v2.0 đã khởi động. Nhấn RightShift để ẩn/hiện menu.")
