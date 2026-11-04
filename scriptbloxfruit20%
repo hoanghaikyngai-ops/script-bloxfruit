@@ -4,6 +4,7 @@ local RS = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Rep = game:GetService("ReplicatedStorage")
 local VU = game:GetService("VirtualUser")
+local VIM = game:GetService("VirtualInputManager")
 local lp = Players.LocalPlayer
 local env = (getgenv and getgenv()) or _G
 
@@ -182,7 +183,6 @@ local function level()
 end
 
 -- {level tối thiểu, tên quái, tên quest, số quest, tên NPC (tùy chọn)}
--- Dòng JungleQuest/1 đã xác nhận bằng log. Các dòng còn lại là phỏng đoán.
 local Quests = {
     {1,   "Bandit",             "BanditQuest1",  1},
     {15,  "Monkey",             "JungleQuest",   1},
@@ -259,33 +259,38 @@ local function nearest(list)
     return best
 end
 
-local function hitMobs(list)
-    if not RegAttack or not RegHit then return end
-    RegAttack:FireServer(0.5, 1)
-    local myPos = hrp().Position
-    for _, m in ipairs(list) do
-        local part = m:FindFirstChild("UpperTorso") or m:FindFirstChild("HumanoidRootPart")
-        if part and (part.Position - myPos).Magnitude <= Cfg.HitRange then
-            RegHit:FireServer(part, {}, nil, Cfg.HitKey)
+-- Hàm giả lập click ở phía trên màn hình để ép game sinh ra gói tin / keyhit mới khi cần
+local function triggerScreenClick()
+    pcall(function()
+        if VIM then
+            VIM:SendMouseButtonEvent(500, 100, 0, true, game, 0)
+            task.wait(0.05)
+            VIM:SendMouseButtonEvent(500, 100, 0, false, game, 0)
+        else
+            VU:Button1Down(Vector2.new(500, 100))
+            task.wait(0.05)
+            VU:Button1Up(Vector2.new(500, 100))
         end
-    end
+    end)
 end
 
--- Tìm remote đánh (không làm đứng menu)
+-- Tự bắt mã xác thực từ RegisterHit thật của game và cập nhật keyhit tự động
 task.spawn(function()
     pcall(function()
         local Net = Rep:WaitForChild("Modules", 15):WaitForChild("Net", 15)
         RegAttack = Net:WaitForChild("RE/RegisterAttack", 15)
         RegHit = Net:WaitForChild("RE/RegisterHit", 15)
     end)
-    -- Tự bắt mã xác thực từ RegisterHit thật của game
+    
     if RegHit then
         pcall(function()
             local old
             old = hookmetamethod(game, "__namecall", function(self, ...)
                 if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
                     local k = select(4, ...)
-                    if type(k) == "string" then Cfg.HitKey = k end
+                    if type(k) == "string" and #k >= 6 then 
+                        Cfg.HitKey = k 
+                    end
                 end
                 return old(self, ...)
             end)
@@ -293,7 +298,33 @@ task.spawn(function()
     end
 end)
 
--- Farm level (tạm dừng khi đang chạy Auto Pumpkin)
+local lastKeyCheckTick = tick()
+
+local function hitMobs(list)
+    if not RegHit or not RegAttack then return end
+    
+    -- Tự động click nhẹ màn hình để làm mới/bắt keyhit mới nếu quá thời gian
+    if tick() - lastKeyCheckTick > 5 then
+        triggerScreenClick()
+        lastKeyCheckTick = tick()
+    end
+
+    RegAttack:FireServer(0.5, 1)
+    local myPos = hrp().Position
+    for _, m in ipairs(list) do
+        local part = m:FindFirstChild("LeftLowerLeg") 
+                  or m:FindFirstChild("HumanoidRootPart") 
+                  or m:FindFirstChild("UpperTorso")
+                  
+        if part and (part.Position - myPos).Magnitude <= Cfg.HitRange then
+            pcall(function()
+                RegHit:FireServer(part, {}, nil, Cfg.HitKey)
+            end)
+        end
+    end
+end
+
+-- Farm level
 task.spawn(function()
     while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
