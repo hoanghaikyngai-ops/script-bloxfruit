@@ -182,7 +182,7 @@ local function level()
     return d and d:FindFirstChild("Level") and d.Level.Value or 1
 end
 
--- {level tối thiểu, tên quái, tên quest, số quest, tên NPC (tùy chọn)}
+-- Danh sách nhiệm vụ
 local Quests = {
     {1,   "Bandit",             "BanditQuest1",  1},
     {15,  "Monkey",             "JungleQuest",   1},
@@ -259,7 +259,7 @@ local function nearest(list)
     return best
 end
 
--- Hàm giả lập click ở phía trên màn hình để ép game sinh ra gói tin / keyhit mới khi cần
+-- Hàm giả lập click an toàn để ép sinh KeyHit mới
 local function triggerScreenClick()
     pcall(function()
         if VIM then
@@ -274,12 +274,26 @@ local function triggerScreenClick()
     end)
 end
 
--- Tự bắt mã xác thực từ RegisterHit thật của game và cập nhật keyhit tự động
+-- Tự quét và bắt Remote an toàn tuyệt đối (Không bị lỗi nil)
 task.spawn(function()
     pcall(function()
-        local Net = Rep:WaitForChild("Modules", 15):WaitForChild("Net", 15)
-        RegAttack = Net:WaitForChild("RE/RegisterAttack", 15)
-        RegHit = Net:WaitForChild("RE/RegisterHit", 15)
+        for _, descendant in ipairs(Rep:GetDescendants()) do
+            if descendant:IsA("RemoteEvent") then
+                if descendant.Name == "RegisterAttack" or descendant.Name == "RE/RegisterAttack" then
+                    RegAttack = descendant
+                elseif descendant.Name == "RegisterHit" or descendant.Name == "RE/RegisterHit" then
+                    RegHit = descendant
+                end
+            end
+        end
+        
+        if not RegHit then
+            local net = Rep:FindFirstChild("Modules") and Rep.Modules:FindFirstChild("Net")
+            if net then
+                RegAttack = net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
+                RegHit = net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
+            end
+        end
     end)
     
     if RegHit then
@@ -303,13 +317,15 @@ local lastKeyCheckTick = tick()
 local function hitMobs(list)
     if not RegHit or not RegAttack then return end
     
-    -- Tự động click nhẹ màn hình để làm mới/bắt keyhit mới nếu quá thời gian
     if tick() - lastKeyCheckTick > 5 then
         triggerScreenClick()
         lastKeyCheckTick = tick()
     end
 
-    RegAttack:FireServer(0.5, 1)
+    pcall(function()
+        RegAttack:FireServer(0.5, 1)
+    end)
+    
     local myPos = hrp().Position
     for _, m in ipairs(list) do
         local part = m:FindFirstChild("LeftLowerLeg") 
@@ -324,7 +340,7 @@ local function hitMobs(list)
     end
 end
 
--- Farm level
+-- Farm level tối ưu hóa an toàn
 task.spawn(function()
     while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
@@ -337,19 +353,38 @@ task.spawn(function()
                 if Cfg.AutoEquip then equip() end
 
                 local list = aliveMobs(q[2])
+                if #list == 0 then
+                    local folder = workspace:FindFirstChild("Enemies")
+                    if folder then
+                        for _, m in ipairs(folder:GetChildren()) do
+                            local h = m:FindFirstChildOfClass("Humanoid")
+                            local r = m:FindFirstChild("HumanoidRootPart")
+                            if h and r and h.Health > 0 then
+                                list[#list + 1] = m
+                            end
+                        end
+                    end
+                end
+
                 local mob = nearest(list)
-                if not mob then return end
+                if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
 
                 if Cfg.BringMob then
                     local center = mob.HumanoidRootPart.CFrame
                     for _, m in ipairs(list) do
-                        m.HumanoidRootPart.CFrame = center
-                        m.HumanoidRootPart.CanCollide = false
+                        if m:FindFirstChild("HumanoidRootPart") then
+                            m.HumanoidRootPart.CFrame = center
+                            m.HumanoidRootPart.CanCollide = false
+                        end
                     end
                 end
 
-                hrp().CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
-                hrp().AssemblyLinearVelocity = Vector3.zero
+                local root = hrp()
+                if root then
+                    root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
+                    root.AssemblyLinearVelocity = Vector3.zero
+                end
+                
                 hitMobs(list)
             end)
         end
