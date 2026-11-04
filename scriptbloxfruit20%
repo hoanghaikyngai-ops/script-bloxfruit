@@ -238,6 +238,7 @@ local function equip()
     if t then hum:EquipTool(t) end
 end
 
+-- Chỉ lấy đúng loại quái theo tên nhiệm vụ yêu cầu
 local function aliveMobs(name)
     local out = {}
     local folder = workspace:FindFirstChild("Enemies")
@@ -245,7 +246,9 @@ local function aliveMobs(name)
     for _, m in ipairs(folder:GetChildren()) do
         local h = m:FindFirstChildOfClass("Humanoid")
         local r = m:FindFirstChild("HumanoidRootPart")
-        if h and r and h.Health > 0 and m.Name:find(name) then out[#out + 1] = m end
+        if h and r and h.Health > 0 and m.Name == name then 
+            out[#out + 1] = m 
+        end
     end
     return out
 end
@@ -314,6 +317,7 @@ end)
 
 local lastKeyCheckTick = tick()
 
+-- Hàm tấn công chuẩn xác: Kích hoạt vũ khí, hướng nhìn và gọi gói tin trừ máu
 local function hitMobs(list)
     if not RegHit or not RegAttack then return end
     
@@ -322,47 +326,41 @@ local function hitMobs(list)
         lastKeyCheckTick = tick()
     end
 
+    local character = char()
+    local root = hrp()
+    if not character or not root then return end
+
+    local tool = character:FindFirstChildOfClass("Tool")
+    if tool then
+        pcall(function() tool:Activate() end)
+    end
+
     pcall(function()
         RegAttack:FireServer(0.5, 1)
     end)
     
-    local myPos = hrp().Position
+    local myPos = root.Position
     for _, m in ipairs(list) do
         local part = m:FindFirstChild("HumanoidRootPart") 
                   or m:FindFirstChild("UpperTorso") 
                   or m:FindFirstChild("LeftLowerLeg")
                   
-        if part and (part.Position - myPos).Magnitude <= Cfg.HitRange then
-            pcall(function()
-                RegHit:FireServer(part, {}, nil, Cfg.HitKey)
-            end)
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        
+        if part and hum and hum.Health > 0 then
+            local distance = (part.Position - myPos).Magnitude
+            if distance <= Cfg.HitRange then
+                pcall(function()
+                    -- Xoay mặt nhìn thẳng vào quái để server công nhận sát thương hợp lệ
+                    root.CFrame = CFrame.new(root.Position, Vector3.new(part.Position.X, root.Position.Y, part.Position.Z))
+                    RegHit:FireServer(part, {}, nil, Cfg.HitKey)
+                end)
+            end
         end
     end
 end
 
--- Quản lý BodyVelocity để bay lơ lửng mượt mà trên đầu quái
-local function ensureFarmMover(root)
-    local bv = root:FindFirstChild("HHubFarmVelocity")
-    if not bv then
-        bv = new("BodyVelocity", {
-            Name = "HHubFarmVelocity",
-            MaxForce = Vector3.new(math.huge, math.huge, math.huge),
-            Velocity = Vector3.zero
-        }, root)
-    end
-    return bv
-end
-
-local function removeFarmMover()
-    local c = lp.Character
-    local root = c and c:FindFirstChild("HumanoidRootPart")
-    if root then
-        local bv = root:FindFirstChild("HHubFarmVelocity")
-        if bv then bv:Destroy() end
-    end
-end
-
--- Farm level tối ưu hóa (Sửa lỗi BringMob không làm quái bị bất tử)
+-- Farm level ổn định: Ghim chuẩn trên đầu quái, không bay lên trời
 task.spawn(function()
     while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
@@ -375,36 +373,17 @@ task.spawn(function()
                 if Cfg.AutoEquip then equip() end
 
                 local list = aliveMobs(q[2])
-                if #list == 0 then
-                    local folder = workspace:FindFirstChild("Enemies")
-                    if folder then
-                        for _, m in ipairs(folder:GetChildren()) do
-                            local h = m:FindFirstChildOfClass("Humanoid")
-                            local r = m:FindFirstChild("HumanoidRootPart")
-                            if h and r and h.Health > 0 then
-                                list[#list + 1] = m
-                            end
-                        end
-                    end
-                end
-
                 local mob = nearest(list)
-                if not mob or not mob:FindFirstChild("HumanoidRootPart") then 
-                    removeFarmMover()
-                    return 
-                end
+                if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
 
-                -- Sửa cơ chế BringMob: Đặt quái ngay sát dưới chân bạn thay vì khóa cứng đè lên một điểm
+                -- BringMob chọn lọc: Kéo các con quái cùng loại nhiệm vụ lại sát dưới chân bạn
                 if Cfg.BringMob and hrp() then
                     local myPos = hrp().Position
                     for _, m in ipairs(list) do
                         local mr = m:FindFirstChild("HumanoidRootPart")
                         local mh = m:FindFirstChildOfClass("Humanoid")
-                        if mr and mh and mh.Health > 0 then
-                            -- Cho phép quái di chuyển tự nhiên quanh bạn thay vì khóa cứng cframe tuyệt đối
-                            if (mr.Position - myPos).Magnitude > 15 then
-                                mr.CFrame = CFrame.new(myPos + Vector3.new(math.random(-5,5), 0, math.random(-5,5)))
-                            end
+                        if mr and mh and mh.Health > 0 and m ~= mob then
+                            mr.CFrame = CFrame.new(myPos + Vector3.new(0, -4, 0))
                             mr.CanCollide = false
                         end
                     end
@@ -412,25 +391,14 @@ task.spawn(function()
 
                 local root = hrp()
                 if root then
-                    local bv = ensureFarmMover(root)
-                    local targetPos = mob.HumanoidRootPart.Position + Vector3.new(0, Cfg.FarmHeight, 0)
-                    local currentPos = root.Position
-                    local distance = (targetPos - currentPos).Magnitude
-                    
-                    if distance > 3 then
-                        local dir = (targetPos - currentPos).Unit
-                        bv.Velocity = dir * math.min(300, distance * 20)
-                        root.CFrame = CFrame.new(currentPos, targetPos)
-                    else
-                        bv.Velocity = Vector3.zero
-                        root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
-                    end
+                    -- Ghim tọa độ cố định trên đầu quái, triệt tiêu vận tốc để không bay lên trời
+                    root.CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
                 end
                 
                 hitMobs(list)
             end)
-        else
-            removeFarmMover()
         end
     end
 end)
@@ -538,7 +506,7 @@ local pFarm = addTab("Farm")
 addToggle(pFarm, "Auto Farm Level", false, function(v) Cfg.AutoFarm = v end)
 addToggle(pFarm, "Auto Quest", true, function(v) Cfg.AutoQuest = v end)
 addToggle(pFarm, "Nói chuyện NPC trước khi nhận quest", false, function(v) Cfg.TalkFirst = v end)
-addToggle(pFarm, "Bring Mob (gom quái thông minh)", true, function(v) Cfg.BringMob = v end)
+addToggle(pFarm, "Bring Mob (gom chuẩn nhiệm vụ)", true, function(v) Cfg.BringMob = v end)
 addToggle(pFarm, "Auto Equip vũ khí", true, function(v) Cfg.AutoEquip = v end)
 addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 10, function(v) Cfg.FarmHeight = v end)
 addStepper(pFarm, "Tầm đánh", 20, 150, 5, 60, function(v) Cfg.HitRange = v end)
