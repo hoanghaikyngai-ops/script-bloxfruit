@@ -1,7 +1,15 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v3.0 (Full Auto Farm + Quest + Halloween Event)
-    Client-side dashboard for Roblox.
+    H-HUB // BLOX FRUITS COMPANION v4.0
+    Auto Farm Level + Auto Quest (tự chọn theo level/sea) + Halloween Pumpkin
+    Sửa lỗi từ v3.0, nâng cấp theo cách làm của Fishing Master:
+      - Dọn session cũ khi chạy lại, có Unload sạch (ngắt mọi kết nối)
+      - Lưu / tải cấu hình (writefile)
+      - Trạng thái chi tiết, kiểm tra từng bước, pcall mọi nơi nhạy cảm
 ]]
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,33 +18,60 @@ local Stats = game:GetService("Stats")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+
+local genv = (getgenv and getgenv()) or _G
+
+-- Dọn session cũ (giống cách Fishing Master làm)
+if type(genv.HHubBloxFruits) == "table" and type(genv.HHubBloxFruits.Unload) == "function" then
+    pcall(genv.HHubBloxFruits.Unload)
+end
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[H-HUB] LocalPlayer không tồn tại. Hãy chạy dưới dạng LocalScript.")
+    warn("[H-HUB] LocalPlayer không tồn tại. Hãy chạy dưới dạng LocalScript / executor.")
     return
 end
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-local oldGui = PlayerGui:FindFirstChild("HHubCompanion")
-if oldGui then
-    oldGui:Destroy()
+
+local function getGuiParent()
+    local ok, ui = pcall(function()
+        return gethui and gethui()
+    end)
+    if ok and ui then
+        return ui
+    end
+    return PlayerGui
+end
+local GuiParent = getGuiParent()
+for _, parent in ipairs({ PlayerGui, GuiParent }) do
+    local old = parent:FindFirstChild("HHubCompanion")
+    if old then
+        old:Destroy()
+    end
 end
 
+------------------------------------------------------------------
+-- CẤU HÌNH + LƯU FILE
+------------------------------------------------------------------
 local Config = {
-    AutoEquip = false,
-    MobHighlight = true,
-    LowEffects = false,
-    ScanEvents = true,
-    ScanRadius = 2500,
-    -- Tính năng Auto Farm & Quest & Event mới tích hợp
     AutoFarm = false,
     AutoQuest = true,
-    TalkFirst = false,
     BringMob = true,
+    AutoEquip = true,
+    AutoHaki = true,
+    AutoStats = false,
+    LowEffects = false,
+    Weapon = "Melee",       -- Melee / Sword / Blox Fruit / Gun
+    StatName = "Melee",     -- Melee / Defense / Sword / Gun / Demon Fruit
     FarmHeight = 15,
     HitRange = 100,
+    BringRadius = 300,
+    SafeHP = 25,            -- % máu để bay lên cao hồi máu (0 = tắt)
+    TweenSpeed = 300,
     Delay = 0.05,
     HitKey = "19357ac5",
     AutoPumpkin = false,
@@ -44,25 +79,98 @@ local Config = {
     PumpkinAttack = true,
 }
 
-local RegAttack, RegHit
-
--- Bảng phân loại Level và Nhiệm vụ tương ứng
-local Quests = {
-    {1,   "Bandit",             "BanditQuest1",  1},
-    {15,  "Monkey",             "JungleQuest",   1},
-    {20,  "Gorilla",            "JungleQuest",   2},
-    {30,  "Pirate",             "BuggyQuest1",   1},
-    {40,  "Brute",              "BuggyQuest1",   2},
-    {60,  "Desert Bandit",      "DesertQuest",   1},
-    {75,  "Desert Officer",     "DesertQuest",   2},
-    {90,  "Snow Bandit",        "SnowQuest",     1},
-    {100, "Snowman",            "SnowQuest",     2},
-    {120, "Chief Petty Officer","MarineQuest2",  1},
-    {150, "Sky Bandit",         "SkyQuest",      1},
-    {175, "Dark Master",        "SkyQuest",      2},
-    {190, "Prisoner",           "PrisonerQuest", 1},
-    {210, "Dangerous Prisoner", "PrisonerQuest", 2},
+local SAVEABLE = {
+    "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "Weapon", "StatName",
+    "FarmHeight", "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
+local CONFIG_PATH = "HHub/BloxFruits_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
+
+local function loadConfig()
+    pcall(function()
+        if readfile and isfile and isfile(CONFIG_PATH) then
+            local data = HttpService:JSONDecode(readfile(CONFIG_PATH))
+            if type(data) == "table" then
+                for _, key in ipairs(SAVEABLE) do
+                    if data[key] ~= nil and type(data[key]) == type(Config[key]) then
+                        Config[key] = data[key]
+                    end
+                end
+            end
+        end
+    end)
+    Config.AutoFarm = false
+    Config.AutoPumpkin = false
+end
+loadConfig()
+
+local saveRevision = 0
+local function saveSoon()
+    saveRevision += 1
+    local rev = saveRevision
+    task.delay(1, function()
+        if rev ~= saveRevision or not writefile then
+            return
+        end
+        pcall(function()
+            local out = {}
+            for _, key in ipairs(SAVEABLE) do
+                out[key] = Config[key]
+            end
+            if makefolder and isfolder and not isfolder("HHub") then
+                makefolder("HHub")
+            end
+            writefile(CONFIG_PATH, HttpService:JSONEncode(out))
+        end)
+    end)
+end
+
+------------------------------------------------------------------
+-- DỮ LIỆU QUEST DỰ PHÒNG (dùng khi không đọc được ReplicatedStorage.Quests)
+-- {level tối thiểu, tên quái, tên quest, chỉ số quest}
+------------------------------------------------------------------
+local FallbackQuests = {
+    -- SEA 1
+    {0, "Bandit", "BanditQuest1", 1}, {15, "Monkey", "JungleQuest", 1}, {20, "Gorilla", "JungleQuest", 2},
+    {30, "Pirate", "BuggyQuest1", 1}, {40, "Brute", "BuggyQuest1", 2}, {60, "Desert Bandit", "DesertQuest", 1},
+    {75, "Desert Officer", "DesertQuest", 2}, {90, "Snow Bandit", "SnowQuest", 1}, {100, "Snowman", "SnowQuest", 2},
+    {120, "Chief Petty Officer", "MarineQuest2", 1}, {150, "Sky Bandit", "SkyQuest", 1}, {175, "Dark Master", "SkyQuest", 2},
+    {190, "Prisoner", "PrisonerQuest", 1}, {210, "Dangerous Prisoner", "PrisonerQuest", 2},
+    {225, "Toga Warrior", "ColosseumQuest", 1}, {275, "Gladiator", "ColosseumQuest", 2},
+    {300, "Military Soldier", "MagmaQuest", 1}, {325, "Military Spy", "MagmaQuest", 2},
+    {375, "Fishman Warrior", "FishmanQuest", 1}, {400, "Fishman Commando", "FishmanQuest", 2},
+    {450, "God's Guard", "SkyExp1Quest", 1}, {475, "Shanda", "SkyExp1Quest", 2},
+    {525, "Royal Squad", "SkyExp2Quest", 1}, {550, "Royal Soldier", "SkyExp2Quest", 2},
+    {625, "Galley Pirate", "FountainQuest", 1}, {650, "Galley Captain", "FountainQuest", 2},
+    -- SEA 2
+    {700, "Raider", "Area1Quest", 1}, {725, "Mercenary", "Area1Quest", 2}, {775, "Swan Pirate", "Area2Quest", 1},
+    {800, "Factory Staff", "Area2Quest", 2}, {875, "Marine Lieutenant", "MarineQuest3", 1}, {900, "Marine Captain", "MarineQuest3", 2},
+    {950, "Zombie", "ZombieQuest", 1}, {975, "Vampire", "ZombieQuest", 2}, {1000, "Snow Trooper", "SnowMountainQuest", 1},
+    {1050, "Winter Warrior", "SnowMountainQuest", 2}, {1100, "Lab Subordinate", "IceSideQuest", 1}, {1125, "Horned Warrior", "IceSideQuest", 2},
+    {1175, "Magma Ninja", "FireSideQuest", 1}, {1200, "Lava Pirate", "FireSideQuest", 2}, {1250, "Ship Deckhand", "ShipQuest1", 1},
+    {1275, "Ship Engineer", "ShipQuest1", 2}, {1300, "Ship Steward", "ShipQuest2", 1}, {1325, "Ship Officer", "ShipQuest2", 2},
+    {1350, "Arctic Warrior", "FrostQuest", 1}, {1375, "Snow Lurker", "FrostQuest", 2}, {1425, "Sea Soldier", "ForgottenQuest", 1},
+    {1450, "Water Fighter", "ForgottenQuest", 2},
+    -- SEA 3
+    {1500, "Pirate Millionaire", "PiratePortQuest", 1}, {1525, "Pistol Billionaire", "PiratePortQuest", 2},
+    {1575, "Dragon Crew Warrior", "AmazonQuest", 1}, {1600, "Dragon Crew Archer", "AmazonQuest", 2},
+    {1625, "Female Islander", "AmazonQuest2", 1}, {1650, "Giant Islander", "AmazonQuest2", 2},
+    {1700, "Marine Commodore", "MarineTreeIsland", 1}, {1725, "Marine Rear Admiral", "MarineTreeIsland", 2},
+    {1775, "Fishman Raider", "DeepForestIsland3", 1}, {1800, "Fishman Captain", "DeepForestIsland3", 2},
+    {1825, "Forest Pirate", "DeepForestIsland", 1}, {1850, "Mythological Pirate", "DeepForestIsland", 2},
+    {1900, "Jungle Pirate", "DeepForestIsland2", 1}, {1925, "Musketeer Pirate", "DeepForestIsland2", 2},
+    {1975, "Reborn Skeleton", "HauntedQuest1", 1}, {2000, "Living Zombie", "HauntedQuest1", 2},
+    {2025, "Demonic Soul", "HauntedQuest2", 1}, {2050, "Posessed Mummy", "HauntedQuest2", 2},
+    {2075, "Peanut Scout", "NutsIslandQuest", 1}, {2100, "Peanut President", "NutsIslandQuest", 2},
+    {2125, "Ice Cream Chef", "IceCreamIslandQuest", 1}, {2150, "Ice Cream Commander", "IceCreamIslandQuest", 2},
+    {2200, "Cookie Crafter", "CakeQuest1", 1}, {2225, "Cake Guard", "CakeQuest1", 2},
+    {2250, "Baking Staff", "CakeQuest2", 1}, {2275, "Head Baker", "CakeQuest2", 2},
+    {2300, "Cocoa Warrior", "ChocQuest1", 1}, {2325, "Chocolate Bar Battler", "ChocQuest1", 2},
+    {2350, "Sweet Thief", "ChocQuest2", 1}, {2375, "Candy Rebel", "ChocQuest2", 2},
+    {2400, "Candy Pirate", "CandyQuest1", 1}, {2425, "Snow Demon", "CandyQuest1", 2},
+}
+
+local SeaRange = { [1] = { 0, 699 }, [2] = { 700, 1499 }, [3] = { 1500, math.huge } }
+local SeaByPlace = { [2753915549] = 1, [4442272183] = 2, [7449423635] = 3 }
 
 local Colors = {
     Background = Color3.fromRGB(10, 14, 25),
@@ -79,14 +187,22 @@ local Colors = {
 local State = {
     Running = true,
     FPS = 0,
-    LastError = "",
-    LastEnemyScan = {},
-    LastEventScan = {},
-    Highlights = {},
-    SavedEffects = {},
-    EffectsConnection = nil,
+    Status = "Đang tắt",
+    PumpkinStatus = "Đang tắt",
+    Quest = nil,
+    SpawnCache = {},
+    QuestNPC = {},
+    Fleeing = false,
+    HookInstalled = false,
+    KeyLearned = false,
+    EffectsConn = nil,
+    OldShadows = Lighting.GlobalShadows,
+    SavedEffects = setmetatable({}, { __mode = "k" }),
     Connections = {},
+    QuestCache = { level = -1, quest = nil },
 }
+
+local RegAttack, RegHit
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -104,7 +220,7 @@ local function make(className, properties, parent)
 end
 
 local function round(object, radius)
-    make("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, object)
+    make("UICorner", { CornerRadius = UDim.new(0, radius or 8) }, object)
 end
 
 local function stroke(object, color, thickness, transparency)
@@ -115,17 +231,107 @@ local function stroke(object, color, thickness, transparency)
     }, object)
 end
 
+------------------------------------------------------------------
+-- HELPER NHÂN VẬT
+------------------------------------------------------------------
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getRoot(character)
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid()
+    local character = getCharacter()
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getCommF()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    return remotes and remotes:FindFirstChild("CommF_")
+end
+
+local function getLevel()
+    local data = LocalPlayer:FindFirstChild("Data")
+    local level = data and data:FindFirstChild("Level")
+    if level and level:IsA("ValueBase") then
+        return tonumber(level.Value) or 1
+    end
+    return 1
+end
+
+local function getSea()
+    local known = SeaByPlace[game.PlaceId]
+    if known then
+        return known
+    end
+    local lvl = getLevel()
+    if lvl >= 1500 then return 3 end
+    if lvl >= 700 then return 2 end
+    return 1
+end
+
+local function getEquippedToolName()
+    local character = getCharacter()
+    local tool = character and character:FindFirstChildOfClass("Tool")
+    return tool and tool.Name or "Không cầm gì"
+end
+
+------------------------------------------------------------------
+-- BỘ DI CHUYỂN (giữ nhân vật đứng yên trên không)
+------------------------------------------------------------------
+local function ensureMovers(root, useGyro)
+    local bv = root:FindFirstChild("HHubVelocity")
+    if not bv then
+        bv = make("BodyVelocity", {
+            Name = "HHubVelocity",
+            MaxForce = Vector3.new(math.huge, math.huge, math.huge),
+            Velocity = Vector3.zero,
+        }, root)
+    end
+    local bg = root:FindFirstChild("HHubGyro")
+    if useGyro then
+        if not bg then
+            bg = make("BodyGyro", {
+                Name = "HHubGyro",
+                MaxTorque = Vector3.new(math.huge, math.huge, math.huge),
+                CFrame = root.CFrame,
+            }, root)
+        end
+    elseif bg then
+        bg:Destroy()
+        bg = nil
+    end
+    return bv, bg
+end
+
+local function stopMovers()
+    local root = getRoot(getCharacter())
+    if not root then return end
+    for _, name in ipairs({ "HHubVelocity", "HHubGyro" }) do
+        local object = root:FindFirstChild(name)
+        if object then
+            object:Destroy()
+        end
+    end
+end
+
+------------------------------------------------------------------
+-- GUI
+------------------------------------------------------------------
 local Gui = make("ScreenGui", {
     Name = "HHubCompanion",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     DisplayOrder = 900,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-}, PlayerGui)
+}, GuiParent)
 
+local FullSize = UDim2.fromOffset(520, 420)
 local Main = make("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(520, 420),
+    Size = FullSize,
     Position = UDim2.new(0.5, -260, 0.5, -210),
     BackgroundColor3 = Colors.Background,
     BorderSizePixel = 0,
@@ -133,8 +339,7 @@ local Main = make("Frame", {
 }, Gui)
 round(Main, 12)
 stroke(Main, Colors.Accent, 1.5, 0.12)
-
-local Scale = make("UIScale", {Scale = 1}, Main)
+local Scale = make("UIScale", { Scale = 1 }, Main)
 
 local TopBar = make("Frame", {
     Name = "TopBar",
@@ -144,11 +349,10 @@ local TopBar = make("Frame", {
 }, Main)
 
 make("TextLabel", {
-    Name = "Title",
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v3.0",
+    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.0",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 13,
@@ -165,7 +369,6 @@ local function topButton(text, x, color, callback)
         Font = Enum.Font.GothamBold,
         TextSize = 13,
         BorderSizePixel = 0,
-        AutoButtonColor = true,
     }, TopBar)
     round(button, 6)
     button.Activated:Connect(callback)
@@ -177,18 +380,16 @@ local TabColumn = make("Frame", {
     Size = UDim2.new(0, 100, 1, -76),
     BackgroundTransparency = 1,
 }, Main)
-
 local Content = make("Frame", {
     Position = UDim2.fromOffset(116, 44),
     Size = UDim2.new(1, -124, 1, -76),
     BackgroundTransparency = 1,
 }, Main)
-
 local Footer = make("TextLabel", {
     Position = UDim2.new(0, 10, 1, -25),
     Size = UDim2.new(1, -20, 0, 18),
     BackgroundTransparency = 1,
-    Text = "H-HUB v3.0  |  Đang khởi động...",
+    Text = "H-HUB v4.0  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -212,7 +413,6 @@ FloatingButton.Activated:Connect(function()
     Main.Visible = not Main.Visible
 end)
 
-local FullSize = UDim2.fromOffset(520, 420)
 local IsMinimized = false
 local function setMinimized(value)
     IsMinimized = value
@@ -222,23 +422,14 @@ local function setMinimized(value)
     Main.Size = value and UDim2.fromOffset(520, 36) or FullSize
 end
 
-topButton("X", -34, Color3.fromRGB(150, 55, 68), function()
-    Gui:Destroy()
-end)
-topButton("−", -66, Colors.Panel2, function()
-    setMinimized(not IsMinimized)
-end)
-
--- Responsive scaling
+-- Co giãn theo màn hình
 local viewportConnection
 local function updateScale()
     local camera = Workspace.CurrentCamera
     if not camera then return end
     local viewport = camera.ViewportSize
-    local factor = math.min(viewport.X / 760, viewport.Y / 560)
-    Scale.Scale = math.clamp(factor, 0.55, 1)
+    Scale.Scale = math.clamp(math.min(viewport.X / 760, viewport.Y / 560), 0.55, 1)
 end
-
 local function bindCamera()
     if viewportConnection then
         viewportConnection:Disconnect()
@@ -253,14 +444,10 @@ end
 bindCamera()
 connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
 
--- Dragging: mouse + touch
-local Dragging = false
-local DragInput
-local DragStart
-local StartPosition
+-- Kéo cửa sổ: chuột + cảm ứng
+local Dragging, DragInput, DragStart, StartPosition = false, nil, nil, nil
 TopBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         Dragging = true
         DragStart = input.Position
         StartPosition = Main.Position
@@ -272,8 +459,7 @@ TopBar.InputBegan:Connect(function(input)
     end
 end)
 TopBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
         DragInput = input
     end
 end)
@@ -292,10 +478,8 @@ connect(UserInputService.InputBegan, function(input, processed)
     end
 end)
 
--- Tabs + reusable UI controls
-local Pages = {}
-local TabButtons = {}
-local TabOrder = 0
+-- Tab + control tái sử dụng
+local Pages, TabButtons, TabOrder = {}, {}, 0
 
 local function selectTab(name)
     for tabName, page in pairs(Pages) do
@@ -320,7 +504,6 @@ local function addTab(name)
         BorderSizePixel = 0,
     }, TabColumn)
     round(button, 7)
-
     local page = make("ScrollingFrame", {
         Name = name .. "Page",
         Size = UDim2.fromScale(1, 1),
@@ -332,11 +515,7 @@ local function addTab(name)
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Visible = false,
     }, Content)
-    make("UIListLayout", {
-        Padding = UDim.new(0, 6),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-    }, page)
-
+    make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
     Pages[name] = page
     TabButtons[name] = button
     TabOrder += 1
@@ -375,7 +554,7 @@ local function addInfo(page, title, initial)
         TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, box)
-    local value = make("TextLabel", {
+    return make("TextLabel", {
         Position = UDim2.fromOffset(10, 20),
         Size = UDim2.new(1, -20, 0, 22),
         BackgroundTransparency = 1,
@@ -386,7 +565,6 @@ local function addInfo(page, title, initial)
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
     }, box)
-    return value
 end
 
 local function addButton(page, text, callback, tint)
@@ -425,19 +603,16 @@ local function addToggle(page, text, default, callback)
         Size = UDim2.fromOffset(42, 22),
         Position = UDim2.new(1, -52, 0.5, -11),
         Text = "",
-        BackgroundColor3 = default and Colors.Green or Colors.Red,
         BorderSizePixel = 0,
     }, row)
     round(button, 11)
     local knob = make("Frame", {
         Size = UDim2.fromOffset(16, 16),
-        Position = default and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
         BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0,
     }, button)
     round(knob, 8)
-
-    local state = default
+    local state = default and true or false
     local function paint()
         button.BackgroundColor3 = state and Colors.Green or Colors.Red
         knob.Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
@@ -450,7 +625,7 @@ local function addToggle(page, text, default, callback)
     paint()
 end
 
-local function addStepper(page, text, min, max, step, default, cb)
+local function addStepper(page, text, min, max, step, default, callback)
     local row = make("Frame", {
         Size = UDim2.new(1, -6, 0, 38),
         BackgroundColor3 = Colors.Panel2,
@@ -459,7 +634,7 @@ local function addStepper(page, text, min, max, step, default, cb)
     round(row, 7)
     make("TextLabel", {
         Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -130, 1, 0),
+        Size = UDim2.new(1, -140, 1, 0),
         BackgroundTransparency = 1,
         Text = text,
         TextColor3 = Colors.Text,
@@ -467,20 +642,19 @@ local function addStepper(page, text, min, max, step, default, cb)
         TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, row)
-    local val = default
-    local vl = make("TextLabel", {
-        Size = UDim2.new(0, 48, 0, 24),
-        Position = UDim2.new(1, -84, 0.5, -12),
+    local value = default
+    local valueLabel = make("TextLabel", {
+        Size = UDim2.new(0, 52, 0, 24),
+        Position = UDim2.new(1, -88, 0.5, -12),
         BackgroundTransparency = 1,
-        Text = tostring(val),
+        Text = tostring(value),
         TextColor3 = Colors.Accent,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Center,
     }, row)
-    local function mk(txt, x, d)
+    local function makeButton(label, x, direction)
         local b = make("TextButton", {
-            Text = txt,
+            Text = label,
             Size = UDim2.new(0, 24, 0, 24),
             Position = UDim2.new(1, x, 0.5, -12),
             BackgroundColor3 = Colors.Red,
@@ -491,89 +665,220 @@ local function addStepper(page, text, min, max, step, default, cb)
         }, row)
         round(b, 5)
         b.Activated:Connect(function()
-            val = math.clamp(val + d * step, min, max)
-            vl.Text = tostring(val)
-            cb(val)
+            value = math.clamp(value + direction * step, min, max)
+            value = math.floor(value * 1000 + 0.5) / 1000
+            valueLabel.Text = tostring(value)
+            callback(value)
         end)
     end
-    mk("-", -112, -1)
-    mk("+", -34, 1)
+    makeButton("-", -116, -1)
+    makeButton("+", -34, 1)
 end
 
--- Helpers hệ thống
-local function getCharacter()
-    return LocalPlayer.Character
-end
-
-local function getRoot(character)
-    return character and character:FindFirstChild("HumanoidRootPart")
-end
-
-local function getLevelText()
-    local data = LocalPlayer:FindFirstChild("Data")
-    local level = data and data:FindFirstChild("Level")
-    if level and level:IsA("ValueBase") then
-        return tostring(level.Value)
-    end
-    return "1"
-end
-
-local function currentQuest()
-    local lvl = tonumber(getLevelText()) or 1
-    local pick = Quests[1]
-    for _, q in ipairs(Quests) do
-        if lvl >= q[1] then pick = q end
-    end
-    return pick
-end
-
-local function hasQuest()
-    local mainGui = PlayerGui:FindFirstChild("Main")
-    local questGui = mainGui and mainGui:FindFirstChild("Quest")
-    return questGui and questGui.Visible
-end
-
-local function startQuest(q)
-    pcall(function()
-        if Config.TalkFirst then
-            local npcs = Workspace:FindFirstChild("NPCs")
-            local npc = npcs and npcs:FindFirstChild(q[2]) or (npcs and npcs:GetChildren()[1])
-            if npc then
-                ReplicatedStorage.Remotes.OnTalkToNPC:FireServer(npc)
-                task.wait(0.2)
-            end
-        end
-        ReplicatedStorage.Remotes.CommF_:InvokeServer("StartQuest", q[3], q[4])
+local function addCycle(page, text, options, current, callback)
+    local index = table.find(options, current) or 1
+    local row = make("Frame", {
+        Size = UDim2.new(1, -6, 0, 38),
+        BackgroundColor3 = Colors.Panel2,
+        BorderSizePixel = 0,
+    }, page)
+    round(row, 7)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(10, 0),
+        Size = UDim2.new(1, -150, 1, 0),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local button = make("TextButton", {
+        Size = UDim2.fromOffset(130, 24),
+        Position = UDim2.new(1, -138, 0.5, -12),
+        BackgroundColor3 = Colors.Accent,
+        Text = options[index],
+        TextColor3 = Colors.Background,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        BorderSizePixel = 0,
+    }, row)
+    round(button, 6)
+    button.Activated:Connect(function()
+        index = index % #options + 1
+        button.Text = options[index]
+        callback(options[index])
     end)
 end
 
-local function equipTool()
-    local character = getCharacter()
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if not humanoid or character:FindFirstChildOfClass("Tool") then return end
-
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-    if not backpack then return end
-    local tool = backpack:FindFirstChildOfClass("Tool")
-    if tool then
-        pcall(function()
-            humanoid:EquipTool(tool)
-        end)
-    end
+------------------------------------------------------------------
+-- QUEST
+------------------------------------------------------------------
+local function pickQuestFromModule(level, sea)
+    local ok, result = pcall(function()
+        local module = ReplicatedStorage:FindFirstChild("Quests")
+        if not module or not module:IsA("ModuleScript") then
+            return nil
+        end
+        local data = require(module)
+        local range = SeaRange[sea]
+        local best
+        for questName, list in pairs(data) do
+            if type(list) == "table" then
+                for index, info in pairs(list) do
+                    if type(index) == "number" and type(info) == "table" and type(info.Task) == "table" then
+                        local req = tonumber(info.LevelReq)
+                        local mob, count, keys = nil, 0, 0
+                        for name, n in pairs(info.Task) do
+                            keys += 1
+                            mob, count = name, n
+                        end
+                        if req and keys == 1 and type(mob) == "string" and type(count) == "number" and count > 1
+                            and req <= level and req >= range[1] and req <= range[2] then
+                            if not best or req > best[1] then
+                                best = { req, mob, questName, index }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best
+    end)
+    return ok and result or nil
 end
 
-local function getFilteredMobs(targetName)
+local function currentQuest()
+    local level = getLevel()
+    if State.QuestCache.level == level and State.QuestCache.quest then
+        return State.QuestCache.quest
+    end
+    local sea = getSea()
+    local pick = pickQuestFromModule(level, sea)
+    if not pick then
+        local range = SeaRange[sea]
+        for _, entry in ipairs(FallbackQuests) do
+            if entry[1] <= level and entry[1] >= range[1] and entry[1] <= range[2] then
+                if not pick or entry[1] > pick[1] then
+                    pick = entry
+                end
+            end
+        end
+    end
+    pick = pick or FallbackQuests[1]
+    local quest = { mob = pick[2], quest = pick[3], idx = pick[4], level = pick[1] }
+    State.QuestCache = { level = level, quest = quest }
+    return quest
+end
+
+local function questText()
+    local main = PlayerGui:FindFirstChild("Main")
+    local quest = main and main:FindFirstChild("Quest")
+    if not quest or not quest.Visible then
+        return nil
+    end
+    local container = quest:FindFirstChild("Container")
+    local title = container and container:FindFirstChild("QuestTitle")
+    local label = title and title:FindFirstChild("Title")
+    return label and label.Text or ""
+end
+
+local function hasQuest()
+    return questText() ~= nil
+end
+
+local function questMatches(quest)
+    local text = questText()
+    if not text then return false end
+    if text == "" then return true end
+    return string.find(text, quest.mob, 1, true) ~= nil
+end
+
+local function findSpawnPos(mobName)
+    local origin = Workspace:FindFirstChild("_WorldOrigin")
+    local spawns = origin and origin:FindFirstChild("EnemySpawns")
+    local root = getRoot(getCharacter())
+    local best, bestDist
+    if spawns then
+        for _, spawn in ipairs(spawns:GetChildren()) do
+            if spawn:IsA("BasePart") and string.find(spawn.Name, mobName, 1, true) then
+                local d = root and (spawn.Position - root.Position).Magnitude or 0
+                if not bestDist or d < bestDist then
+                    best, bestDist = spawn.Position, d
+                end
+            end
+        end
+    end
+    if best then
+        State.SpawnCache[mobName] = best
+    end
+    return best or State.SpawnCache[mobName]
+end
+
+local function startQuest(quest)
+    local commF = getCommF()
+    if not commF then return false end
+
+    local function attempt()
+        pcall(function()
+            commF:InvokeServer("StartQuest", quest.quest, quest.idx)
+        end)
+        task.wait(0.35)
+        return hasQuest()
+    end
+
+    if attempt() then return true end
+
+    -- Chưa gần NPC: thử NPC đã nhớ, rồi quét NPC gần điểm spawn quái
+    local root = getRoot(getCharacter())
+    if not root then return false end
+    local candidates = {}
+    if State.QuestNPC[quest.quest] then
+        table.insert(candidates, State.QuestNPC[quest.quest])
+    end
+    local anchor = findSpawnPos(quest.mob) or root.Position
+    local npcs = Workspace:FindFirstChild("NPCs")
+    if npcs then
+        local list = {}
+        for _, npc in ipairs(npcs:GetChildren()) do
+            if npc:IsA("Model") then
+                local ok, pivot = pcall(function() return npc:GetPivot().Position end)
+                if ok then
+                    table.insert(list, { pivot, (pivot - anchor).Magnitude })
+                end
+            end
+        end
+        table.sort(list, function(a, b) return a[2] < b[2] end)
+        for i = 1, math.min(4, #list) do
+            table.insert(candidates, list[i][1])
+        end
+    end
+    for _, position in ipairs(candidates) do
+        if not (State.Running and Config.AutoFarm) then break end
+        root = getRoot(getCharacter())
+        if not root then break end
+        root.CFrame = CFrame.new(position + Vector3.new(0, 3, 4))
+        task.wait(0.3)
+        if attempt() then
+            State.QuestNPC[quest.quest] = position
+            return true
+        end
+    end
+    return false
+end
+
+------------------------------------------------------------------
+-- QUÁI + DI CHUYỂN
+------------------------------------------------------------------
+local function getMobs(mobName)
     local out = {}
     local folder = Workspace:FindFirstChild("Enemies")
     if not folder then return out end
-    
-    for _, m in ipairs(folder:GetChildren()) do
-        local h = m:FindFirstChildOfClass("Humanoid")
-        local r = m:FindFirstChild("HumanoidRootPart")
-        if h and r and h.Health > 0 then
-            if m.Name == targetName then
-                out[#out + 1] = m
-            end
+    for _, mob in ipairs(folder:GetChildren()) do
+        local humanoid = mob:FindFirstChildOfClass("Humanoid")
+        local root = mob:FindFirstChild("HumanoidRootPart")
+        if humanoid and root and humanoid.Health > 0 and mob.Name == mobName then
+            out[#out + 1] = mob
         end
     end
     return out
@@ -582,186 +887,353 @@ end
 local function nearest(list)
     local root = getRoot(getCharacter())
     if not root then return nil end
-    local best, dist = nil, math.huge
-    for _, m in ipairs(list) do
-        local mr = m:FindFirstChild("HumanoidRootPart")
-        if mr then
-            local d = (mr.Position - root.Position).Magnitude
-            if d < dist then best, dist = m, d end
+    local best, bestDist = nil, math.huge
+    for _, mob in ipairs(list) do
+        local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+        if mobRoot then
+            local d = (mobRoot.Position - root.Position).Magnitude
+            if d < bestDist then
+                best, bestDist = mob, d
+            end
         end
     end
     return best
 end
 
--- Tự động tìm RemoteEvent sát thương
-task.spawn(function()
+local function flyTo(root, targetCFrame)
+    local dist = (root.Position - targetCFrame.Position).Magnitude
+    if dist < 6 then
+        return
+    end
+    if dist < 120 then
+        root.CFrame = targetCFrame
+        return
+    end
+    local speed = math.max(Config.TweenSpeed, 50)
+    local tween = TweenService:Create(root, TweenInfo.new(dist / speed, Enum.EasingStyle.Linear), { CFrame = targetCFrame })
+    local done = false
+    local conn = tween.Completed:Connect(function()
+        done = true
+    end)
+    tween:Play()
+    local limit = os.clock() + dist / speed + 3
+    while not done and State.Running and Config.AutoFarm and os.clock() < limit do
+        task.wait(0.1)
+    end
+    conn:Disconnect()
+    if not done then
+        tween:Cancel()
+    end
+end
+
+------------------------------------------------------------------
+-- REMOTE + HOOK HỌC KEY
+------------------------------------------------------------------
+local function scanRemotes()
     pcall(function()
-        for _, descendant in ipairs(ReplicatedStorage:GetDescendants()) do
-            if descendant:IsA("RemoteEvent") then
-                if descendant.Name == "RegisterAttack" or descendant.Name == "RE/RegisterAttack" then
-                    RegAttack = descendant
-                elseif descendant.Name == "RegisterHit" or descendant.Name == "RE/RegisterHit" then
-                    RegHit = descendant
-                end
-            end
+        local net = ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("Net")
+        if net then
+            RegAttack = RegAttack or net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
+            RegHit = RegHit or net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
         end
-        
-        if not RegHit then
-            local net = ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("Net")
-            if net then
-                RegAttack = net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
-                RegHit = net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
+        if not (RegAttack and RegHit) then
+            for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+                if d:IsA("BaseRemoteEvent") then
+                    if not RegAttack and (d.Name == "RegisterAttack" or d.Name == "RE/RegisterAttack") then
+                        RegAttack = d
+                    elseif not RegHit and (d.Name == "RegisterHit" or d.Name == "RE/RegisterHit") then
+                        RegHit = d
+                    end
+                end
             end
         end
     end)
-    
-    if RegHit then
-        pcall(function()
-            local old
-            old = hookmetamethod(game, "__namecall", function(self, ...)
-                if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
-                    local k = select(4, ...)
-                    if type(k) == "string" and #k >= 6 then 
-                        Config.HitKey = k 
-                    end
+end
+
+local function installHook()
+    if State.HookInstalled or not RegHit or not hookmetamethod or not getnamecallmethod then
+        return
+    end
+    State.HookInstalled = true
+    pcall(function()
+        local old
+        local function handler(self, ...)
+            if State.Running and self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
+                local key = select(4, ...)
+                if type(key) == "string" and #key >= 6 and key ~= Config.HitKey then
+                    Config.HitKey = key
+                    State.KeyLearned = true
                 end
-                return old(self, ...)
-            end)
-        end)
+            end
+            return old(self, ...)
+        end
+        old = hookmetamethod(game, "__namecall", newcclosure and newcclosure(handler) or handler)
+    end)
+end
+
+task.spawn(function()
+    while State.Running do
+        scanRemotes()
+        installHook()
+        task.wait((RegAttack and RegHit) and 10 or 2)
     end
 end)
 
-local function areaClickAndHit(list)
-    if not RegHit or not RegAttack then return end
+------------------------------------------------------------------
+-- TẤN CÔNG
+------------------------------------------------------------------
+local function clickOnce()
     pcall(function()
-        if VirtualInputManager then
-            VirtualInputManager:SendMouseButtonEvent(50, 50, 0, true, game, 0)
-            task.wait(0.01)
-            VirtualInputManager:SendMouseButtonEvent(50, 50, 0, false, game, 0)
-        else
-            VirtualUser:Button1Down(Vector2.new(50, 50))
-            task.wait(0.01)
-            VirtualUser:Button1Up(Vector2.new(50, 50))
-        end
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton1(Vector2.new(1280, 672))
     end)
-    pcall(function() RegAttack:FireServer(0.5, 1) end)
-    
+end
+
+local function attackMobs(list)
+    clickOnce()
+    if not (RegAttack and RegHit) then return end
+    pcall(function()
+        RegAttack:FireServer(0.5, 1)
+    end)
     local root = getRoot(getCharacter())
     if not root then return end
-    local myPos = root.Position
+    local mainPart
+    local hits = {}
+    for _, mob in ipairs(list) do
+        local part = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("UpperTorso")
+        local humanoid = mob:FindFirstChildOfClass("Humanoid")
+        if part and humanoid and humanoid.Health > 0 and (part.Position - root.Position).Magnitude <= Config.HitRange then
+            mainPart = mainPart or part
+            table.insert(hits, { mob, part })
+        end
+    end
+    if mainPart then
+        pcall(function()
+            RegHit:FireServer(mainPart, hits, nil, Config.HitKey)
+        end)
+    end
+end
 
-    for _, m in ipairs(list) do
-        local part = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("UpperTorso")
-        local hum = m:FindFirstChildOfClass("Humanoid")
-        if part and hum and hum.Health > 0 then
-            if (part.Position - myPos).Magnitude <= Config.HitRange then
-                pcall(function() RegHit:FireServer(part, {}, nil, Config.HitKey) end)
-            end
+local function equipWeapon()
+    local character = getCharacter()
+    local humanoid = getHumanoid()
+    if not character or not humanoid then return end
+    local held = character:FindFirstChildOfClass("Tool")
+    if held and held.ToolTip == Config.Weapon then return end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not backpack then return end
+    for _, tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA("Tool") and tool.ToolTip == Config.Weapon then
+            pcall(function()
+                humanoid:EquipTool(tool)
+            end)
+            return
         end
     end
 end
 
--- Vòng lặp Auto Farm chính
+local function ensureHaki()
+    local character = getCharacter()
+    local commF = getCommF()
+    if character and commF and not character:FindFirstChild("HasBuso") then
+        pcall(function()
+            commF:InvokeServer("Buso")
+        end)
+    end
+end
+
+------------------------------------------------------------------
+-- VÒNG LẶP AUTO FARM
+------------------------------------------------------------------
+local lastHaki = 0
+local simulationSet = false
+
+local function farmStep()
+    local character = getCharacter()
+    local root = getRoot(character)
+    local humanoid = getHumanoid()
+    if not root or not humanoid or humanoid.Health <= 0 then
+        State.Status = "Chờ hồi sinh..."
+        return
+    end
+
+    ensureMovers(root, false)
+
+    if not simulationSet and sethiddenproperty then
+        simulationSet = true
+        pcall(function()
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+        end)
+    end
+
+    -- An toàn: máu thấp thì bay lên cao hồi máu
+    local hpPercent = humanoid.Health / math.max(humanoid.MaxHealth, 1) * 100
+    if State.Fleeing then
+        if hpPercent >= 80 then
+            State.Fleeing = false
+        else
+            State.Status = string.format("Máu thấp (%d%%) - đang hồi máu trên cao", hpPercent)
+            return
+        end
+    elseif Config.SafeHP > 0 and hpPercent < Config.SafeHP then
+        State.Fleeing = true
+        root.CFrame = root.CFrame + Vector3.new(0, 250, 0)
+        return
+    end
+
+    if Config.AutoEquip then equipWeapon() end
+    if Config.AutoHaki and os.clock() - lastHaki > 3 then
+        lastHaki = os.clock()
+        ensureHaki()
+    end
+
+    local quest = currentQuest()
+    State.Quest = quest
+
+    if Config.AutoQuest then
+        local text = questText()
+        if text and not questMatches(quest) then
+            local commF = getCommF()
+            if commF then
+                pcall(function()
+                    commF:InvokeServer("AbandonQuest")
+                end)
+            end
+            task.wait(0.3)
+            text = questText()
+        end
+        if not text then
+            State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. "..."
+            if not startQuest(quest) then
+                State.Status = "Chưa nhận được quest (thử lại)..."
+                task.wait(1.5)
+                return
+            end
+        end
+    end
+
+    local list = getMobs(quest.mob)
+    local mob = nearest(list)
+    if not mob then
+        local spawnPos = findSpawnPos(quest.mob)
+        if spawnPos then
+            State.Status = "Đi tới điểm spawn " .. quest.mob
+            flyTo(root, CFrame.new(spawnPos + Vector3.new(0, Config.FarmHeight, 0)))
+        else
+            State.Status = "Không thấy " .. quest.mob .. " - chờ spawn"
+        end
+        return
+    end
+
+    local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+    if not mobRoot then return end
+    State.Status = "Farm " .. quest.mob .. " (" .. #list .. " con)"
+
+    local anchorPos = mobRoot.Position
+    if Config.BringMob then
+        for _, other in ipairs(list) do
+            local otherRoot = other:FindFirstChild("HumanoidRootPart")
+            local otherHum = other:FindFirstChildOfClass("Humanoid")
+            if otherRoot and otherHum and otherHum.Health > 0 and other ~= mob
+                and (otherRoot.Position - anchorPos).Magnitude <= Config.BringRadius then
+                otherRoot.CFrame = CFrame.new(anchorPos)
+                otherRoot.AssemblyLinearVelocity = Vector3.zero
+                otherRoot.CanCollide = false
+            end
+        end
+    end
+    mobRoot.CanCollide = false
+
+    local above = anchorPos + Vector3.new(0, Config.FarmHeight, 0)
+    root.CFrame = CFrame.lookAt(above, anchorPos)
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+
+    attackMobs(list)
+end
+
 task.spawn(function()
-    while State.Running and Gui.Parent do
-        task.wait(Config.Delay)
+    while State.Running do
+        task.wait(math.max(Config.Delay, 0.02))
         if Config.AutoFarm and not Config.AutoPumpkin then
+            local ok, err = pcall(farmStep)
+            if not ok then
+                State.Status = "Lỗi: " .. tostring(err)
+                task.wait(1)
+            end
+        end
+    end
+end)
+
+-- Auto cộng điểm
+task.spawn(function()
+    while State.Running do
+        task.wait(3)
+        if Config.AutoStats then
             pcall(function()
-                local root = getRoot(getCharacter())
-                if not root then return end
-                local q = currentQuest()
-                if Config.AutoQuest and not hasQuest() then
-                    startQuest(q)
-                    task.wait(0.3)
+                local data = LocalPlayer:FindFirstChild("Data")
+                local points = data and data:FindFirstChild("Points")
+                local commF = getCommF()
+                if points and commF and points.Value > 0 then
+                    commF:InvokeServer("AddPoint", Config.StatName, math.min(points.Value, 10))
                 end
-                if Config.AutoEquip then equipTool() end
-
-                local list = getFilteredMobs(q[2])
-                local mob = nearest(list)
-                if not mob or not mob:FindFirstChild("HumanoidRootPart") then return end
-
-                local targetRoot = mob.HumanoidRootPart
-                root.CFrame = targetRoot.CFrame * CFrame.new(0, Config.FarmHeight, 0)
-                root.AssemblyLinearVelocity = Vector3.zero
-                root.AssemblyAngularVelocity = Vector3.zero
-
-                if Config.BringMob then
-                    local basePos = root.Position
-                    for _, m in ipairs(list) do
-                        local mr = m:FindFirstChild("HumanoidRootPart")
-                        local mh = m:FindFirstChildOfClass("Humanoid")
-                        if mr and mh and mh.Health > 0 then
-                            if (mr.Position - basePos).Magnitude > 15 then
-                                mr.CFrame = CFrame.new(basePos.X + math.random(-2,2), basePos.Y - 6, basePos.Z + math.random(-2,2))
-                            end
-                            mr.CanCollide = false
-                        end
-                    end
-                end
-                areaClickAndHit(list)
             end)
         end
     end
 end)
 
--- Xử lý Event Halloween (Bí ngô)
+------------------------------------------------------------------
+-- HALLOWEEN: AUTO THU BÍ NGÔ
+------------------------------------------------------------------
 local function objPos(obj)
     if obj:IsA("Model") then
         if obj.PrimaryPart then return obj.PrimaryPart.Position end
-        local ok, p = pcall(function() return obj:GetPivot().Position end)
-        return ok and p or nil
+        local ok, pivot = pcall(function() return obj:GetPivot().Position end)
+        return ok and pivot or nil
     elseif obj:IsA("BasePart") then
         return obj.Position
     end
-end
-
-local function ensureMovers(root)
-    local bv = root:FindFirstChild("HHubVelocity")
-    if not bv then
-        bv = make("BodyVelocity", {Name = "HHubVelocity", MaxForce = Vector3.new(math.huge, math.huge, math.huge), Velocity = Vector3.zero}, root)
-    end
-    local bg = root:FindFirstChild("HHubGyro")
-    if not bg then
-        bg = make("BodyGyro", {Name = "HHubGyro", MaxTorque = Vector3.new(math.huge, math.huge, math.huge), CFrame = root.CFrame}, root)
-    end
-    return bv, bg
-end
-
-local function stopMovers()
-    local root = getRoot(getCharacter())
-    if not root then return end
-    for _, n in ipairs({"HHubVelocity", "HHubGyro"}) do
-        local o = root:FindFirstChild(n)
-        if o then o:Destroy() end
-    end
+    return nil
 end
 
 task.spawn(function()
-    while State.Running and Gui.Parent do
+    while State.Running do
         task.wait()
         if Config.AutoPumpkin then
             pcall(function()
                 local folder = Workspace:FindFirstChild("PumpkinHunt")
                 local root = getRoot(getCharacter())
-                if not folder or not root then return end
-                local bv, bg = ensureMovers(root)
-
+                if not folder then
+                    State.PumpkinStatus = "Không có workspace.PumpkinHunt (event chưa mở?)"
+                    return
+                end
+                if not root then
+                    State.PumpkinStatus = "Chờ nhân vật..."
+                    return
+                end
+                local bv, bg = ensureMovers(root, true)
                 local target, best = nil, math.huge
-                for _, o in ipairs(folder:GetChildren()) do
-                    local p = objPos(o)
-                    if p then
-                        local d = (root.Position - p).Magnitude
-                        if d < best then best, target = d, o end
+                for _, obj in ipairs(folder:GetChildren()) do
+                    local pos = objPos(obj)
+                    if pos then
+                        local d = (root.Position - pos).Magnitude
+                        if d < best then
+                            best, target = d, obj
+                        end
                     end
                 end
-                if not target then bv.Velocity = Vector3.zero return end
-
-                local tpos = objPos(target) + Vector3.new(0, 2, 0)
-                local diff = tpos - root.Position
+                if not target then
+                    bv.Velocity = Vector3.zero
+                    State.PumpkinStatus = "Hết bí ngô - chờ spawn"
+                    return
+                end
+                local targetPos = objPos(target) + Vector3.new(0, 2, 0)
+                local diff = targetPos - root.Position
                 local dist = diff.Magnitude
+                State.PumpkinStatus = string.format("Đang bay tới bí ngô (%d stud)", dist)
                 if dist > 4 then
                     bv.Velocity = diff.Unit * math.min(Config.PumpkinSpeed, dist * 25)
-                    bg.CFrame = CFrame.new(root.Position, tpos)
+                    if bg then bg.CFrame = CFrame.new(root.Position, targetPos) end
                 else
                     bv.Velocity = diff.Unit * 15
                 end
@@ -771,75 +1243,207 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    while State.Running and Gui.Parent do
+    while State.Running do
         task.wait(0.2)
         if Config.AutoPumpkin and Config.PumpkinAttack and RegAttack then
-            pcall(function() RegAttack:FireServer(0.5, 1) end)
+            pcall(function()
+                RegAttack:FireServer(0.5, 1)
+            end)
         end
     end
 end)
 
-RunService.Stepped:Connect(function()
+-- Noclip khi farm / thu bí ngô
+connect(RunService.Stepped, function()
     if (Config.AutoFarm or Config.AutoPumpkin) and LocalPlayer.Character then
-        for _, p in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
         end
     end
 end)
 
-LocalPlayer.Idled:Connect(function()
+connect(LocalPlayer.Idled, function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
 end)
 
--- Tạo các Tab giao diện trên Menu
+connect(LocalPlayer.CharacterAdded, function()
+    State.Fleeing = false
+    simulationSet = false
+end)
+
+------------------------------------------------------------------
+-- GIẢM HIỆU ỨNG (trước đây toggle này không làm gì)
+------------------------------------------------------------------
+local function lowFx(d)
+    if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+        if State.SavedEffects[d] == nil then
+            State.SavedEffects[d] = d.Enabled
+        end
+        d.Enabled = false
+    end
+end
+
+local function setLowEffects(on)
+    if on then
+        if State.EffectsConn then return end
+        State.OldShadows = Lighting.GlobalShadows
+        pcall(function() Lighting.GlobalShadows = false end)
+        State.EffectsConn = Workspace.DescendantAdded:Connect(function(d)
+            pcall(lowFx, d)
+        end)
+        task.spawn(function()
+            local n = 0
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if not State.Running or not Config.LowEffects then break end
+                pcall(lowFx, d)
+                n += 1
+                if n % 300 == 0 then task.wait() end
+            end
+        end)
+    else
+        if State.EffectsConn then
+            State.EffectsConn:Disconnect()
+            State.EffectsConn = nil
+        end
+        for d, enabled in pairs(State.SavedEffects) do
+            pcall(function()
+                d.Enabled = enabled
+            end)
+        end
+        table.clear(State.SavedEffects)
+        pcall(function() Lighting.GlobalShadows = State.OldShadows end)
+    end
+end
+
+------------------------------------------------------------------
+-- UNLOAD SẠCH
+------------------------------------------------------------------
+local function Unload()
+    if not State.Running then return end
+    State.Running = false
+    Config.AutoFarm = false
+    Config.AutoPumpkin = false
+    pcall(stopMovers)
+    pcall(setLowEffects, false)
+    for _, connection in ipairs(State.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(State.Connections)
+    if viewportConnection then viewportConnection:Disconnect() end
+    if Gui and Gui.Parent then Gui:Destroy() end
+    if genv.HHubBloxFruits and genv.HHubBloxFruits.Unload == Unload then
+        genv.HHubBloxFruits = nil
+    end
+end
+genv.HHubBloxFruits = { Unload = Unload, Config = Config, State = State }
+
+topButton("X", -34, Color3.fromRGB(150, 55, 68), Unload)
+topButton("−", -66, Colors.Panel2, function()
+    setMinimized(not IsMinimized)
+end)
+
+------------------------------------------------------------------
+-- TAB GIAO DIỆN
+------------------------------------------------------------------
 local OverviewPage = addTab("Tổng quan")
-local FarmPage = addTab("Trợ lý Farm")
+local FarmPage = addTab("Auto Farm")
 local EventPage = addTab("Halloween")
+local TunePage = addTab("Thông số")
 local PerformancePage = addTab("Hiệu năng")
 local SettingsPage = addTab("Cài đặt")
 
+local function bind(key)
+    return function(value)
+        Config[key] = value
+        saveSoon()
+    end
+end
+
 addSection(OverviewPage, "PLAYER MONITOR")
-local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ", "Đang đọc...")
+local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
 local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
 local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
-local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ HIỆN TẠI", "Đang đọc...")
+local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
+local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
+local RemoteInfo = addInfo(OverviewPage, "REMOTE / HIT KEY", "Đang quét...")
 local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
 
-addSection(FarmPage, "CÀI ĐẶT AUTO FARM & QUEST")
-addToggle(FarmPage, "Auto Farm Level", Config.AutoFarm, function(v) Config.AutoFarm = v end)
-addToggle(FarmPage, "Auto Quest", Config.AutoQuest, function(v) Config.AutoQuest = v end)
-addToggle(FarmPage, "Nói chuyện NPC trước nhận quest", Config.TalkFirst, function(v) Config.TalkFirst = v end)
-addToggle(FarmPage, "Bring Mob (Gom quái)", Config.BringMob, function(v) Config.BringMob = v end)
-addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, function(v) Config.AutoEquip = v end)
-addStepper(FarmPage, "Độ cao so với quái", 5, 30, 1, Config.FarmHeight, function(v) Config.FarmHeight = v end)
+addSection(FarmPage, "AUTO FARM & QUEST")
+addToggle(FarmPage, "Auto Farm Level", false, function(v)
+    Config.AutoFarm = v
+    if v then
+        State.Status = "Đang khởi động..."
+    else
+        State.Status = "Đang tắt"
+        State.Fleeing = false
+        if not Config.AutoPumpkin then
+            stopMovers()
+        end
+    end
+end)
+addToggle(FarmPage, "Auto Quest (tự chọn theo level & sea)", Config.AutoQuest, bind("AutoQuest"))
+addToggle(FarmPage, "Bring Mob (gom quái)", Config.BringMob, bind("BringMob"))
+addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
+addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
+addToggle(FarmPage, "Auto Haki (Buso)", Config.AutoHaki, bind("AutoHaki"))
+addToggle(FarmPage, "Auto cộng điểm", Config.AutoStats, bind("AutoStats"))
+addCycle(FarmPage, "Chỉ số cộng điểm", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, bind("StatName"))
 
 addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
-addToggle(EventPage, "Auto Collect Pumpkin", Config.AutoPumpkin, function(v)
+addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
     Config.AutoPumpkin = v
-    if not v then stopMovers() end
+    if not v then
+        State.PumpkinStatus = "Đang tắt"
+        if not Config.AutoFarm then
+            stopMovers()
+        end
+    end
 end)
-addToggle(EventPage, "Đánh khi thu bí ngô", Config.PumpkinAttack, function(v) Config.PumpkinAttack = v end)
-addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, function(v) Config.PumpkinSpeed = v end)
+addToggle(EventPage, "Đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
+addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
+local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
+
+addSection(TunePage, "THÔNG SỐ")
+addStepper(TunePage, "Độ cao so với quái", 5, 30, 1, Config.FarmHeight, bind("FarmHeight"))
+addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
+addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
+addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
+addStepper(TunePage, "Tốc độ bay giữa đảo", 100, 400, 25, Config.TweenSpeed, bind("TweenSpeed"))
+addStepper(TunePage, "Độ trễ mỗi vòng (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
 
 addSection(PerformancePage, "TỐI ƯU HIỂN THỊ LOCAL")
-addToggle(PerformancePage, "Giảm hiệu ứng hạt / ánh sáng", Config.LowEffects, function(value)
-    Config.LowEffects = value
+addToggle(PerformancePage, "Giảm hiệu ứng hạt / bóng", Config.LowEffects, function(v)
+    Config.LowEffects = v
+    setLowEffects(v)
+    saveSoon()
 end)
+if Config.LowEffects then
+    setLowEffects(true)
+end
 
 addSection(SettingsPage, "ĐIỀU KHIỂN")
 addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
     Main.Visible = not Main.Visible
 end)
-addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", function()
-    Gui:Destroy()
-end, Color3.fromRGB(130, 48, 60))
+addButton(SettingsPage, "QUÉT LẠI REMOTE", function()
+    RegAttack, RegHit = nil, nil
+    scanRemotes()
+    installHook()
+end)
+addButton(SettingsPage, "LƯU CẤU HÌNH NGAY", function()
+    saveSoon()
+end)
+addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 48, 60))
 
 selectTab("Tổng quan")
 
--- Runtime updater
-local frameCount = 0
-local fpsStart = os.clock()
+------------------------------------------------------------------
+-- CẬP NHẬT THỜI GIAN THỰC
+------------------------------------------------------------------
+local frameCount, fpsStart = 0, os.clock()
 connect(RunService.RenderStepped, function()
     frameCount += 1
     local now = os.clock()
@@ -853,24 +1457,25 @@ end)
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
-            LevelInfo.Text = getLevelText()
-            HealthInfo.Text = string.format("%d / %d", math.floor(LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid").Health or 0), math.floor(LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid").MaxHealth or 100))
+            LevelInfo.Text = string.format("Level %d  |  Sea %d", getLevel(), getSea())
+            local humanoid = getHumanoid()
+            HealthInfo.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
             ToolInfo.Text = getEquippedToolName()
-            QuestInfo.Text = hasQuest() and "Đang thực hiện nhiệm vụ" : "Chưa nhận nhiệm vụ"
-            NetworkInfo.Text = tostring(State.FPS) .. " FPS"
-
-            Footer.Text = string.format(
-                "H-HUB v3.0  |  Level %s  |  Remote: %s  |  RightShift: ẩn/hiện",
-                getLevelText(), ((RegAttack and RegHit) and "OK" or "Đang quét...")
-            )
+            local quest = State.Quest or currentQuest()
+            QuestInfo.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
+            StatusInfo.Text = State.Status
+            RemoteInfo.Text = string.format("Attack: %s | Hit: %s | Key: %s",
+                RegAttack and "OK" or "--", RegHit and "OK" or "--", State.KeyLearned and "đã học" or "mặc định")
+            local ping = ""
+            pcall(function()
+                ping = string.format("%d ms  |  ", Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+            end)
+            NetworkInfo.Text = ping .. State.FPS .. " FPS"
+            PumpkinInfo.Text = State.PumpkinStatus
+            Footer.Text = string.format("H-HUB v4.0  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-Gui.Destroying:Connect(function()
-    State.Running = false
-    stopMovers()
-end)
-
-print("[H-HUB] Companion v3.0 đã khởi động thành công với đầy đủ tính năng Auto Farm & Event.")
+print("[H-HUB] Companion v4.0 đã khởi động. Cấu hình: " .. CONFIG_PATH)
