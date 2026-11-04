@@ -1,43 +1,185 @@
--- Blox Fruits | Auto Farm Level + Event Halloween (Pumpkin)
+-- H-HUB | Blox Fruits: Auto Farm Level + Event Halloween (menu tự tạo, không cần internet)
 local Players = game:GetService("Players")
 local RS = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
 local Rep = game:GetService("ReplicatedStorage")
 local VU = game:GetService("VirtualUser")
 local lp = Players.LocalPlayer
+local env = (getgenv and getgenv()) or _G
 
-local Net = Rep:WaitForChild("Modules"):WaitForChild("Net")
-local RegAttack = Net:WaitForChild("RE/RegisterAttack")
-local RegHit = Net:WaitForChild("RE/RegisterHit")
+if env.__HHubGui then pcall(function() env.__HHubGui:Destroy() end) end
 
 local Cfg = {
-    AutoFarm = false,
-    AutoQuest = true,
-    TalkFirst = false,
-    BringMob = true,
-    AutoEquip = true,
-    FarmHeight = 10,
-    HitRange = 60,
-    Delay = 0.1,
-    HitKey = "19357ac5",
-    AutoStat = false,
-    StatName = "Melee",
-    -- Event Halloween
-    AutoPumpkin = false,
-    PumpkinSpeed = 300,
-    PumpkinAttack = true,
+    AutoFarm = false, AutoQuest = true, TalkFirst = false, BringMob = true, AutoEquip = true,
+    FarmHeight = 10, HitRange = 60, Delay = 0.1, HitKey = "19357ac5",
+    AutoStat = false, StatName = "Melee",
+    AutoPumpkin = false, PumpkinSpeed = 300, PumpkinAttack = true,
 }
 
--- Tự bắt mã xác thực từ lệnh RegisterHit thật của game
-pcall(function()
-    local old
-    old = hookmetamethod(game, "__namecall", function(self, ...)
-        if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
-            local k = select(4, ...)
-            if type(k) == "string" then Cfg.HitKey = k end
-        end
-        return old(self, ...)
-    end)
+local RegAttack, RegHit
+
+------------------------------------------------------------
+-- MENU
+------------------------------------------------------------
+local C = {
+    bg = Color3.fromRGB(15, 15, 25), panel = Color3.fromRGB(24, 26, 38), panel2 = Color3.fromRGB(32, 36, 52),
+    text = Color3.fromRGB(235, 237, 245), dim = Color3.fromRGB(130, 136, 160), accent = Color3.fromRGB(0, 136, 255),
+    on = Color3.fromRGB(50, 220, 120), off = Color3.fromRGB(70, 74, 96),
+}
+
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
+end
+local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 6)}, o) end
+
+local gui = new("ScreenGui", {Name = "HHubGui" .. math.random(1000, 9999), ResetOnSpawn = false, DisplayOrder = 1000, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
+local par
+pcall(function() par = (gethui and gethui()) or game:GetService("CoreGui") end)
+if not par or not pcall(function() gui.Parent = par end) or not gui.Parent then
+    gui.Parent = lp:WaitForChild("PlayerGui")
+end
+env.__HHubGui = gui
+
+local main = new("Frame", {Size = UDim2.new(0, 400, 0, 320), Position = UDim2.new(0.5, -200, 0.5, -160), BackgroundColor3 = C.bg, BorderSizePixel = 0, ClipsDescendants = true}, gui)
+corner(main, 8)
+new("UIStroke", {Color = C.accent, Thickness = 1.5}, main)
+local cam = workspace.CurrentCamera
+new("UIScale", {Scale = cam and math.clamp(cam.ViewportSize.X / 650, 0.55, 1) or 1}, main)
+
+local titleBar = new("Frame", {Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.panel, BorderSizePixel = 0}, main)
+new("TextLabel", {Size = UDim2.new(1, -80, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1, Text = "H-HUB // BLOX FRUITS", TextColor3 = C.accent, Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left}, titleBar)
+
+local function smallBtn(text, x, cb, color)
+    local b = new("TextButton", {Text = text, Size = UDim2.new(0, 26, 0, 22), Position = UDim2.new(1, x, 0, 4), BackgroundColor3 = color or C.panel2, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0}, titleBar)
+    corner(b, 5)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+local tabCol = new("Frame", {Position = UDim2.new(0, 6, 0, 36), Size = UDim2.new(0, 80, 0, 262), BackgroundTransparency = 1}, main)
+local content = new("Frame", {Position = UDim2.new(0, 92, 0, 36), Size = UDim2.new(1, -98, 0, 262), BackgroundTransparency = 1}, main)
+local footer = new("TextLabel", {Position = UDim2.new(0, 8, 1, -20), Size = UDim2.new(1, -16, 0, 18), BackgroundTransparency = 1, Text = "Đang khởi động...", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, main)
+
+-- Nút nổi để ẩn/hiện menu
+local floatBtn = new("TextButton", {Text = "H", Size = UDim2.new(0, 36, 0, 36), Position = UDim2.new(0, 10, 0.5, -18), BackgroundColor3 = C.accent, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 16, BorderSizePixel = 0}, gui)
+corner(floatBtn, 18)
+floatBtn.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
+
+local FULL = UDim2.new(0, 400, 0, 320)
+local minimized = false
+smallBtn("X", -30, function() gui:Destroy() end, Color3.fromRGB(160, 60, 60))
+smallBtn("-", -60, function()
+    minimized = not minimized
+    tabCol.Visible, content.Visible, footer.Visible = not minimized, not minimized, not minimized
+    main.Size = minimized and UDim2.new(0, 400, 0, 30) or FULL
 end)
+
+-- Kéo menu (chuột + cảm ứng)
+local dragging, dragStart, startPos
+titleBar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragging, dragStart, startPos = true, i.Position, main.Position
+        i.Changed:Connect(function()
+            if i.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+UIS.InputChanged:Connect(function(i)
+    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+
+-- Tabs
+local pages, tabBtns, tabCount = {}, {}, 0
+local function selectTab(name)
+    for n, p in pairs(pages) do p.Visible = (n == name) end
+    for n, b in pairs(tabBtns) do
+        b.BackgroundColor3 = (n == name) and C.accent or C.panel2
+        b.TextColor3 = (n == name) and Color3.new(1, 1, 1) or C.dim
+    end
+end
+local function addTab(name)
+    local b = new("TextButton", {Text = name, Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, tabCount * 32), BackgroundColor3 = C.panel2, TextColor3 = C.dim, Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0}, tabCol)
+    corner(b, 6)
+    local page = new("ScrollingFrame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Visible = false}, content)
+    new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, page)
+    pages[name], tabBtns[name] = page, b
+    tabCount = tabCount + 1
+    b.MouseButton1Click:Connect(function() selectTab(name) end)
+    return page
+end
+
+local function row(page, h)
+    local r = new("Frame", {Size = UDim2.new(1, -8, 0, h or 34), BackgroundColor3 = C.panel2, BorderSizePixel = 0}, page)
+    corner(r, 6)
+    return r
+end
+
+local function rowLabel(r, text, rightPad)
+    return new("TextLabel", {Size = UDim2.new(1, -(rightPad or 60), 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1, Text = text, TextColor3 = C.text, Font = Enum.Font.GothamMedium, TextSize = 12, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left}, r)
+end
+
+local function addToggle(page, text, default, cb)
+    local r = row(page)
+    rowLabel(r, text, 60)
+    local btn = new("TextButton", {Size = UDim2.new(0, 40, 0, 20), Position = UDim2.new(1, -50, 0.5, -10), Text = "", BorderSizePixel = 0}, r)
+    corner(btn, 10)
+    local knob = new("Frame", {Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0}, btn)
+    corner(knob, 8)
+    local state = default
+    local function paint()
+        btn.BackgroundColor3 = state and C.on or C.off
+        knob.Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+    end
+    btn.MouseButton1Click:Connect(function() state = not state paint() cb(state) end)
+    paint()
+end
+
+local function addStepper(page, text, min, max, step, default, cb)
+    local r = row(page)
+    rowLabel(r, text, 130)
+    local val = default
+    local vl = new("TextLabel", {Size = UDim2.new(0, 48, 0, 24), Position = UDim2.new(1, -84, 0.5, -12), BackgroundTransparency = 1, Text = tostring(val), TextColor3 = C.accent, Font = Enum.Font.GothamBold, TextSize = 13}, r)
+    local function mk(txt, x, d)
+        local b = new("TextButton", {Text = txt, Size = UDim2.new(0, 24, 0, 24), Position = UDim2.new(1, x, 0.5, -12), BackgroundColor3 = C.off, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 14, BorderSizePixel = 0}, r)
+        corner(b, 5)
+        b.MouseButton1Click:Connect(function()
+            val = math.clamp(val + d * step, min, max)
+            vl.Text = tostring(val)
+            cb(val)
+        end)
+    end
+    mk("-", -112, -1)
+    mk("+", -34, 1)
+end
+
+local function addCycle(page, text, options, default, cb)
+    local r = row(page)
+    rowLabel(r, text, 120)
+    local idx = table.find(options, default) or 1
+    local b = new("TextButton", {Text = options[idx], Size = UDim2.new(0, 100, 0, 24), Position = UDim2.new(1, -108, 0.5, -12), BackgroundColor3 = C.off, TextColor3 = C.text, Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0}, r)
+    corner(b, 5)
+    b.MouseButton1Click:Connect(function()
+        idx = idx % #options + 1
+        b.Text = options[idx]
+        cb(options[idx])
+    end)
+end
+
+------------------------------------------------------------
+-- LOGIC GAME
+------------------------------------------------------------
+local function char() return lp.Character or lp.CharacterAdded:Wait() end
+local function hrp() return char():WaitForChild("HumanoidRootPart") end
+local function level()
+    local d = lp:FindFirstChild("Data")
+    return d and d:FindFirstChild("Level") and d.Level.Value or 1
+end
 
 -- {level tối thiểu, tên quái, tên quest, số quest, tên NPC (tùy chọn)}
 -- Dòng JungleQuest/1 đã xác nhận bằng log. Các dòng còn lại là phỏng đoán.
@@ -58,13 +200,6 @@ local Quests = {
     {210, "Dangerous Prisoner", "PrisonerQuest", 2},
 }
 
-local function char() return lp.Character or lp.CharacterAdded:Wait() end
-local function hrp() return char():WaitForChild("HumanoidRootPart") end
-local function level()
-    local d = lp:FindFirstChild("Data")
-    return d and d:FindFirstChild("Level") and d.Level.Value or 1
-end
-
 local function currentQuest()
     local pick = Quests[1]
     for _, q in ipairs(Quests) do
@@ -74,8 +209,8 @@ local function currentQuest()
 end
 
 local function hasQuest()
-    local gui = lp.PlayerGui:FindFirstChild("Main")
-    local q = gui and gui:FindFirstChild("Quest")
+    local g = lp.PlayerGui:FindFirstChild("Main")
+    local q = g and g:FindFirstChild("Quest")
     return q and q.Visible
 end
 
@@ -93,9 +228,7 @@ local function startQuest(q)
             task.wait(0.3)
         end
     end
-    pcall(function()
-        Rep.Remotes.CommF_:InvokeServer("StartQuest", q[3], q[4])
-    end)
+    pcall(function() Rep.Remotes.CommF_:InvokeServer("StartQuest", q[3], q[4]) end)
 end
 
 local function equip()
@@ -112,9 +245,7 @@ local function aliveMobs(name)
     for _, m in ipairs(folder:GetChildren()) do
         local h = m:FindFirstChildOfClass("Humanoid")
         local r = m:FindFirstChild("HumanoidRootPart")
-        if h and r and h.Health > 0 and m.Name:find(name) then
-            out[#out + 1] = m
-        end
+        if h and r and h.Health > 0 and m.Name:find(name) then out[#out + 1] = m end
     end
     return out
 end
@@ -129,6 +260,7 @@ local function nearest(list)
 end
 
 local function hitMobs(list)
+    if not RegAttack or not RegHit then return end
     RegAttack:FireServer(0.5, 1)
     local myPos = hrp().Position
     for _, m in ipairs(list) do
@@ -139,7 +271,29 @@ local function hitMobs(list)
     end
 end
 
--- Vòng lặp farm level (tạm dừng khi đang chạy Auto Pumpkin)
+-- Tìm remote đánh (không làm đứng menu)
+task.spawn(function()
+    pcall(function()
+        local Net = Rep:WaitForChild("Modules", 15):WaitForChild("Net", 15)
+        RegAttack = Net:WaitForChild("RE/RegisterAttack", 15)
+        RegHit = Net:WaitForChild("RE/RegisterHit", 15)
+    end)
+    -- Tự bắt mã xác thực từ RegisterHit thật của game
+    if RegHit then
+        pcall(function()
+            local old
+            old = hookmetamethod(game, "__namecall", function(self, ...)
+                if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
+                    local k = select(4, ...)
+                    if type(k) == "string" then Cfg.HitKey = k end
+                end
+                return old(self, ...)
+            end)
+        end)
+    end
+end)
+
+-- Farm level (tạm dừng khi đang chạy Auto Pumpkin)
 task.spawn(function()
     while task.wait(Cfg.Delay) do
         if Cfg.AutoFarm and not Cfg.AutoPumpkin then
@@ -171,9 +325,7 @@ task.spawn(function()
     end
 end)
 
-------------------------------------------------------------
 -- Event Halloween: Auto Collect Pumpkin
-------------------------------------------------------------
 local function objPos(obj)
     if obj:IsA("Model") then
         if obj.PrimaryPart then return obj.PrimaryPart.Position end
@@ -187,19 +339,11 @@ end
 local function ensureMovers(root)
     local bv = root:FindFirstChild("HHubVelocity")
     if not bv then
-        bv = Instance.new("BodyVelocity")
-        bv.Name = "HHubVelocity"
-        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-        bv.Velocity = Vector3.zero
-        bv.Parent = root
+        bv = new("BodyVelocity", {Name = "HHubVelocity", MaxForce = Vector3.new(math.huge, math.huge, math.huge), Velocity = Vector3.zero}, root)
     end
     local bg = root:FindFirstChild("HHubGyro")
     if not bg then
-        bg = Instance.new("BodyGyro")
-        bg.Name = "HHubGyro"
-        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-        bg.CFrame = root.CFrame
-        bg.Parent = root
+        bg = new("BodyGyro", {Name = "HHubGyro", MaxTorque = Vector3.new(math.huge, math.huge, math.huge), CFrame = root.CFrame}, root)
     end
     return bv, bg
 end
@@ -214,7 +358,6 @@ local function stopMovers()
     end
 end
 
--- Bay tới bí ngô gần nhất
 task.spawn(function()
     while task.wait() do
         if Cfg.AutoPumpkin then
@@ -232,10 +375,7 @@ task.spawn(function()
                         if d < best then best, target = d, o end
                     end
                 end
-                if not target then
-                    bv.Velocity = Vector3.zero
-                    return
-                end
+                if not target then bv.Velocity = Vector3.zero return end
 
                 local tpos = objPos(target) + Vector3.new(0, 2, 0)
                 local diff = tpos - root.Position
@@ -251,10 +391,9 @@ task.spawn(function()
     end
 end)
 
--- Đánh liên tục khi đang thu bí ngô
 task.spawn(function()
     while task.wait(0.2) do
-        if Cfg.AutoPumpkin and Cfg.PumpkinAttack then
+        if Cfg.AutoPumpkin and Cfg.PumpkinAttack and RegAttack then
             pcall(function() RegAttack:FireServer(0.5, 1) end)
         end
     end
@@ -277,38 +416,43 @@ end)
 task.spawn(function()
     while task.wait(3) do
         if Cfg.AutoStat then
-            pcall(function()
-                Rep.Remotes.CommF_:InvokeServer("AddPoint", Cfg.StatName, 3)
-            end)
+            pcall(function() Rep.Remotes.CommF_:InvokeServer("AddPoint", Cfg.StatName, 3) end)
         end
     end
 end)
 
--- GUI
-local ok, Rayfield = pcall(function()
-    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+------------------------------------------------------------
+-- NỘI DUNG MENU
+------------------------------------------------------------
+local pFarm = addTab("Farm")
+addToggle(pFarm, "Auto Farm Level", false, function(v) Cfg.AutoFarm = v end)
+addToggle(pFarm, "Auto Quest", true, function(v) Cfg.AutoQuest = v end)
+addToggle(pFarm, "Nói chuyện NPC trước khi nhận quest", false, function(v) Cfg.TalkFirst = v end)
+addToggle(pFarm, "Bring Mob (gom quái)", true, function(v) Cfg.BringMob = v end)
+addToggle(pFarm, "Auto Equip vũ khí", true, function(v) Cfg.AutoEquip = v end)
+addStepper(pFarm, "Độ cao so với quái", 5, 30, 1, 10, function(v) Cfg.FarmHeight = v end)
+addStepper(pFarm, "Tầm đánh", 20, 150, 5, 60, function(v) Cfg.HitRange = v end)
+
+local pEvent = addTab("Event")
+addToggle(pEvent, "Auto Collect Pumpkin", false, function(v)
+    Cfg.AutoPumpkin = v
+    if not v then stopMovers() end
 end)
-if ok then
-    local Win = Rayfield:CreateWindow({Name = "H-HUB | Blox Fruits", ConfigurationSaving = {Enabled = false}})
+addToggle(pEvent, "Đánh khi thu bí ngô", true, function(v) Cfg.PumpkinAttack = v end)
+addStepper(pEvent, "Tốc độ bay", 100, 400, 10, 300, function(v) Cfg.PumpkinSpeed = v end)
 
-    local T = Win:CreateTab("Farm")
-    T:CreateToggle({Name = "Auto Farm Level", CurrentValue = false, Callback = function(v) Cfg.AutoFarm = v end})
-    T:CreateToggle({Name = "Auto Quest", CurrentValue = true, Callback = function(v) Cfg.AutoQuest = v end})
-    T:CreateToggle({Name = "Nói chuyện NPC trước khi nhận quest", CurrentValue = false, Callback = function(v) Cfg.TalkFirst = v end})
-    T:CreateToggle({Name = "Bring Mob", CurrentValue = true, Callback = function(v) Cfg.BringMob = v end})
-    T:CreateToggle({Name = "Auto Equip", CurrentValue = true, Callback = function(v) Cfg.AutoEquip = v end})
-    T:CreateSlider({Name = "Độ cao", Range = {5, 30}, Increment = 1, CurrentValue = 10, Callback = function(v) Cfg.FarmHeight = v end})
-    T:CreateSlider({Name = "Tầm đánh", Range = {20, 150}, Increment = 5, CurrentValue = 60, Callback = function(v) Cfg.HitRange = v end})
+local pMisc = addTab("Misc")
+addToggle(pMisc, "Auto cộng điểm", false, function(v) Cfg.AutoStat = v end)
+addCycle(pMisc, "Chỉ số", {"Melee", "Defense", "Sword", "Gun", "Demon Fruit"}, "Melee", function(v) Cfg.StatName = v end)
 
-    local E = Win:CreateTab("Event")
-    E:CreateToggle({Name = "Auto Collect Pumpkin", CurrentValue = false, Callback = function(v)
-        Cfg.AutoPumpkin = v
-        if not v then stopMovers() end
-    end})
-    E:CreateToggle({Name = "Đánh khi thu bí ngô", CurrentValue = true, Callback = function(v) Cfg.PumpkinAttack = v end})
-    E:CreateSlider({Name = "Tốc độ bay", Range = {100, 400}, Increment = 10, CurrentValue = 300, Callback = function(v) Cfg.PumpkinSpeed = v end})
+selectTab("Farm")
 
-    local M = Win:CreateTab("Misc")
-    M:CreateToggle({Name = "Auto cộng điểm", CurrentValue = false, Callback = function(v) Cfg.AutoStat = v end})
-    M:CreateDropdown({Name = "Chỉ số", Options = {"Melee","Defense","Sword","Gun","Demon Fruit"}, CurrentOption = {"Melee"}, Callback = function(o) Cfg.StatName = o[1] end})
-end
+-- Dòng trạng thái
+task.spawn(function()
+    while gui.Parent do
+        pcall(function()
+            footer.Text = "Lv " .. level() .. "  |  remote: " .. ((RegAttack and RegHit) and "OK" or "chưa tìm thấy") .. "  |  key: " .. Cfg.HitKey
+        end)
+        task.wait(1)
+    end
+end)
