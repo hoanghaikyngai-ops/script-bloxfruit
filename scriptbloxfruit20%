@@ -1,314 +1,314 @@
-if not game:IsLoaded() then game.Loaded:Wait() end
-
+-- Blox Fruits | Auto Farm Level + Event Halloween (Pumpkin)
 local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RS = game:GetService("RunService")
+local Rep = game:GetService("ReplicatedStorage")
+local VU = game:GetService("VirtualUser")
+local lp = Players.LocalPlayer
 
-local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local Net = Rep:WaitForChild("Modules"):WaitForChild("Net")
+local RegAttack = Net:WaitForChild("RE/RegisterAttack")
+local RegHit = Net:WaitForChild("RE/RegisterHit")
 
-local old = CoreGui:FindFirstChild("BloxFruitsHalloweenGUI")
-if old then old:Destroy() end
+local Cfg = {
+    AutoFarm = false,
+    AutoQuest = true,
+    TalkFirst = false,
+    BringMob = true,
+    AutoEquip = true,
+    FarmHeight = 10,
+    HitRange = 60,
+    Delay = 0.1,
+    HitKey = "19357ac5",
+    AutoStat = false,
+    StatName = "Melee",
+    -- Event Halloween
+    AutoPumpkin = false,
+    PumpkinSpeed = 300,
+    PumpkinAttack = true,
+}
 
--- ================= GUI (Blue Neon Cyberpunk Theme) =================
-local gui = Instance.new("ScreenGui")
-gui.Name = "BloxFruitsHalloweenGUI"
-gui.ResetOnSpawn = false
-gui.Parent = CoreGui
-
-local main = Instance.new("Frame")
-main.Name = "MainFrame"
-main.Size = UDim2.new(0, 230, 0, 155)
-main.Position = UDim2.new(0.5, -115, 0.5, -77)
-main.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
-main.BorderSizePixel = 0
-main.Active = true
-main.Parent = gui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 8)
-mainCorner.Parent = main
-
--- Viền xanh nước biển
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(0, 136, 255)
-mainStroke.Thickness = 1.5
-mainStroke.Parent = main
-
-local titleBar = Instance.new("Frame")
-titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 36)
-titleBar.BackgroundTransparency = 1
-titleBar.Parent = main
-
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Name = "TitleLabel"
-titleLabel.Size = UDim2.new(1, -35, 1, 0)
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "H-HUB // HALLOWEEN"
-titleLabel.TextColor3 = Color3.fromRGB(0, 136, 255)
-titleLabel.TextSize = 11
-titleLabel.Font = Enum.Font.LuckiestGuy
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleBar
-
-local minBtn = Instance.new("TextButton")
-minBtn.Name = "MinimizeBtn"
-minBtn.Size = UDim2.new(0, 26, 0, 26)
-minBtn.Position = UDim2.new(1, -30, 0.5, -13)
-minBtn.BackgroundTransparency = 1
-minBtn.Text = "-"
-minBtn.TextColor3 = Color3.fromRGB(0, 136, 255)
-minBtn.TextSize = 18
-minBtn.Font = Enum.Font.LuckiestGuy
-minBtn.Parent = titleBar
-
-local container = Instance.new("Frame")
-container.Name = "Container"
-container.Size = UDim2.new(1, 0, 0, 55)
-container.Position = UDim2.new(0, 0, 0, 42)
-container.BackgroundTransparency = 1
-container.Parent = main
-
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(0, 135, 0, 40)
-label.Position = UDim2.new(0, 12, 0.5, -20)
-label.BackgroundTransparency = 1
-label.Text = "AUTO COLLECT PUMPKIN"
-label.TextColor3 = Color3.fromRGB(240, 240, 240)
-label.TextScaled = true
-label.Font = Enum.Font.LuckiestGuy
-label.TextXAlignment = Enum.TextXAlignment.Left
-label.TextWrapped = true
-label.Parent = container
-
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(0, 32, 0, 32)
-toggleBtn.Position = UDim2.new(1, -42, 0.5, -16)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 80)
-toggleBtn.Text = ""
-toggleBtn.AutoButtonColor = false
-toggleBtn.Parent = container
-
-local toggleCorner = Instance.new("UICorner")
-toggleCorner.CornerRadius = UDim.new(0, 6)
-toggleCorner.Parent = toggleBtn
-
-local toggleStroke = Instance.new("UIStroke")
-toggleStroke.Color = Color3.fromRGB(255, 100, 120)
-toggleStroke.Thickness = 1
-toggleStroke.Parent = toggleBtn
-
-local footer = Instance.new("TextLabel")
-footer.Name = "FooterLabel"
-footer.Size = UDim2.new(1, -20, 0, 22)
-footer.Position = UDim2.new(0, 10, 1, -25)
-footer.BackgroundTransparency = 1
-footer.Text = "BY HOANGHAI // H-HUB VIP"
-footer.TextColor3 = Color3.fromRGB(120, 120, 150)
-footer.TextScaled = true
-footer.Font = Enum.Font.LuckiestGuy
-footer.Parent = main
-
--- ================= Kéo GUI bằng thanh tiêu đề =================
-local dragging, dragInput, dragStart, startPos
-
-titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = main.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-titleBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        main.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
--- ================= Thu nhỏ / mở rộng =================
-local minimized = false
-minBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    if minimized then
-        container.Visible = false
-        footer.Visible = false
-        main.Size = UDim2.new(0, 230, 0, 36)
-        minBtn.Text = "+"
-    else
-        main.Size = UDim2.new(0, 230, 0, 155)
-        minBtn.Text = "-"
-        container.Visible = true
-        footer.Visible = true
-    end
-end)
-
--- ================= Auto Collect Pumpkin & Safe Remote Attack =================
-local enabled = false
-local SPEED = 300
-local noclipConn
-
-local function pivotPos(obj)
-    return obj:GetPivot().Position
-end
-
--- Gọi Remote an toàn có khoảng nghỉ chống tràn hàng đợi (Queue)
-local function clickLoop()
-    while enabled do
-        pcall(function()
-            local remote = ReplicatedStorage:FindFirstChild("Modules") 
-                and ReplicatedStorage.Modules:FindFirstChild("Net") 
-                and ReplicatedStorage.Modules.Net.RE:FindFirstChild("RegisterAttack")
-            
-            if remote then
-                remote:FireServer()
-            end
-        end)
-        task.wait(0.2) -- Giữ khoảng nghỉ 0.2 giây mỗi lần gọi để server không bị nghẽn
-    end
-end
-
-local function farmLoop(root, bodyVel, bodyGyro)
-    local folder = Workspace:WaitForChild("PumpkinHunt", 5)
-    while enabled and folder do
-        local target, minDist = nil, math.huge
-
-        for _, obj in ipairs(folder:GetChildren()) do
-            local pos
-            if obj:IsA("Model") then
-                if obj.PrimaryPart then
-                    pos = obj.PrimaryPart.Position
-                else
-                    local ok, p = pcall(pivotPos, obj)
-                    if ok then pos = p end
-                end
-            elseif obj:IsA("BasePart") then
-                pos = obj.Position
-            end
-            if pos then
-                local d = (root.Position - pos).Magnitude
-                if d < minDist then
-                    minDist = d
-                    target = obj
-                end
-            end
+-- Tự bắt mã xác thực từ lệnh RegisterHit thật của game
+pcall(function()
+    local old
+    old = hookmetamethod(game, "__namecall", function(self, ...)
+        if self == RegHit and getnamecallmethod() == "FireServer" and not checkcaller() then
+            local k = select(4, ...)
+            if type(k) == "string" then Cfg.HitKey = k end
         end
+        return old(self, ...)
+    end)
+end)
 
-        if not target then
-            task.wait(0.5)
-        else
-            while enabled and target and target.Parent do
-                local tpos
-                if target:IsA("Model") then
-                    if target.PrimaryPart then
-                        tpos = target.PrimaryPart.Position + Vector3.new(0, 2, 0)
-                    else
-                        local ok, p = pcall(function()
-                            return target:GetPivot().Position + Vector3.new(0, 2, 0)
-                        end)
-                        if not ok then break end
-                        tpos = p
-                    end
-                elseif target:IsA("BasePart") then
-                    tpos = target.Position + Vector3.new(0, 2, 0)
-                else
-                    break
-                end
+-- {level tối thiểu, tên quái, tên quest, số quest, tên NPC (tùy chọn)}
+-- Dòng JungleQuest/1 đã xác nhận bằng log. Các dòng còn lại là phỏng đoán.
+local Quests = {
+    {1,   "Bandit",             "BanditQuest1",  1},
+    {15,  "Monkey",             "JungleQuest",   1},
+    {20,  "Gorilla",            "JungleQuest",   2},
+    {30,  "Pirate",             "BuggyQuest1",   1},
+    {40,  "Brute",              "BuggyQuest1",   2},
+    {60,  "Desert Bandit",      "DesertQuest",   1},
+    {75,  "Desert Officer",     "DesertQuest",   2},
+    {90,  "Snow Bandit",        "SnowQuest",     1},
+    {100, "Snowman",            "SnowQuest",     2},
+    {120, "Chief Petty Officer","MarineQuest2",  1},
+    {150, "Sky Bandit",         "SkyQuest",      1},
+    {175, "Dark Master",        "SkyQuest",      2},
+    {190, "Prisoner",           "PrisonerQuest", 1},
+    {210, "Dangerous Prisoner", "PrisonerQuest", 2},
+}
 
-                local diff = tpos - root.Position
-                local dist = diff.Magnitude
-
-                if dist > 4 then
-                    local currentSpeed = math.min(SPEED, dist * 25)
-                    bodyVel.Velocity = diff.Unit * currentSpeed
-                    bodyGyro.CFrame = CFrame.new(root.Position, tpos)
-                else
-                    bodyVel.Velocity = diff.Unit * 15
-                end
-                task.wait()
-            end
-        end
-        task.wait()
-    end
-    if bodyVel then bodyVel.Velocity = Vector3.new(0, 0, 0) end
+local function char() return lp.Character or lp.CharacterAdded:Wait() end
+local function hrp() return char():WaitForChild("HumanoidRootPart") end
+local function level()
+    local d = lp:FindFirstChild("Data")
+    return d and d:FindFirstChild("Level") and d.Level.Value or 1
 end
 
-toggleBtn.MouseButton1Click:Connect(function()
-    enabled = not enabled
-    if enabled then
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 255, 120)
-        toggleStroke.Color = Color3.fromRGB(100, 255, 170)
-        
-        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local bVel = root:FindFirstChild("HalloweenVelocity") or Instance.new("BodyVelocity")
-            bVel.Name = "HalloweenVelocity"
-            bVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-            bVel.Velocity = Vector3.new(0, 0, 0)
-            bVel.Parent = root
+local function currentQuest()
+    local pick = Quests[1]
+    for _, q in ipairs(Quests) do
+        if level() >= q[1] then pick = q end
+    end
+    return pick
+end
 
-            local bGyro = root:FindFirstChild("HalloweenGyro") or Instance.new("BodyGyro")
-            bGyro.Name = "HalloweenGyro"
-            bGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-            bGyro.CFrame = root.CFrame
-            bGyro.Parent = root
-            
-            if not noclipConn then
-                noclipConn = RunService.Stepped:Connect(function()
-                    local c = LocalPlayer.Character
-                    if c then
-                        for _, v in ipairs(c:GetChildren()) do
-                            if v:IsA("BasePart") then
-                                v.CanCollide = false
-                            end
-                        end
-                    end
-                end)
+local function hasQuest()
+    local gui = lp.PlayerGui:FindFirstChild("Main")
+    local q = gui and gui:FindFirstChild("Quest")
+    return q and q.Visible
+end
+
+local function startQuest(q)
+    if Cfg.TalkFirst then
+        local npcs = workspace:FindFirstChild("NPCs")
+        local npc = npcs and q[5] and npcs:FindFirstChild(q[5])
+        if npc then
+            local root = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
+            if root then
+                hrp().CFrame = root.CFrame * CFrame.new(0, 0, 4)
+                task.wait(0.3)
             end
-            
-            task.spawn(clickLoop)
-            task.spawn(function()
-                farmLoop(root, bVel, bGyro)
+            pcall(function() Rep.Remotes.OnTalkToNPC:FireServer(npc) end)
+            task.wait(0.3)
+        end
+    end
+    pcall(function()
+        Rep.Remotes.CommF_:InvokeServer("StartQuest", q[3], q[4])
+    end)
+end
+
+local function equip()
+    local hum = char():FindFirstChildOfClass("Humanoid")
+    if not hum or char():FindFirstChildOfClass("Tool") then return end
+    local t = lp.Backpack:FindFirstChildOfClass("Tool")
+    if t then hum:EquipTool(t) end
+end
+
+local function aliveMobs(name)
+    local out = {}
+    local folder = workspace:FindFirstChild("Enemies")
+    if not folder then return out end
+    for _, m in ipairs(folder:GetChildren()) do
+        local h = m:FindFirstChildOfClass("Humanoid")
+        local r = m:FindFirstChild("HumanoidRootPart")
+        if h and r and h.Health > 0 and m.Name:find(name) then
+            out[#out + 1] = m
+        end
+    end
+    return out
+end
+
+local function nearest(list)
+    local best, dist = nil, math.huge
+    for _, m in ipairs(list) do
+        local d = (m.HumanoidRootPart.Position - hrp().Position).Magnitude
+        if d < dist then best, dist = m, d end
+    end
+    return best
+end
+
+local function hitMobs(list)
+    RegAttack:FireServer(0.5, 1)
+    local myPos = hrp().Position
+    for _, m in ipairs(list) do
+        local part = m:FindFirstChild("UpperTorso") or m:FindFirstChild("HumanoidRootPart")
+        if part and (part.Position - myPos).Magnitude <= Cfg.HitRange then
+            RegHit:FireServer(part, {}, nil, Cfg.HitKey)
+        end
+    end
+end
+
+-- Vòng lặp farm level (tạm dừng khi đang chạy Auto Pumpkin)
+task.spawn(function()
+    while task.wait(Cfg.Delay) do
+        if Cfg.AutoFarm and not Cfg.AutoPumpkin then
+            pcall(function()
+                local q = currentQuest()
+                if Cfg.AutoQuest and not hasQuest() then
+                    startQuest(q)
+                    task.wait(0.5)
+                end
+                if Cfg.AutoEquip then equip() end
+
+                local list = aliveMobs(q[2])
+                local mob = nearest(list)
+                if not mob then return end
+
+                if Cfg.BringMob then
+                    local center = mob.HumanoidRootPart.CFrame
+                    for _, m in ipairs(list) do
+                        m.HumanoidRootPart.CFrame = center
+                        m.HumanoidRootPart.CanCollide = false
+                    end
+                end
+
+                hrp().CFrame = mob.HumanoidRootPart.CFrame * CFrame.new(0, Cfg.FarmHeight, 0)
+                hrp().AssemblyLinearVelocity = Vector3.zero
+                hitMobs(list)
             end)
         end
-    else
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 80)
-        toggleStroke.Color = Color3.fromRGB(255, 100, 120)
-        
-        if noclipConn then 
-            noclipConn:Disconnect() 
-            noclipConn = nil 
-        end
-        
-        local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local bVel = root:FindFirstChild("HalloweenVelocity")
-            if bVel then bVel:Destroy() end
-            local bGyro = root:FindFirstChild("HalloweenGyro")
-            if bGyro then bGyro:Destroy() end
+    end
+end)
+
+------------------------------------------------------------
+-- Event Halloween: Auto Collect Pumpkin
+------------------------------------------------------------
+local function objPos(obj)
+    if obj:IsA("Model") then
+        if obj.PrimaryPart then return obj.PrimaryPart.Position end
+        local ok, p = pcall(function() return obj:GetPivot().Position end)
+        return ok and p or nil
+    elseif obj:IsA("BasePart") then
+        return obj.Position
+    end
+end
+
+local function ensureMovers(root)
+    local bv = root:FindFirstChild("HHubVelocity")
+    if not bv then
+        bv = Instance.new("BodyVelocity")
+        bv.Name = "HHubVelocity"
+        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bv.Velocity = Vector3.zero
+        bv.Parent = root
+    end
+    local bg = root:FindFirstChild("HHubGyro")
+    if not bg then
+        bg = Instance.new("BodyGyro")
+        bg.Name = "HHubGyro"
+        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        bg.CFrame = root.CFrame
+        bg.Parent = root
+    end
+    return bv, bg
+end
+
+local function stopMovers()
+    local c = lp.Character
+    local root = c and c:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    for _, n in ipairs({"HHubVelocity", "HHubGyro"}) do
+        local o = root:FindFirstChild(n)
+        if o then o:Destroy() end
+    end
+end
+
+-- Bay tới bí ngô gần nhất
+task.spawn(function()
+    while task.wait() do
+        if Cfg.AutoPumpkin then
+            pcall(function()
+                local folder = workspace:FindFirstChild("PumpkinHunt")
+                local root = char():FindFirstChild("HumanoidRootPart")
+                if not folder or not root then return end
+                local bv, bg = ensureMovers(root)
+
+                local target, best = nil, math.huge
+                for _, o in ipairs(folder:GetChildren()) do
+                    local p = objPos(o)
+                    if p then
+                        local d = (root.Position - p).Magnitude
+                        if d < best then best, target = d, o end
+                    end
+                end
+                if not target then
+                    bv.Velocity = Vector3.zero
+                    return
+                end
+
+                local tpos = objPos(target) + Vector3.new(0, 2, 0)
+                local diff = tpos - root.Position
+                local dist = diff.Magnitude
+                if dist > 4 then
+                    bv.Velocity = diff.Unit * math.min(Cfg.PumpkinSpeed, dist * 25)
+                    bg.CFrame = CFrame.new(root.Position, tpos)
+                else
+                    bv.Velocity = diff.Unit * 15
+                end
+            end)
         end
     end
 end)
+
+-- Đánh liên tục khi đang thu bí ngô
+task.spawn(function()
+    while task.wait(0.2) do
+        if Cfg.AutoPumpkin and Cfg.PumpkinAttack then
+            pcall(function() RegAttack:FireServer(0.5, 1) end)
+        end
+    end
+end)
+
+-- Noclip dùng chung
+RS.Stepped:Connect(function()
+    if (Cfg.AutoFarm or Cfg.AutoPumpkin) and lp.Character then
+        for _, p in ipairs(lp.Character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end
+end)
+
+lp.Idled:Connect(function()
+    VU:CaptureController()
+    VU:ClickButton2(Vector2.new())
+end)
+
+task.spawn(function()
+    while task.wait(3) do
+        if Cfg.AutoStat then
+            pcall(function()
+                Rep.Remotes.CommF_:InvokeServer("AddPoint", Cfg.StatName, 3)
+            end)
+        end
+    end
+end)
+
+-- GUI
+local ok, Rayfield = pcall(function()
+    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+end)
+if ok then
+    local Win = Rayfield:CreateWindow({Name = "H-HUB | Blox Fruits", ConfigurationSaving = {Enabled = false}})
+
+    local T = Win:CreateTab("Farm")
+    T:CreateToggle({Name = "Auto Farm Level", CurrentValue = false, Callback = function(v) Cfg.AutoFarm = v end})
+    T:CreateToggle({Name = "Auto Quest", CurrentValue = true, Callback = function(v) Cfg.AutoQuest = v end})
+    T:CreateToggle({Name = "Nói chuyện NPC trước khi nhận quest", CurrentValue = false, Callback = function(v) Cfg.TalkFirst = v end})
+    T:CreateToggle({Name = "Bring Mob", CurrentValue = true, Callback = function(v) Cfg.BringMob = v end})
+    T:CreateToggle({Name = "Auto Equip", CurrentValue = true, Callback = function(v) Cfg.AutoEquip = v end})
+    T:CreateSlider({Name = "Độ cao", Range = {5, 30}, Increment = 1, CurrentValue = 10, Callback = function(v) Cfg.FarmHeight = v end})
+    T:CreateSlider({Name = "Tầm đánh", Range = {20, 150}, Increment = 5, CurrentValue = 60, Callback = function(v) Cfg.HitRange = v end})
+
+    local E = Win:CreateTab("Event")
+    E:CreateToggle({Name = "Auto Collect Pumpkin", CurrentValue = false, Callback = function(v)
+        Cfg.AutoPumpkin = v
+        if not v then stopMovers() end
+    end})
+    E:CreateToggle({Name = "Đánh khi thu bí ngô", CurrentValue = true, Callback = function(v) Cfg.PumpkinAttack = v end})
+    E:CreateSlider({Name = "Tốc độ bay", Range = {100, 400}, Increment = 10, CurrentValue = 300, Callback = function(v) Cfg.PumpkinSpeed = v end})
+
+    local M = Win:CreateTab("Misc")
+    M:CreateToggle({Name = "Auto cộng điểm", CurrentValue = false, Callback = function(v) Cfg.AutoStat = v end})
+    M:CreateDropdown({Name = "Chỉ số", Options = {"Melee","Defense","Sword","Gun","Demon Fruit"}, CurrentOption = {"Melee"}, Callback = function(o) Cfg.StatName = o[1] end})
+end
