@@ -18,6 +18,7 @@ local Stats = game:GetService("Stats")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
@@ -71,8 +72,8 @@ local Config = {
     StatName = "Melee",
 
     -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 9,
-    FarmHeightLate = 10,
+    FarmHeight = 7,
+    FarmHeightLate = 11,
     HeightSwitchDelay = 30,
 
     HitRange = 100,
@@ -80,10 +81,11 @@ local Config = {
     SafeHP = 25,
     TweenSpeed = 300,       -- tốc độ bay của Auto Farm
     Delay = 0.05,           -- nhịp gọi remote event
-    ClickDelay = 0.03,      -- nhịp auto click
+    ClickDelay = 0.05,      -- nhịp auto click
     HitKey = "",
 
     AutoClick = true,       -- click liên tục
+    ScreenClick = true,     -- đánh thường bằng cách click thật vào màn hình
     AutoRemote = true,      -- gọi remote event liên tục (song song với click)
 
     HitFormat = "Tự động",
@@ -95,7 +97,7 @@ local Config = {
 
 local SAVEABLE = {
     "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
-    "MultiHit", "AutoClick", "AutoRemote", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
+    "MultiHit", "AutoClick", "ScreenClick", "AutoRemote", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "ClickDelay", "PumpkinSpeed", "PumpkinAttack",
 }
 -- đổi tên file để không đọc lại cấu hình cũ (độ cao 15 cũ sẽ đè mất giá trị 9 mới)
@@ -1166,6 +1168,44 @@ local function clickOnce()
     end)
 end
 
+-- Chọn điểm click trên màn hình, tránh trúng menu H-HUB đang mở
+local function pickScreenPoint()
+    local camera = Workspace.CurrentCamera
+    if not camera then return nil end
+    local vp = camera.ViewportSize
+    local candidates = {
+        Vector2.new(vp.X * 0.5, vp.Y * 0.5),
+        Vector2.new(vp.X * 0.5, vp.Y * 0.2),
+        Vector2.new(vp.X * 0.75, vp.Y * 0.4),
+        Vector2.new(vp.X * 0.25, vp.Y * 0.4),
+    }
+    if not Main.Visible then
+        return candidates[1]
+    end
+    local pos, size = Main.AbsolutePosition, Main.AbsoluteSize
+    for _, point in ipairs(candidates) do
+        local inside = point.X >= pos.X and point.X <= pos.X + size.X
+            and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+        if not inside then
+            return point
+        end
+    end
+    return candidates[2]
+end
+
+-- Đánh thường: click chuột thật vào màn hình (như người chơi bấm)
+local function screenClick()
+    local point = pickScreenPoint()
+    if not point then return end
+    local ok = pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+        VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
+    end)
+    if not ok and mouse1click then
+        pcall(mouse1click)
+    end
+end
+
 local function activateTool()
     local character = getCharacter()
     local tool = character and character:FindFirstChildOfClass("Tool")
@@ -1201,16 +1241,19 @@ end
 
 -- Đang bám quái? (farmStep cập nhật LastEngageAt liên tục)
 local function isEngaged()
-    return Config.AutoFarm and not Config.AutoPumpkin and not State.Fleeing
-        and os.clock() - State.LastEngageAt < 0.6
+    if not Config.AutoFarm or Config.AutoPumpkin or State.Fleeing then return false end
+    if State.BringPoint == nil then return false end   -- chưa có quái để đánh
+    local hum = getHumanoid()
+    return hum ~= nil and hum.Health > 0
 end
 
 -- Vòng 1: auto click liên tục
 task.spawn(function()
     while State.Running do
         task.wait(math.max(Config.ClickDelay, 0.01))
-        if Config.AutoClick and isEngaged() then
-            clickOnce()
+        if isEngaged() then
+            if Config.AutoClick then clickOnce() end
+            if Config.ScreenClick then screenClick() end
         end
     end
 end)
@@ -1272,11 +1315,15 @@ connect(RunService.Heartbeat, function()
         if nameMatches(mob.Name, quest.mob) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local part = mob:FindFirstChild("HumanoidRootPart")
-            if hum and part and hum.Health > 0
+            if hum and part and hum.Health > 0 and mob ~= State.TargetMob
                 and (part.Position - point).Magnitude <= Config.BringRadius then
-                part.CFrame = CFrame.new(point)
-                part.AssemblyLinearVelocity = Vector3.zero
-                part.AssemblyAngularVelocity = Vector3.zero
+                local pull = point - part.Position
+                local dist = pull.Magnitude
+                if dist > 4 then
+                    part.AssemblyLinearVelocity = pull.Unit * math.min(dist * 10, 150)
+                else
+                    part.AssemblyLinearVelocity = Vector3.zero
+                end
                 part.CanCollide = false
             end
         end
@@ -1379,7 +1426,8 @@ local function farmStep()
     if not mobRoot then return end
 
     local anchorPos = mobRoot.Position
-    State.BringPoint = anchorPos          -- vòng Heartbeat sẽ kéo toàn bộ quái về điểm này liên tục
+    State.TargetMob = mob
+    State.BringPoint = anchorPos          -- vòng Heartbeat sẽ kéo các quái khác về điểm này liên tục
     mobRoot.CanCollide = false
 
     local height = currentHeight()
@@ -1395,8 +1443,15 @@ local function farmStep()
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
 
-    -- Báo cho vòng click + remote biết đang bám quái
     State.LastEngageAt = os.clock()
+
+    -- Đánh ngay trong mỗi bước farm (giống bản cũ), ngoài ra 2 vòng click/remote vẫn chạy song song
+    if Config.AutoClick then clickOnce() end
+    if Config.ScreenClick then screenClick() end
+    if Config.AutoRemote then
+        activateTool()
+        directFire()
+    end
 end
 
 task.spawn(function()
@@ -1647,6 +1702,7 @@ addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind(
 addToggle(FarmPage, "Bring Mob (kéo liên tục khi farm)", Config.BringMob, bind("BringMob"))
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
 addToggle(FarmPage, "Auto Click (chạy liên tục)", Config.AutoClick, bind("AutoClick"))
+addToggle(FarmPage, "Đánh thường: click vào màn hình", Config.ScreenClick, bind("ScreenClick"))
 addToggle(FarmPage, "Gọi Remote Event (song song click)", Config.AutoRemote, bind("AutoRemote"))
 addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
 addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
@@ -1674,7 +1730,7 @@ addStepper(TunePage, "Đổi độ cao sau (giây)", 5, 300, 5, Config.HeightSwi
 addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
 addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Nhịp click (giây)", 0.01, 0.2, 0.01, Config.ClickDelay, bind("ClickDelay"))
+addStepper(TunePage, "Nhịp click (giây)", 0.02, 0.2, 0.01, Config.ClickDelay, bind("ClickDelay"))
 addStepper(TunePage, "Nhịp remote (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
 addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
 
@@ -1718,8 +1774,9 @@ task.spawn(function()
             local quest = State.Quest or currentQuest()
             QuestInfo.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
             StatusInfo.Text = State.Status
-            AttackInfo.Text = string.format("Click: %s | Remote: %s | Multi-Hit: %s | Key: %s",
+            AttackInfo.Text = string.format("Click: %s | Màn hình: %s | Remote: %s | Multi-Hit: %s | Key: %s",
                 Config.AutoClick and "ON" or "OFF",
+                Config.ScreenClick and "ON" or "OFF",
                 Config.AutoRemote and "ON" or "OFF",
                 Config.MultiHit and "ON" or "OFF",
                 State.KeyLearned and "đã học" or "chưa có")
