@@ -86,7 +86,7 @@ local Config = {
     AttackMode = "Click + Activate",
     AutoSwitch = true,
     NoDamageTimeout = 8,
-    ScreenClick = true,     -- đánh thường bằng cách click thật vào màn hình
+    ScreenClick = false,    -- click màn hình liên tục chỉ chạy khi người dùng bật
 
     HitFormat = "Tự động",
     MultiHit = true,
@@ -121,8 +121,10 @@ local function loadConfig()
 end
 loadConfig()
 -- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
-Config.FarmHeight = 7
+Config.FarmHeight = 10
 Config.FarmHeightLate = 25
+-- Click màn hình liên tục mặc định luôn OFF sau mỗi lần nạp script.
+Config.ScreenClick = false
 
 local saveRevision = 0
 local function saveSoon()
@@ -225,7 +227,9 @@ local State = {
     LastEnemyScan = {},
     FarmStartAt = os.clock(),   -- mốc bắt đầu farm để tính độ cao theo thời gian
     LastEngageAt = 0,           -- lần cuối đang bám quái (cho click/remote)
+    FarmClickBootstrapUntil = 0, -- Auto Farm tự click NPC trong 30 giây đầu, không có nút tắt
     BringPoint = nil,           -- điểm gom quái
+    BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 },
     TargetMob = nil,
     MobHP = setmetatable({}, { __mode = "k" }),
     LastDamageAt = os.clock(),
@@ -1331,10 +1335,17 @@ local function directFire()
     end)
 end
 
+local function shouldScreenClick()
+    -- Giai đoạn bắt buộc: Auto Farm tự click mục tiêu trong 30 giây đầu.
+    -- Sau đó chỉ click liên tục nếu người dùng tự bật ScreenClick.
+    return (Config.AutoFarm and os.clock() < (State.FarmClickBootstrapUntil or 0))
+        or Config.ScreenClick
+end
+
 local function attackMobs()
     local mode = Config.AttackMode
-    clickOnce()
-    if Config.ScreenClick then
+    if shouldScreenClick() then
+        clickOnce()
         screenClick()
     end
     if mode == "Click + Activate" then
@@ -1425,10 +1436,10 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- GOM QUÁI: dùng BodyVelocity cục bộ thay vì chỉ gán vận tốc một lần.
--- Lưu ý: hiệu quả phụ thuộc quyền mô phỏng vật lý của NPC ở phía Roblox.
-------------------------------------------------------------------
+-- GOM QUÁI + CHẨN ĐOÁN THỰC TẾ.
+-- Lưu ý: client chỉ có thể yêu cầu mô phỏng; server có thể ghi đè vật lý NPC.
 local BringMovers = setmetatable({}, { __mode = "k" })
+local BringSamples = setmetatable({}, { __mode = "k" })
 local lastBringUpdate = 0
 
 local function removeBringMover(part)
@@ -1437,25 +1448,30 @@ local function removeBringMover(part)
         pcall(function() mover:Destroy() end)
         BringMovers[part] = nil
     end
+    BringSamples[part] = nil
 end
 
 local function clearBringMovers()
     for part in pairs(BringMovers) do
         removeBringMover(part)
     end
+    for part in pairs(BringSamples) do
+        BringSamples[part] = nil
+    end
 end
 
 local function pullToward(part, point)
     if not part or not part.Parent or not point then return false end
+    if part.Anchored then return false end
+
     local offset = point - part.Position
     local distance = offset.Magnitude
-    part.CanCollide = false
-
     if distance <= 5 then
         removeBringMover(part)
         return true
     end
 
+    part.CanCollide = false
     local mover = BringMovers[part]
     if not mover or not mover.Parent then
         mover = Instance.new("BodyVelocity")
@@ -1464,10 +1480,18 @@ local function pullToward(part, point)
         mover.P = 25000
         mover.Parent = part
         BringMovers[part] = mover
+        BringSamples[part] = { position = part.Position, sampledAt = os.clock(), movedAt = os.clock() }
     end
 
     local speed = math.clamp(distance * 8, 35, 120)
-    mover.Velocity = offset.Unit * speed
+    local velocity = offset.Unit * speed
+    mover.Velocity = velocity
+
+    -- Fallback ngắn: cập nhật vận tốc assembly cùng hướng với BodyVelocity.
+    -- Không teleport CFrame; kết quả vẫn được xác minh bằng vị trí thực tế ở heartbeat.
+    pcall(function()
+        part.AssemblyLinearVelocity = velocity
+    end)
     return true
 end
 
@@ -1475,11 +1499,11 @@ connect(RunService.Heartbeat, function()
     if not (State.Running and Config.AutoFarm and Config.BringMob)
         or Config.AutoPumpkin or State.Fleeing then
         State.BroughtCount = 0
+        State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
         clearBringMovers()
         return
     end
 
-    -- Giới hạn nhịp cập nhật để tránh tạo tải quá lớn mỗi frame.
     local now = os.clock()
     if now - lastBringUpdate < 0.08 then return end
     lastBringUpdate = now
@@ -1488,11 +1512,13 @@ connect(RunService.Heartbeat, function()
     local folder = Workspace:FindFirstChild("Enemies")
     if not point or not quest or not folder then
         State.BroughtCount = 0
+        State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
         clearBringMovers()
         return
     end
 
-    local count, active = 0, {}
+    local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
+    local active = {}
     local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
     for _, mob in ipairs(folder:GetChildren()) do
         if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
@@ -1501,20 +1527,44 @@ connect(RunService.Heartbeat, function()
             if hum and part and hum.Health > 0 then
                 local distance = (point - part.Position).Magnitude
                 if distance <= maxRadius then
+                    diag.candidates += 1
                     active[part] = true
-                    if pullToward(part, point) then count += 1 end
+                    if part.Anchored then
+                        diag.anchored += 1
+                    elseif distance <= 5 then
+                        diag.settled += 1
+                        removeBringMover(part)
+                    else
+                        pullToward(part, point)
+                        local sample = BringSamples[part]
+                        if sample then
+                            local elapsed = now - sample.sampledAt
+                            local delta = (part.Position - sample.position).Magnitude
+                            if delta >= 1.5 then
+                                diag.moving += 1
+                                sample.position = part.Position
+                                sample.sampledAt = now
+                                sample.movedAt = now
+                            elseif now - (sample.movedAt or sample.sampledAt) >= 1.0 then
+                                diag.stalled += 1
+                            end
+                        else
+                            diag.stalled += 1
+                        end
+                    end
                 end
             end
         end
     end
 
-    -- Gỡ BodyVelocity khỏi NPC đã chết, despawn hoặc ra ngoài bán kính gom.
     for part in pairs(BringMovers) do
         if not active[part] or not part.Parent then
             removeBringMover(part)
         end
     end
-    State.BroughtCount = count
+    State.BringDiagnostics = diag
+    -- BroughtCount giờ là số quái thực sự có dịch chuyển, không phải số được thử kéo.
+    State.BroughtCount = diag.moving
 end)
 
 ------------------------------------------------------------------
@@ -1696,7 +1746,9 @@ local function farmStep()
 
     local height = currentHeight()
     local elapsed = math.floor(os.clock() - State.FarmStartAt)
-    State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo %d", quest.mob, #scanResults, height, elapsed, State.BroughtCount or 0)
+    local bd = State.BringDiagnostics or {}
+    State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo: %d/%d | đứng: %d | khóa: %d",
+        quest.mob, #scanResults, height, elapsed, bd.moving or 0, bd.candidates or 0, bd.stalled or 0, bd.anchored or 0)
 
     -- Tới gần quái nếu đang ở xa (dùng tốc độ bay Auto Farm), còn lại bám trên đầu quái
     local above = anchorPos + Vector3.new(0, height, 0)
@@ -1798,9 +1850,11 @@ task.spawn(function()
                     end
                     -- Gọi click chuột và Activate độc lập cho event bí ngô;
                     -- attackMobs tiếp tục xử lý RegisterAttack/RegisterHit như Auto Farm.
-                    clickOnce()
+                    if Config.ScreenClick then
+                        clickOnce()
+                        screenClick()
+                    end
                     activateTool()
-                    if Config.ScreenClick then screenClick() end
                     directFire()
                 end
 
@@ -1973,9 +2027,11 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
     Config.AutoFarm = v
     if v then
         State.FarmStartAt = os.clock()   -- tính lại mốc 30s cho độ cao
+        State.FarmClickBootstrapUntil = os.clock() + 30 -- bắt buộc click mục tiêu 30 giây đầu
         State.LastEngageAt = 0
-        State.Status = "Đang khởi động..."
+        State.Status = "Đang khởi động... (click NPC 30 giây)"
     else
+        State.FarmClickBootstrapUntil = 0
         State.Status = "Đang tắt"
         State.Fleeing = false
         State.BringPoint = nil
@@ -2198,8 +2254,8 @@ end
 -- ===== Bảng nổi tách rời: tên nhạc + nhiệm vụ + NPC + khoảng cách + visualizer =====
 local MusicPanel = make("Frame", {
     Name = "MusicPanel",
-    Size = UDim2.fromOffset(270, 214),
-    Position = UDim2.new(1, -286, 0, 60),
+    Size = UDim2.fromOffset(350, 214),
+    Position = UDim2.new(1, -366, 0, 60),
     BackgroundColor3 = Colors.Background,
     BorderSizePixel = 0,
     ClipsDescendants = true,
@@ -2281,7 +2337,7 @@ local function panelRow(y, title)
         Text = "--",
         TextColor3 = Colors.Text,
         Font = Enum.Font.GothamSemibold,
-        TextSize = 11,
+        TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
     }, MusicPanel)
@@ -2359,11 +2415,26 @@ task.spawn(function()
             if info and root then
                 local d = (info.pos - root.Position).Magnitude
                 local near = d <= NEAR_NPC
-                NpcLabel.Text = info.name
+                local bd = State.BringDiagnostics or {}
+                local candidates = tonumber(bd.candidates) or 0
+                local moving = tonumber(bd.moving) or 0
+                local stalled = tonumber(bd.stalled) or 0
+                local anchored = tonumber(bd.anchored) or 0
+                local settled = tonumber(bd.settled) or 0
+                -- Hiển thị chẩn đoán kéo ngay trên dòng NPC của bảng nhạc.
+                NpcLabel.Text = string.format("%s | K:%d/%d D:%d A:%d G:%d",
+                    info.name, moving, candidates, stalled, anchored, settled)
+                NpcLabel.TextColor3 = (candidates > 0 and stalled == 0 and anchored == 0)
+                    and Colors.Green or Colors.Text
                 DistLabel.Text = string.format("%d stud - %s", math.floor(d), near and "GẦN" or "XA")
                 DistLabel.TextColor3 = near and Colors.Green or Colors.Red
             else
-                NpcLabel.Text = "Chưa tìm thấy"
+                local bd = State.BringDiagnostics or {}
+                NpcLabel.Text = string.format("NPC: -- | K:%d/%d D:%d A:%d G:%d",
+                    tonumber(bd.moving) or 0, tonumber(bd.candidates) or 0,
+                    tonumber(bd.stalled) or 0, tonumber(bd.anchored) or 0,
+                    tonumber(bd.settled) or 0)
+                NpcLabel.TextColor3 = Colors.Text
                 DistLabel.Text = "--"
                 DistLabel.TextColor3 = Colors.Text
             end
