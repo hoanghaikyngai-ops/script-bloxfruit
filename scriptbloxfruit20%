@@ -3,7 +3,7 @@
     - Nhận quest hoàn toàn qua remote (không bay tới NPC nữa)
     - Kéo quái LIÊN TỤC mỗi frame, chỉ khi bật Auto Farm
     - Auto Click chạy song song, liên tục với gọi Remote Event (RegisterAttack / RegisterHit)
-    - Độ cao: ban đầu 9, sau 30 giây tự nâng lên 10 (chỉnh được trong tab Thông số)
+    - Độ cao: ban đầu 10, sau 30 giây tự nâng lên 25
     - Có chỉnh tốc độ bay của Auto Farm
 ]]
 
@@ -72,8 +72,8 @@ local Config = {
     StatName = "Melee",
 
     -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 13,
-    FarmHeightLate = 14,
+    FarmHeight = 10,
+    FarmHeightLate = 25,
     HeightSwitchDelay = 30,
 
     HitRange = 100,
@@ -100,7 +100,7 @@ local SAVEABLE = {
     "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "ScreenClick", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
--- đổi tên file để không đọc lại cấu hình cũ (độ cao 15 cũ sẽ đè mất giá trị 9 mới)
+-- Tách file cấu hình theo phiên bản để tránh dữ liệu cũ ghi đè thiết lập mới.
 local CONFIG_PATH = "HHub/BloxFruits_v44_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 
 local function loadConfig()
@@ -120,6 +120,9 @@ local function loadConfig()
     Config.AutoPumpkin = false
 end
 loadConfig()
+-- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
+Config.FarmHeight = 10
+Config.FarmHeightLate = 25
 
 local saveRevision = 0
 local function saveSoon()
@@ -236,6 +239,7 @@ local State = {
     QuestKills = 0,
     QuestNeed = 0,
     LastQuestInvokeAt = 0,
+    QuestPendingSince = nil,
     SeenMobs = setmetatable({}, { __mode = "k" }),
 }
 
@@ -912,16 +916,46 @@ local function currentQuest()
     return quest
 end
 
+local function guiObjectVisible(object)
+    if not object then return false end
+    local node = object
+    while node and node ~= PlayerGui do
+        if node:IsA("GuiObject") and not node.Visible then
+            return false
+        end
+        if node:IsA("ScreenGui") and not node.Enabled then
+            return false
+        end
+        node = node.Parent
+    end
+    return true
+end
+
 local function questText()
     local main = PlayerGui:FindFirstChild("Main")
     local quest = main and main:FindFirstChild("Quest")
-    if not quest or not quest.Visible then
+    if not quest or not guiObjectVisible(quest) then
         return nil
     end
-    local container = quest:FindFirstChild("Container")
-    local title = container and container:FindFirstChild("QuestTitle")
-    local label = title and title:FindFirstChild("Title")
-    return label and label.Text or ""
+
+    -- Blox Fruits có thể thay đổi một vài tầng con của Quest UI theo phiên bản.
+    local container = quest:FindFirstChild("Container", true) or quest
+    local title = container:FindFirstChild("QuestTitle", true)
+    local label = title and (title:FindFirstChild("Title", true) or title)
+    if label and label:IsA("TextLabel") and label.Text ~= "" then
+        return label.Text
+    end
+
+    -- Fallback: tìm TextLabel có nội dung trong khung Quest đang hiển thị.
+    for _, item in ipairs(container:GetDescendants()) do
+        if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
+            local value = item.Text
+            if value:find(":") or value:lower():find("defeat") or value:lower():find("kill") then
+                return value
+            end
+        end
+    end
+    return nil
 end
 
 local function hasQuest()
@@ -963,7 +997,8 @@ end
 
 -- Quest đang làm? Ưu tiên bảng quest của game, nếu bảng không hiện thì dùng bộ đếm cục bộ
 local function questActiveNow()
-    return hasQuest()
+    -- Quest UI có thể không render, nhưng remote đã trả về không lỗi thì giữ trạng thái cục bộ.
+    return hasQuest() or State.QuestAccepted
 end
 
 local function questLabel(quest)
@@ -980,32 +1015,43 @@ end
 local function startQuest(quest)
     local commF = getCommF()
     if not commF then
-        State.QuestRetryAt = os.clock() + 5
+        State.QuestRetryAt = os.clock() + 10
         return false
     end
 
-    State.LastQuestInvokeAt = os.clock()
-    local invoked = pcall(function()
+    local now = os.clock()
+    -- Chống gọi lặp cùng một quest khi UI chưa kịp hiện.
+    if State.QuestKey == (quest.quest .. ":" .. quest.idx)
+        and State.QuestAccepted then
+        return true
+    end
+    if now - State.LastQuestInvokeAt < 30 then
+        return false
+    end
+
+    State.LastQuestInvokeAt = now
+    local ok = pcall(function()
         commF:InvokeServer("StartQuest", quest.quest, quest.idx)
     end)
 
-    for _ = 1, 15 do
-        task.wait(0.2)
-        if hasQuest() then
-            State.QuestAccepted = true
-            State.QuestSeenUI = true
-            State.QuestKills = 0
-            State.QuestNeed = quest.count or 6
-            State.UIMissingSince = nil
-            State.QuestRetryAt = 0
-            return true
-        end
+    if not ok then
+        State.QuestAccepted = false
+        State.QuestPendingSince = nil
+        State.QuestRetryAt = now + 15
+        return false
     end
 
-    State.QuestAccepted = false
-    State.QuestSeenUI = false
-    State.QuestRetryAt = os.clock() + (invoked and 8 or 12)
-    return false
+    -- Không đòi hỏi UI phải xuất hiện mới ghi nhận lần gọi thành công.
+    -- UI được theo dõi riêng; nếu UI không render thì không spam remote nữa.
+    State.QuestAccepted = true
+    State.QuestSeenUI = hasQuest()
+    State.QuestKey = quest.quest .. ":" .. quest.idx
+    State.QuestPendingSince = now
+    State.QuestKills = 0
+    State.QuestNeed = quest.count or 6
+    State.UIMissingSince = nil
+    State.QuestRetryAt = now + 45
+    return true
 end
 
 -- Bay tới vị trí (tốc độ theo Config.TweenSpeed)
@@ -1379,57 +1425,93 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- KÉO QUÁI LIÊN TỤC BẰNG LỰC KÉO (không khóa vị trí, quái vẫn bị trừ máu)
+-- GOM QUÁI: dùng BodyVelocity cục bộ thay vì chỉ gán vận tốc một lần.
+-- Lưu ý: hiệu quả phụ thuộc quyền mô phỏng vật lý của NPC ở phía Roblox.
 ------------------------------------------------------------------
-local function pullToward(part, point)
-    local pull = point - part.Position
-    local dist = pull.Magnitude
-    if dist > 4 then
-        part.AssemblyLinearVelocity = pull.Unit * math.min(dist * 10, 150)
-    else
-        part.AssemblyLinearVelocity = Vector3.zero
+local BringMovers = setmetatable({}, { __mode = "k" })
+local lastBringUpdate = 0
+
+local function removeBringMover(part)
+    local mover = BringMovers[part]
+    if mover then
+        pcall(function() mover:Destroy() end)
+        BringMovers[part] = nil
     end
-    part.CanCollide = false
 end
 
--- Kéo liên tục: mỗi Heartbeat cập nhật vận tốc hướng về điểm tụ.
--- Không đặt CFrame, không Anchored/PlatformStand; quái vẫn có thể nhận sát thương
--- và di chuyển tự nhiên khi không còn nằm trong vùng kéo.
+local function clearBringMovers()
+    for part in pairs(BringMovers) do
+        removeBringMover(part)
+    end
+end
+
+local function pullToward(part, point)
+    if not part or not part.Parent or not point then return false end
+    local offset = point - part.Position
+    local distance = offset.Magnitude
+    part.CanCollide = false
+
+    if distance <= 5 then
+        removeBringMover(part)
+        return true
+    end
+
+    local mover = BringMovers[part]
+    if not mover or not mover.Parent then
+        mover = Instance.new("BodyVelocity")
+        mover.Name = "HHubBringVelocity"
+        mover.MaxForce = Vector3.new(1e7, 1e7, 1e7)
+        mover.P = 25000
+        mover.Parent = part
+        BringMovers[part] = mover
+    end
+
+    local speed = math.clamp(distance * 8, 35, 120)
+    mover.Velocity = offset.Unit * speed
+    return true
+end
+
 connect(RunService.Heartbeat, function()
     if not (State.Running and Config.AutoFarm and Config.BringMob)
         or Config.AutoPumpkin or State.Fleeing then
         State.BroughtCount = 0
+        clearBringMovers()
         return
     end
+
+    -- Giới hạn nhịp cập nhật để tránh tạo tải quá lớn mỗi frame.
+    local now = os.clock()
+    if now - lastBringUpdate < 0.08 then return end
+    lastBringUpdate = now
 
     local point, quest = State.BringPoint, State.Quest
     local folder = Workspace:FindFirstChild("Enemies")
     if not point or not quest or not folder then
         State.BroughtCount = 0
+        clearBringMovers()
         return
     end
 
-    local count = 0
-    local maxRadius = math.max(tonumber(Config.BringRadius) or 350, 25)
+    local count, active = 0, {}
+    local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
     for _, mob in ipairs(folder:GetChildren()) do
         if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local part = mob:FindFirstChild("HumanoidRootPart")
             if hum and part and hum.Health > 0 then
-                local offset = point - part.Position
-                local distance = offset.Magnitude
-                if distance > 4 and distance <= maxRadius then
-                    -- Tái áp vận tốc liên tục để thắng vận tốc đi lang thang của NPC.
-                    local speed = math.clamp(distance * 10, 35, 150)
-                    part.AssemblyLinearVelocity = offset.Unit * speed
-                    part.CanCollide = false
-                    count += 1
-                elseif distance <= 4 then
-                    part.AssemblyLinearVelocity = Vector3.zero
-                    part.CanCollide = false
-                    count += 1
+                local distance = (point - part.Position).Magnitude
+                if distance <= maxRadius then
+                    active[part] = true
+                    if pullToward(part, point) then count += 1 end
                 end
             end
+        end
+    end
+
+    -- Gỡ BodyVelocity khỏi NPC đã chết, despawn hoặc ra ngoài bán kính gom.
+    for part in pairs(BringMovers) do
+        if not active[part] or not part.Parent then
+            removeBringMover(part)
         end
     end
     State.BroughtCount = count
@@ -1501,20 +1583,36 @@ local function farmStep()
                 State.QuestNeed = quest.count or 6
             end
             State.QuestKey = questKey
+            State.QuestPendingSince = nil
         elseif State.QuestSeenUI then
-            -- Quest UI đã biến mất ổn định: coi là hoàn thành/hủy và nhận lại.
+            -- Chỉ kết luận quest kết thúc nếu UI từng xuất hiện rồi mới biến mất.
             State.UIMissingSince = State.UIMissingSince or now
-            if now - State.UIMissingSince >= 2 then
+            if now - State.UIMissingSince >= 3 then
                 State.QuestSeenUI = false
                 State.QuestAccepted = false
                 State.QuestKey = nil
+                State.QuestPendingSince = nil
                 State.QuestKills = 0
                 State.UIMissingSince = nil
-                State.QuestRetryAt = now + 1
+                State.QuestRetryAt = now + 2
             end
-        elseif not hasQuest() then
-            State.QuestAccepted = false
         end
+
+        -- Nếu đã hạ đủ số quái theo bộ đếm cục bộ, coi nhiệm vụ hoàn tất.
+        if State.QuestAccepted and State.QuestNeed > 0
+            and State.QuestKills >= State.QuestNeed then
+            State.QuestAccepted = false
+            State.QuestSeenUI = false
+            State.QuestKey = nil
+            State.QuestPendingSince = nil
+            State.QuestKills = 0
+            State.UIMissingSince = nil
+            State.QuestRetryAt = now + 2
+        end
+
+        -- Nếu remote đã được gọi thành công nhưng Quest UI không hiện,
+        -- giữ trạng thái đã nhận và KHÔNG tự động gọi StartQuest lần nữa.
+        -- Chỉ reset khi UI từng hiện rồi biến mất, đủ số quái, hoặc đổi quest.
 
         -- Quest cũ không còn hợp cấp -> bỏ quest cũ
         if State.QuestKey and State.QuestKey ~= questKey and questActiveNow() then
@@ -1532,13 +1630,11 @@ local function farmStep()
 
         if ui then
             State.QuestKey = questKey
-        elseif not questActiveNow() and now >= State.QuestRetryAt
-            and now - State.LastQuestInvokeAt >= 3 then
-            State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. " (remote)..."
-            if startQuest(quest) then
-                State.QuestKey = questKey
-            else
-                State.Status = "Server chưa xác nhận quest - sẽ thử lại"
+        elseif not State.QuestAccepted and now >= State.QuestRetryAt
+            and now - State.LastQuestInvokeAt >= 30 then
+            State.Status = "Đang gửi yêu cầu nhiệm vụ " .. quest.quest .. "..."
+            if not startQuest(quest) then
+                State.Status = "Đang chờ xác nhận nhiệm vụ / hết thời gian chờ"
             end
         end
     end
@@ -1826,6 +1922,7 @@ local function Unload()
     Config.AutoFarm = false
     Config.AutoPumpkin = false
     clearHighlights()
+    pcall(clearBringMovers)
     pcall(stopMovers)
     pcall(setLowEffects, false)
     for _, connection in ipairs(State.Connections) do
@@ -1882,6 +1979,8 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
         State.Status = "Đang tắt"
         State.Fleeing = false
         State.BringPoint = nil
+        State.TargetMob = nil
+        clearBringMovers()
         if not Config.AutoPumpkin then
             stopMovers()
         end
