@@ -121,7 +121,7 @@ local function loadConfig()
 end
 loadConfig()
 -- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
-Config.FarmHeight = 8
+Config.FarmHeight = 7
 Config.FarmHeightLate = 25
 
 local saveRevision = 0
