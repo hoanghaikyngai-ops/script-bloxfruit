@@ -72,7 +72,7 @@ local Config = {
     StatName = "Melee",
 
     -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 10,
+    FarmHeight = 7,
     FarmHeightLate = 25,
     HeightSwitchDelay = 30,
 
