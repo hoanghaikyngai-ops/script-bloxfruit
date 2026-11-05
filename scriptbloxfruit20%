@@ -1,6 +1,6 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v4.3.2 (Đầy đủ toàn bộ tab & Fix RegisterHit)
-    Auto Farm Level + Auto Quest + Halloween Pumpkin + Radar Quái v2 + Giao diện Full Tab
+    H-HUB // BLOX FRUITS COMPANION v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo Quái + RegisterHit/Attack Chuẩn Key)
+    Auto Farm Level + Auto Quest + Halloween Pumpkin + Radar Quái v2 tối ưu
 ]]
 
 if not game:IsLoaded() then
@@ -20,29 +20,38 @@ local Lighting = game:GetService("Lighting")
 
 local genv = (getgenv and getgenv()) or _G
 
+-- Dọn session cũ
 if type(genv.HHubBloxFruits) == "table" and type(genv.HHubBloxFruits.Unload) == "function" then
     pcall(genv.HHubBloxFruits.Unload)
 end
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[H-HUB] LocalPlayer không tồn tại.")
+    warn("[H-HUB] LocalPlayer không tồn tại. Hãy chạy dưới dạng LocalScript / executor.")
     return
 end
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
 local function getGuiParent()
-    local ok, ui = pcall(function() return gethui and gethui() end)
-    return (ok and ui) or PlayerGui
+    local ok, ui = pcall(function()
+        return gethui and gethui()
+    end)
+    if ok and ui then
+        return ui
+    end
+    return PlayerGui
 end
 local GuiParent = getGuiParent()
 for _, parent in ipairs({ PlayerGui, GuiParent }) do
     local old = parent:FindFirstChild("HHubCompanion")
-    if old then old:Destroy() end
+    if old then
+        old:Destroy()
+    end
 end
 
 ------------------------------------------------------------------
--- CẤU HÌNH + LƯU FILE JSON
+-- CẤU HÌNH + LƯU FILE
 ------------------------------------------------------------------
 local Config = {
     AutoFarm = false,
@@ -52,30 +61,30 @@ local Config = {
     AutoHaki = true,
     AutoStats = false,
     LowEffects = false,
-    MobHighlight = true,
-    ScanRadius = 2500,
-    Weapon = "Melee",
-    StatName = "Melee",
+    MobHighlight = true,    
+    ScanRadius = 2500,      
+    Weapon = "Melee",       
+    StatName = "Melee",     
     FarmHeight = 15,
     HitRange = 100,
     BringRadius = 300,
-    SafeHP = 25,
+    SafeHP = 25,            
     TweenSpeed = 300,
     Delay = 0.05,
-    HitKey = "1937e453",
-    AttackMode = "Gửi thẳng key (Chuẩn)",
-    AutoSwitch = true,
-    NoDamageTimeout = 8,
-    MultiHit = true,
+    HitKey = "",
+    AttackMode = "Click + Activate",
+    AutoSwitch = true,      
+    NoDamageTimeout = 8,    
+    HitFormat = "Tự động",  
+    MultiHit = true,        
     AutoPumpkin = false,
     PumpkinSpeed = 300,
     PumpkinAttack = true,
 }
 
 local SAVEABLE = {
-    "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", 
-    "Weapon", "StatName", "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "FarmHeight", 
-    "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack"
+    "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
+    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeight", "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
 local CONFIG_PATH = "HHub/BloxFruits_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 
@@ -102,18 +111,24 @@ local function saveSoon()
     saveRevision += 1
     local rev = saveRevision
     task.delay(1, function()
-        if rev ~= saveRevision or not writefile then return end
+        if rev ~= saveRevision or not writefile then
+            return
+        end
         pcall(function()
             local out = {}
-            for _, key in ipairs(SAVEABLE) do out[key] = Config[key] end
-            if makefolder and isfolder and not isfolder("HHub") then makefolder("HHub") end
+            for _, key in ipairs(SAVEABLE) do
+                out[key] = Config[key]
+            end
+            if makefolder and isfolder and not isfolder("HHub") then
+                makefolder("HHub")
+            end
             writefile(CONFIG_PATH, HttpService:JSONEncode(out))
         end)
     end)
 end
 
 ------------------------------------------------------------------
--- DỮ LIỆU QUEST DỰ PHÒNG & THÔNG TIN
+-- DỮ LIỆU QUEST DỰ PHÒNG
 ------------------------------------------------------------------
 local FallbackQuests = {
     {0, "Bandit", "BanditQuest1", 1}, {15, "Monkey", "JungleQuest", 1}, {20, "Gorilla", "JungleQuest", 2},
@@ -153,6 +168,9 @@ local FallbackQuests = {
     {2400, "Candy Pirate", "CandyQuest1", 1}, {2425, "Snow Demon", "CandyQuest1", 2},
 }
 
+local SeaRange = { [1] = { 0, 699 }, [2] = { 700, 1499 }, [3] = { 1500, math.huge } }
+local SeaByPlace = { [2753915549] = 1, [4442272183] = 2, [7449423635] = 3 }
+
 local Colors = {
     Background = Color3.fromRGB(10, 14, 25),
     Panel = Color3.fromRGB(18, 26, 43),
@@ -174,28 +192,42 @@ local State = {
     SpawnCache = {},
     QuestNPC = {},
     Fleeing = false,
+    HookInstalled = false,
+    KeyLearned = false,
+    HookActive = false,
+    AmpCount = 0,
     HitCalls = 0,
-    Highlights = {},
-    Connections = {},
-    QuestKey = nil,
-    QuestRetryAt = 0,
+    Arg2Sample = "chưa có",
+    MobHP = setmetatable({}, { __mode = "k" }),
+    LastDamageAt = os.clock(),
+    InAttack = false,
+    Rotations = 0,
+    SavedRotations = 0,
+    GcInfo = "chưa quét",
     EffectsConn = nil,
     OldShadows = Lighting.GlobalShadows,
     SavedEffects = setmetatable({}, { __mode = "k" }),
+    Connections = {},
+    QuestCache = { level = -1, quest = nil },
+    QuestKey = nil,
+    QuestRetryAt = 0,
+    Highlights = {},
+    LastEnemyScan = {},
 }
 
-local NetFolder = ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("Net")
-local RegHit = NetFolder and NetFolder:FindFirstChild("RE/RegisterHit")
+local RegAttack, RegHit
 
 local function connect(signal, callback)
-    local conn = signal:Connect(callback)
-    table.insert(State.Connections, conn)
-    return conn
+    local connection = signal:Connect(callback)
+    table.insert(State.Connections, connection)
+    return connection
 end
 
 local function make(className, properties, parent)
     local object = Instance.new(className)
-    for key, value in pairs(properties or {}) do object[key] = value end
+    for key, value in pairs(properties or {}) do
+        object[key] = value
+    end
     object.Parent = parent
     return object
 end
@@ -204,16 +236,29 @@ local function round(object, radius)
     make("UICorner", { CornerRadius = UDim.new(0, radius or 8) }, object)
 end
 
-local function stroke(object, color, thickness)
-    return make("UIStroke", { Color = color or Colors.Accent, Thickness = thickness or 1 }, object)
+local function stroke(object, color, thickness, transparency)
+    return make("UIStroke", {
+        Color = color or Colors.Accent,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+    }, object)
 end
 
 ------------------------------------------------------------------
--- HELPER NHÂN VẬT & QUÉT QUÁI V2
+-- HELPER NHÂN VẬT
 ------------------------------------------------------------------
-local function getCharacter() return LocalPlayer.Character end
-local function getRoot(char) return char and char:FindFirstChild("HumanoidRootPart") end
-local function getHumanoid(char) return char and char:FindFirstChildOfClass("Humanoid") end
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getRoot(character)
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid()
+    local character = getCharacter()
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
 
 local function getCommF()
     local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -222,13 +267,22 @@ end
 
 local function getLevel()
     local data = LocalPlayer:FindFirstChild("Data")
-    local lvl = data and data:FindFirstChild("Level")
-    return lvl and tonumber(lvl.Value) or 1
+    local level = data and data:FindFirstChild("Level")
+    if level and level:IsA("ValueBase") then
+        return tonumber(level.Value) or 1
+    end
+    return 1
 end
 
 local function getSea()
+    local known = SeaByPlace[game.PlaceId]
+    if known then
+        return known
+    end
     local lvl = getLevel()
-    if lvl >= 1500 then return 3 elseif lvl >= 700 then return 2 else return 1 end
+    if lvl >= 1500 then return 3 end
+    if lvl >= 700 then return 2 end
+    return 1
 end
 
 local function nameMatches(actual, wanted)
@@ -242,11 +296,16 @@ local function getEquippedToolName()
     return tool and tool.Name or "Không cầm gì"
 end
 
+------------------------------------------------------------------
+-- TÍCH HỢP HỆ THỐNG TÌM QUÁI TỪ V2
+------------------------------------------------------------------
 local function scanEnemies(wantedName)
     local results = {}
     local folder = Workspace:FindFirstChild("Enemies")
     local root = getRoot(getCharacter())
-    if not folder or not root then return results, 0 end
+    if not folder or not root then
+        return results, 0
+    end
 
     local total = 0
     for _, mob in ipairs(folder:GetChildren()) do
@@ -254,59 +313,87 @@ local function scanEnemies(wantedName)
         local mobRoot = mob:FindFirstChild("HumanoidRootPart")
         if humanoid and mobRoot and humanoid.Health > 0 then
             total += 1
-            if not wantedName or nameMatches(mob.Name, wantedName) then
+            local matches = true
+            if wantedName then
+                matches = nameMatches(mob.Name, wantedName)
+            end
+            if matches then
                 local distance = (mobRoot.Position - root.Position).Magnitude
                 if distance <= Config.ScanRadius then
                     table.insert(results, {
                         Model = mob,
                         Name = mob.Name,
                         Distance = distance,
+                        Health = humanoid.Health,
+                        MaxHealth = humanoid.MaxHealth,
                         RootPart = mobRoot
                     })
                 end
             end
         end
     end
-    table.sort(results, function(a, b) return a.Distance < b.Distance end)
+
+    table.sort(results, function(a, b)
+        return a.Distance < b.Distance
+    end)
+    State.LastEnemyScan = results
     return results, total
 end
 
 local function clearHighlights()
-    for mob, hl in pairs(State.Highlights) do
-        if hl then pcall(function() hl:Destroy() end) end
+    for mob, highlight in pairs(State.Highlights) do
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+        end
         State.Highlights[mob] = nil
     end
 end
 
 local function updateHighlights(results)
-    if not Config.MobHighlight then clearHighlights() return end
+    if not Config.MobHighlight then
+        clearHighlights()
+        return
+    end
+
     local wanted = {}
-    for i = 1, math.min(6, #results) do
-        local mob = results[i].Model
+    for index = 1, math.min(6, #results) do
+        local mob = results[index].Model
         wanted[mob] = true
         if not State.Highlights[mob] then
-            local hl = Instance.new("Highlight")
-            hl.Adornee = mob
-            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            hl.FillColor = Colors.Accent
-            hl.OutlineColor = Colors.Gold
-            hl.FillTransparency = 0.8
-            hl.Parent = Workspace
-            State.Highlights[mob] = hl
+            local highlight = Instance.new("Highlight")
+            highlight.Name = "HHubLocalMobMarker"
+            highlight.Adornee = mob
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            highlight.FillColor = Colors.Accent
+            highlight.OutlineColor = Colors.Gold
+            highlight.FillTransparency = 0.82
+            highlight.OutlineTransparency = 0.05
+            highlight.Parent = Workspace
+            State.Highlights[mob] = highlight
         end
     end
-    for mob, hl in pairs(State.Highlights) do
+
+    for mob, highlight in pairs(State.Highlights) do
         if not wanted[mob] or not mob.Parent then
-            pcall(function() hl:Destroy() end)
+            pcall(function() highlight:Destroy() end)
             State.Highlights[mob] = nil
         end
     end
 end
 
+local function getMobs(mobName)
+    local results, _ = scanEnemies(mobName)
+    local out = {}
+    for _, item in ipairs(results) do
+        table.insert(out, item.Model)
+    end
+    return out
+end
+
 ------------------------------------------------------------------
--- HỆ THỐNG DI CHUYỂN & GỬI TẤN CÔNG (FIX REGISTERHIT)
+-- BỘ DI CHUYỂN
 ------------------------------------------------------------------
-local function ensureMovers(root)
+local function ensureMovers(root, useGyro)
     local bv = root:FindFirstChild("HHubVelocity")
     if not bv then
         bv = make("BodyVelocity", {
@@ -315,53 +402,35 @@ local function ensureMovers(root)
             Velocity = Vector3.zero,
         }, root)
     end
-    return bv
+    local bg = root:FindFirstChild("HHubGyro")
+    if useGyro then
+        if not bg then
+            bg = make("BodyGyro", {
+                Name = "HHubGyro",
+                MaxTorque = Vector3.new(math.huge, math.huge, math.huge),
+                CFrame = root.CFrame,
+            }, root)
+        end
+    elseif bg then
+        bg:Destroy()
+        bg = nil
+    end
+    return bv, bg
 end
 
 local function stopMovers()
     local root = getRoot(getCharacter())
     if not root then return end
-    local bv = root:FindFirstChild("HHubVelocity")
-    if bv then bv:Destroy() end
-end
-
-local function directFire()
-    if not RegHit then return end
-    local quest = State.Quest
-    if not quest then return end
-
-    local scanResults, _ = scanEnemies(quest.mob)
-    if #scanResults == 0 then return end
-
-    local targetEntry = scanResults[1]
-    local targetMob = targetEntry.Model
-    local targetPart = targetMob:FindFirstChild("HumanoidRootPart") or targetMob:FindFirstChild("LeftLowerLeg")
-    if not targetPart then return end
-
-    local arg2 = {}
-    if Config.MultiHit then
-        for i = 1, math.min(5, #scanResults) do
-            local m = scanResults[i].Model
-            local p = m:FindFirstChild("HumanoidRootPart")
-            if p then table.insert(arg2, { m, p }) end
+    for _, name in ipairs({ "HHubVelocity", "HHubGyro" }) do
+        local object = root:FindFirstChild(name)
+        if object then
+            object:Destroy()
         end
     end
-
-    State.HitCalls += 1
-    pcall(function()
-        RegHit:FireServer(targetPart, arg2, nil, Config.HitKey)
-    end)
-end
-
-local function attackMobs()
-    local character = getCharacter()
-    local tool = character and character:FindFirstChildOfClass("Tool")
-    if tool then pcall(function() tool:Activate() end) end
-    directFire()
 end
 
 ------------------------------------------------------------------
--- GIAO DIỆN GUI (FULL TABS & CONTROLS)
+-- GUI DASHBOARD
 ------------------------------------------------------------------
 local Gui = make("ScreenGui", {
     Name = "HHubCompanion",
@@ -381,7 +450,7 @@ local Main = make("Frame", {
     ClipsDescendants = true,
 }, Gui)
 round(Main, 12)
-stroke(Main, Colors.Accent, 1.5)
+stroke(Main, Colors.Accent, 1.5, 0.12)
 local Scale = make("UIScale", { Scale = 1 }, Main)
 
 local TopBar = make("Frame", {
@@ -395,7 +464,7 @@ make("TextLabel", {
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.3.2",
+    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.2",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 13,
@@ -432,7 +501,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 10, 1, -25),
     Size = UDim2.new(1, -20, 0, 18),
     BackgroundTransparency = 1,
-    Text = "H-HUB v4.3.2  |  Đang khởi động...",
+    Text = "H-HUB v4.2  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -451,7 +520,7 @@ local FloatingButton = make("TextButton", {
     BorderSizePixel = 0,
 }, Gui)
 round(FloatingButton, 21)
-stroke(FloatingButton, Color3.fromRGB(255, 255, 255), 1)
+stroke(FloatingButton, Color3.fromRGB(255, 255, 255), 1, 0.45)
 FloatingButton.Activated:Connect(function()
     Main.Visible = not Main.Visible
 end)
@@ -465,18 +534,38 @@ local function setMinimized(value)
     Main.Size = value and UDim2.fromOffset(520, 36) or FullSize
 end
 
-topButton("X", -34, Color3.fromRGB(150, 55, 68), function()
-    if genv.HHubBloxFruits and genv.HHubBloxFruits.Unload then genv.HHubBloxFruits.Unload() end
-end)
-topButton("−", -66, Colors.Panel2, function() setMinimized(not IsMinimized) end)
+local viewportConnection
+local function updateScale()
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local viewport = camera.ViewportSize
+    Scale.Scale = math.clamp(math.min(viewport.X / 760, viewport.Y / 560), 0.55, 1)
+end
+local function bindCamera()
+    if viewportConnection then
+        viewportConnection:Disconnect()
+        viewportConnection = nil
+    end
+    local camera = Workspace.CurrentCamera
+    if camera then
+        viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+    end
+    updateScale()
+end
+bindCamera()
+connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
 
--- Dragging window
 local Dragging, DragInput, DragStart, StartPosition = false, nil, nil, nil
 TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         Dragging = true
         DragStart = input.Position
         StartPosition = Main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                Dragging = false
+            end
+        end)
     end
 end)
 TopBar.InputChanged:Connect(function(input)
@@ -487,7 +576,10 @@ end)
 connect(UserInputService.InputChanged, function(input)
     if Dragging and input == DragInput and DragStart and StartPosition then
         local delta = input.Position - DragStart
-        Main.Position = UDim2.new(StartPosition.X.Scale, StartPosition.X.Offset + delta.X, StartPosition.Y.Scale, StartPosition.Y.Offset + delta.Y)
+        Main.Position = UDim2.new(
+            StartPosition.X.Scale, StartPosition.X.Offset + delta.X,
+            StartPosition.Y.Scale, StartPosition.Y.Offset + delta.Y
+        )
     end
 end)
 connect(UserInputService.InputBegan, function(input, processed)
@@ -496,10 +588,12 @@ connect(UserInputService.InputBegan, function(input, processed)
     end
 end)
 
--- Tab System Builder
 local Pages, TabButtons, TabOrder = {}, {}, 0
+
 local function selectTab(name)
-    for tabName, page in pairs(Pages) do page.Visible = (tabName == name) end
+    for tabName, page in pairs(Pages) do
+        page.Visible = (tabName == name)
+    end
     for tabName, button in pairs(TabButtons) do
         local selected = tabName == name
         button.BackgroundColor3 = selected and Colors.Accent or Colors.Panel2
@@ -534,7 +628,9 @@ local function addTab(name)
     Pages[name] = page
     TabButtons[name] = button
     TabOrder += 1
-    button.Activated:Connect(function() selectTab(name) end)
+    button.Activated:Connect(function()
+        selectTab(name)
+    end)
     return page
 end
 
@@ -725,7 +821,848 @@ local function addCycle(page, text, options, current, callback)
 end
 
 ------------------------------------------------------------------
--- TẠO CÁC TAB CHỨC NĂNG
+-- QUEST MODULE
+------------------------------------------------------------------
+local function pickQuestFromModule(level, sea)
+    local ok, result = pcall(function()
+        local module = ReplicatedStorage:FindFirstChild("Quests")
+        if not module or not module:IsA("ModuleScript") then
+            return nil
+        end
+        local data = require(module)
+        local range = SeaRange[sea]
+        local best
+        for questName, list in pairs(data) do
+            if type(list) == "table" then
+                for index, info in pairs(list) do
+                    if type(index) == "number" and type(info) == "table" and type(info.Task) == "table" then
+                        local req = tonumber(info.LevelReq)
+                        local mob, count, keys = nil, 0, 0
+                        for name, n in pairs(info.Task) do
+                            keys += 1
+                            mob, count = name, n
+                        end
+                        if req and keys == 1 and type(mob) == "string" and type(count) == "number" and count > 1
+                            and req <= level and req >= range[1] and req <= range[2] then
+                            if not best or req > best[1] then
+                                best = { req, mob, questName, index }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best
+    end)
+    return ok and result or nil
+end
+
+local function currentQuest()
+    local level = getLevel()
+    if State.QuestCache.level == level and State.QuestCache.quest then
+        return State.QuestCache.quest
+    end
+    local sea = getSea()
+    local pick = pickQuestFromModule(level, sea)
+    if not pick then
+        local range = SeaRange[sea]
+        for _, entry in ipairs(FallbackQuests) do
+            if entry[1] <= level and entry[1] >= range[1] and entry[1] <= range[2] then
+                if not pick or entry[1] > pick[1] then
+                    pick = entry
+                end
+            end
+        end
+    end
+    pick = pick or FallbackQuests[1]
+    local quest = { mob = pick[2], quest = pick[3], idx = pick[4], level = pick[1] }
+    State.QuestCache = { level = level, quest = quest }
+    return quest
+end
+
+local function questText()
+    local main = PlayerGui:FindFirstChild("Main")
+    local quest = main and main:FindFirstChild("Quest")
+    if not quest or not quest.Visible then
+        return nil
+    end
+    local container = quest:FindFirstChild("Container")
+    local title = container and container:FindFirstChild("QuestTitle")
+    local label = title and title:FindFirstChild("Title")
+    return label and label.Text or ""
+end
+
+local function hasQuest()
+    return questText() ~= nil
+end
+
+local function findSpawnPos(mobName)
+    local origin = Workspace:FindFirstChild("_WorldOrigin")
+    local spawns = origin and origin:FindFirstChild("EnemySpawns")
+    local root = getRoot(getCharacter())
+    local best
+    if spawns then
+        for pass = 1, 2 do
+            local bestDist
+            for _, spawn in ipairs(spawns:GetChildren()) do
+                if spawn:IsA("BasePart") then
+                    local matched
+                    if pass == 1 then
+                        matched = nameMatches(spawn.Name, mobName)
+                    else
+                        matched = spawn.Name:sub(1, #mobName) == mobName
+                    end
+                    if matched then
+                        local d = root and (spawn.Position - root.Position).Magnitude or 0
+                        if not bestDist or d < bestDist then
+                            best, bestDist = spawn.Position, d
+                        end
+                    end
+                end
+            end
+            if best then break end
+        end
+    end
+    if best then
+        State.SpawnCache[mobName] = best
+    end
+    return best or State.SpawnCache[mobName]
+end
+
+local flyTo
+
+local function startQuest(quest)
+    local commF = getCommF()
+    if not commF then return false end
+
+    local function attempt()
+        pcall(function()
+            commF:InvokeServer("StartQuest", quest.quest, quest.idx)
+        end)
+        for _ = 1, 8 do
+            task.wait(0.2)
+            if hasQuest() then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function goTo(position)
+        local root = getRoot(getCharacter())
+        if not root then return false end
+        flyTo(root, CFrame.new(position + Vector3.new(0, 3, 4)))
+        task.wait(0.2)
+        return true
+    end
+
+    local remembered = State.QuestNPC[quest.quest]
+    if remembered then
+        if goTo(remembered) and attempt() then
+            return true
+        end
+    elseif attempt() then
+        return true
+    end
+
+    if remembered then
+        return false
+    end
+    local root = getRoot(getCharacter())
+    if not root then return false end
+    local anchor = findSpawnPos(quest.mob) or root.Position
+    local npcs = Workspace:FindFirstChild("NPCs")
+    local list = {}
+    if npcs then
+        for _, npc in ipairs(npcs:GetChildren()) do
+            if npc:IsA("Model") then
+                local ok, pivot = pcall(function() return npc:GetPivot().Position end)
+                if ok then
+                    table.insert(list, { pivot, (pivot - anchor).Magnitude })
+                end
+            end
+        end
+        table.sort(list, function(x, y) return x[2] < y[2] end)
+    end
+    for i = 1, math.min(3, #list) do
+        if not (State.Running and Config.AutoFarm) then break end
+        if goTo(list[i][1]) and attempt() then
+            State.QuestNPC[quest.quest] = list[i][1]
+            return true
+        end
+    end
+    return false
+end
+
+flyTo = function(root, targetCFrame)
+    local dist = (root.Position - targetCFrame.Position).Magnitude
+    if dist < 6 then
+        return
+    end
+    if dist < 120 then
+        root.CFrame = targetCFrame
+        return
+    end
+    local speed = math.max(Config.TweenSpeed, 50)
+    local tween = TweenService:Create(root, TweenInfo.new(dist / speed, Enum.EasingStyle.Linear), { CFrame = targetCFrame })
+    local done = false
+    local conn = tween.Completed:Connect(function()
+        done = true
+    end)
+    tween:Play()
+    local limit = os.clock() + dist / speed + 3
+    while not done and State.Running and Config.AutoFarm and os.clock() < limit do
+        task.wait(0.1)
+    end
+    conn:Disconnect()
+    if not done then
+        tween:Cancel()
+    end
+end
+
+------------------------------------------------------------------
+-- REMOTE & HOOK HỌC KEY
+------------------------------------------------------------------
+local function scanRemotes()
+    pcall(function()
+        local net = ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("Net")
+        if net then
+            RegAttack = RegAttack or net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
+            RegHit = RegHit or net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
+        end
+        if not (RegAttack and RegHit) then
+            for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+                if d:IsA("BaseRemoteEvent") then
+                    if not RegAttack and (d.Name == "RegisterAttack" or d.Name == "RE/RegisterAttack") then
+                        RegAttack = d
+                    elseif not RegHit and (d.Name == "RegisterHit" or d.Name == "RE/RegisterHit") then
+                        RegHit = d
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function collectHits()
+    local quest = State.Quest
+    local root = getRoot(getCharacter())
+    if not quest or not root then return nil, nil end
+    local hits, first = {}, nil
+    for _, mob in ipairs(getMobs(quest.mob)) do
+        local part = mob:FindFirstChild("HumanoidRootPart")
+        if part and (part.Position - root.Position).Magnitude <= Config.HitRange then
+            first = first or part
+            table.insert(hits, { mob, part })
+        end
+    end
+    return hits, first
+end
+
+local function describeArg2(t)
+    local function kind(v)
+        return typeof(v) == "Instance" and v.ClassName or typeof(v)
+    end
+    if type(t) ~= "table" then return kind(t) end
+    local first = t[1]
+    if first == nil then return "{} rỗng" end
+    if type(first) == "table" then
+        return #t .. " phần tử {" .. kind(first[1]) .. ", " .. kind(first[2]) .. "}"
+    end
+    return #t .. " phần tử " .. kind(first)
+end
+
+local function buildArg2(hits, existing)
+    local fmt = Config.HitFormat
+    local partFirst = false
+    if fmt == "Tự động" then
+        fmt = "Mob+Part"
+        local sample = type(existing) == "table" and existing[1] or nil
+        if type(sample) == "table" then
+            local x = sample[1]
+            partFirst = typeof(x) == "Instance" and x.ClassName ~= "Model"
+        elseif typeof(sample) == "Instance" then
+            fmt = sample.ClassName == "Model" and "Chỉ Mob" or "Chỉ Part"
+        end
+    end
+    local out = {}
+    for _, h in ipairs(hits) do
+        local mob, part = h[1], h[2]
+        if part and part.Parent then
+            if fmt == "Mob+Part" then
+                out[#out + 1] = partFirst and { part, mob } or { mob, part }
+            elseif fmt == "Chỉ Part" then
+                out[#out + 1] = part
+            else
+                out[#out + 1] = mob
+            end
+        end
+    end
+    return out
+end
+
+local HookCtx = { Running = true, RegHit = nil, Hits = nil, First = nil }
+genv.HHubBFHookCtx = HookCtx
+
+HookCtx.OnHit = function(args)
+    local key
+    for i = 3, 5 do
+        local v = args[i]
+        if type(v) == "string" and #v >= 6 then
+            key = v
+            break
+        end
+    end
+    State.HitCalls += 1
+    if key then
+        Config.HitKey = key
+        State.KeyLearned = true
+    end
+    local arg2 = args[2]
+    if type(arg2) == "table" and arg2[1] ~= nil then
+        State.Arg2Sample = describeArg2(arg2)
+    elseif State.Arg2Sample == "chưa có" then
+        State.Arg2Sample = "{} rỗng"
+    end
+    if not (key and Config.AutoFarm and Config.MultiHit) then return nil end
+    local hits, first = HookCtx.Hits, HookCtx.First
+    if not hits or not first or #hits == 0 then return nil end
+    local n = math.max(args.n or 0, 4)
+    local newArgs = { n = n }
+    for i = 1, n do newArgs[i] = args[i] end
+    local target = args[1]
+    if typeof(target) ~= "Instance" or target.Parent == nil then
+        newArgs[1] = first
+    end
+    newArgs[2] = buildArg2(hits, arg2)
+    State.AmpCount += 1
+    return newArgs
+end
+
+local lastPrecompute = 0
+connect(RunService.Heartbeat, function()
+    if not (Config.AutoFarm and Config.MultiHit) then return end
+    local now = os.clock()
+    if now - lastPrecompute < 0.05 then return end
+    lastPrecompute = now
+    HookCtx.Hits, HookCtx.First = collectHits()
+end)
+
+local function installHook()
+    HookCtx.RegHit = RegHit
+    if State.HookActive or not RegHit or not hookmetamethod or not getnamecallmethod then
+        return
+    end
+    if genv.HHubBFHookInstalled then
+        State.HookActive = true
+        return
+    end
+    local ok = pcall(function()
+        local old
+        local function handler(self, ...)
+            local ctx = genv.HHubBFHookCtx
+            if ctx and ctx.Running and ctx.RegHit and self == ctx.RegHit and not checkcaller() then
+                local method = getnamecallmethod()
+                if method == "FireServer" then
+                    local okHit, newArgs = pcall(ctx.OnHit, table.pack(...))
+                    if setnamecallmethod then setnamecallmethod(method) end
+                    if okHit and newArgs then
+                        return old(self, table.unpack(newArgs, 1, newArgs.n))
+                    end
+                end
+            end
+            return old(self, ...)
+        end
+        old = hookmetamethod(game, "__namecall", newcclosure and newcclosure(handler) or handler)
+    end)
+    if ok then genv.HHubBFHookInstalled = true end
+    State.HookActive = ok
+end
+
+task.spawn(function()
+    while State.Running do
+        scanRemotes()
+        installHook()
+        task.wait((RegAttack and RegHit) and 10 or 2)
+    end
+end)
+
+------------------------------------------------------------------
+-- HÀM ĐÁNH & GỌI REMOTE EVENT (TÍCH HỢP ĐẦY ĐỦ REGISTERATTACK & REGISTERHIT VỚI KEY)
+------------------------------------------------------------------
+local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
+
+local function clickOnce()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton1(Vector2.new(1280, 672))
+    end)
+end
+
+local function activateTool()
+    local character = getCharacter()
+    local tool = character and character:FindFirstChildOfClass("Tool")
+    if tool then
+        pcall(function()
+            tool:Activate()
+        end)
+    end
+end
+
+local function directFire()
+    pcall(function()
+        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
+        if RegAttack then
+            local attackArgs = { 1, 4 }
+            RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
+        end
+
+        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
+        local hits, first = collectHits()
+        if first and RegHit and Config.HitKey ~= "" then
+            local targetPart = first.Parent:FindFirstChild("Head") or first
+            local hitArgs = {
+                targetPart,
+                {},
+                nil,
+                Config.HitKey
+            }
+            RegHit:FireServer(table.unpack(hitArgs, 1, 4))
+        end
+    end)
+end
+
+local function attackMobs()
+    local mode = Config.AttackMode
+    clickOnce()
+    if mode == "Click + Activate" then
+        activateTool()
+        directFire()
+    elseif mode == "Click" then
+        directFire()
+    elseif mode == "Activate" then
+        activateTool()
+        directFire()
+    elseif mode == "Gửi thẳng key" then
+        directFire()
+    elseif mode == "Hàm game (GC)" then
+        activateTool()
+        directFire()
+    else
+        activateTool()
+        directFire()
+    end
+end
+
+local function trackDamage(list)
+    local damaged = false
+    local current = {}
+    for _, mob in ipairs(list) do
+        current[mob] = true
+        local humanoid = mob:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local previous = State.MobHP[mob]
+            if previous and humanoid.Health < previous - 0.01 then
+                damaged = true
+            end
+            State.MobHP[mob] = humanoid.Health
+        end
+    end
+    for mob in pairs(State.MobHP) do
+        if not current[mob] then
+            damaged = true
+            State.MobHP[mob] = nil
+        end
+    end
+    if damaged then
+        State.LastDamageAt = os.clock()
+        if State.Rotations > State.SavedRotations then
+            State.SavedRotations = State.Rotations
+            saveSoon()
+        end
+    end
+end
+
+local function rotateAttack()
+    local index = table.find(AttackModes, Config.AttackMode) or 1
+    index = index % #AttackModes + 1
+    Config.AttackMode = AttackModes[index]
+    State.Rotations += 1
+    State.Status = "Không gây sát thương - đổi sang: " .. Config.AttackMode
+end
+
+local function equipWeapon()
+    local character = getCharacter()
+    local humanoid = getHumanoid()
+    if not character or not humanoid then return end
+    local held = character:FindFirstChildOfClass("Tool")
+    if held and held.ToolTip == Config.Weapon then return end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not backpack then return end
+    for _, tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA("Tool") and tool.ToolTip == Config.Weapon then
+            pcall(function()
+                humanoid:EquipTool(tool)
+            end)
+            return
+        end
+    end
+end
+
+local function ensureHaki()
+    local character = getCharacter()
+    local commF = getCommF()
+    if character and commF and not character:FindFirstChild("HasBuso") then
+        pcall(function()
+            commF:InvokeServer("Buso")
+        end)
+    end
+end
+
+------------------------------------------------------------------
+-- VÒNG LẶP AUTO FARM (GOM QUÁI LỰC ĐẨY/KÉO MƯỢT MÀ)
+------------------------------------------------------------------
+local lastHaki = 0
+local simulationSet = false
+
+local function farmStep()
+    local character = getCharacter()
+    local root = getRoot(character)
+    local humanoid = getHumanoid()
+    if not root or not humanoid or humanoid.Health <= 0 then
+        State.Status = "Chờ hồi sinh..."
+        return
+    end
+
+    ensureMovers(root, false)
+
+    if not simulationSet and sethiddenproperty then
+        simulationSet = true
+        pcall(function()
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+        end)
+    end
+
+    local hpPercent = humanoid.Health / math.max(humanoid.MaxHealth, 1) * 100
+    if State.Fleeing then
+        if hpPercent >= 80 then
+            State.Fleeing = false
+        else
+            State.Status = string.format("Máu thấp (%d%%) - đang hồi máu trên cao", math.floor(hpPercent))
+            return
+        end
+    elseif Config.SafeHP > 0 and hpPercent < Config.SafeHP then
+        State.Fleeing = true
+        root.CFrame = root.CFrame + Vector3.new(0, 250, 0)
+        return
+    end
+
+    if Config.AutoEquip then equipWeapon() end
+    if Config.AutoHaki and os.clock() - lastHaki > 3 then
+        lastHaki = os.clock()
+        ensureHaki()
+    end
+
+    local quest = currentQuest()
+    State.Quest = quest
+
+    if Config.AutoQuest then
+        local questKey = quest.quest .. ":" .. quest.idx
+        local active = hasQuest()
+
+        if active and State.QuestKey and State.QuestKey ~= questKey then
+            local commF = getCommF()
+            if commF then
+                pcall(function()
+                    commF:InvokeServer("AbandonQuest")
+                end)
+            end
+            State.QuestKey = nil
+            task.wait(0.4)
+            active = hasQuest()
+        end
+
+        if active then
+            State.QuestKey = State.QuestKey or questKey
+        elseif os.clock() >= State.QuestRetryAt then
+            State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. "..."
+            if startQuest(quest) then
+                State.QuestKey = questKey
+            else
+                State.QuestRetryAt = os.clock() + 30
+                State.Status = "Không nhận được quest - farm không quest 30s"
+            end
+            return
+        end
+    end
+
+    local scanResults, _ = scanEnemies(quest.mob)
+    local mob = scanResults[1] and scanResults[1].Model or nil
+    
+    if not mob then
+        local spawnPos = findSpawnPos(quest.mob)
+        if spawnPos then
+            State.Status = "Đi tới điểm spawn " .. quest.mob
+            flyTo(root, CFrame.new(spawnPos + Vector3.new(0, Config.FarmHeight, 0)))
+        else
+            State.Status = "Không thấy " .. quest.mob .. " - chờ spawn"
+        end
+        return
+    end
+
+    local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+    if not mobRoot then return end
+    State.Status = "Farm " .. quest.mob .. " (" .. #scanResults .. " con)"
+
+    local anchorPos = mobRoot.Position
+    
+    -- Cơ chế Gom Quái bằng lực đẩy & kéo mượt mà, không khóa cứng vị trí gây kẹt quái
+    if Config.BringMob then
+        for _, entry in ipairs(scanResults) do
+            local other = entry.Model
+            local otherRoot = entry.RootPart
+            local otherHum = other:FindFirstChildOfClass("Humanoid")
+            if otherRoot and otherHum and otherHum.Health > 0 and other ~= mob
+                and (otherRoot.Position - anchorPos).Magnitude <= Config.BringRadius then
+                local pullDirection = (anchorPos - otherRoot.Position)
+                local dist = pullDirection.Magnitude
+                if dist > 4 then
+                    otherRoot.AssemblyLinearVelocity = pullDirection.Unit * math.min(dist * 10, 150)
+                else
+                    otherRoot.AssemblyLinearVelocity = Vector3.zero
+                end
+                otherRoot.CanCollide = false
+            end
+        end
+    end
+    mobRoot.CanCollide = false
+
+    local above = anchorPos + Vector3.new(0, Config.FarmHeight, 0)
+    root.CFrame = CFrame.lookAt(above, anchorPos)
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+
+    State.InAttack = true
+    
+    local rawMobsList = {}
+    for _, e in ipairs(scanResults) do table.insert(rawMobsList, e.Model) end
+    trackDamage(rawMobsList)
+    
+    if Config.AutoSwitch and os.clock() - State.LastDamageAt > Config.NoDamageTimeout then
+        rotateAttack()
+        State.LastDamageAt = os.clock()
+    end
+    attackMobs()
+end
+
+task.spawn(function()
+    while State.Running do
+        task.wait(math.max(Config.Delay, 0.02))
+        if Config.AutoFarm and not Config.AutoPumpkin then
+            State.InAttack = false
+            local ok, err = pcall(farmStep)
+            if not State.InAttack then
+                State.LastDamageAt = os.clock()
+            end
+            if not ok then
+                State.Status = "Lỗi: " .. tostring(err)
+                task.wait(1)
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while State.Running do
+        task.wait(1)
+        if Config.MobHighlight then
+            pcall(function()
+                local results, _ = scanEnemies(nil)
+                updateHighlights(results)
+            end)
+        else
+            clearHighlights()
+        end
+    end
+end)
+
+task.spawn(function()
+    while State.Running do
+        task.wait(3)
+        if Config.AutoStats then
+            pcall(function()
+                local data = LocalPlayer:FindFirstChild("Data")
+                local points = data and data:FindFirstChild("Points")
+                local commF = getCommF()
+                if points and commF and points.Value > 0 then
+                    commF:InvokeServer("AddPoint", Config.StatName, math.min(points.Value, 10))
+                end
+            end)
+        end
+    end
+end)
+
+------------------------------------------------------------------
+-- HALLOWEEN: AUTO THU BÍ NGÔ (KẾT HỢP CLICK CHUỘT NHẬT/ĐÁNH)
+------------------------------------------------------------------
+local function objPos(obj)
+    if obj:IsA("Model") then
+        if obj.PrimaryPart then return obj.PrimaryPart.Position end
+        local ok, pivot = pcall(function() return obj:GetPivot().Position end)
+        return ok and pivot or nil
+    elseif obj:IsA("BasePart") then
+        return obj.Position
+    end
+    return nil
+end
+
+task.spawn(function()
+    while State.Running do
+        task.wait(0.05)
+        if Config.AutoPumpkin then
+            pcall(function()
+                local folder = Workspace:FindFirstChild("PumpkinHunt")
+                local root = getRoot(getCharacter())
+                if not folder then
+                    State.PumpkinStatus = "Không có workspace.PumpkinHunt"
+                    return
+                end
+                if not root then
+                    State.PumpkinStatus = "Chờ nhân vật..."
+                    return
+                end
+                
+                if Config.PumpkinAttack then
+                    clickOnce()
+                end
+
+                local bv, bg = ensureMovers(root, true)
+                local target, best = nil, math.huge
+                for _, obj in ipairs(folder:GetChildren()) do
+                    local pos = objPos(obj)
+                    if pos then
+                        local d = (root.Position - pos).Magnitude
+                        if d < best then
+                            best, target = d, obj
+                        end
+                    end
+                end
+                if not target then
+                    bv.Velocity = Vector3.zero
+                    State.PumpkinStatus = "Hết bí ngô - chờ spawn"
+                    return
+                end
+                local targetPos = objPos(target) + Vector3.new(0, 2, 0)
+                local diff = targetPos - root.Position
+                local dist = diff.Magnitude
+                State.PumpkinStatus = string.format("Đang bay tới bí ngô (%d stud)", math.floor(dist))
+                if dist > 4 then
+                    bv.Velocity = diff.Unit * math.min(Config.PumpkinSpeed, dist * 25)
+                    if bg then bg.CFrame = CFrame.new(root.Position, targetPos) end
+                else
+                    bv.Velocity = diff.Unit * 15
+                end
+            end)
+        end
+    end
+end)
+
+connect(RunService.Stepped, function()
+    if (Config.AutoFarm or Config.AutoPumpkin) and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+
+connect(LocalPlayer.Idled, function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+connect(LocalPlayer.CharacterAdded, function()
+    State.Fleeing = false
+    simulationSet = false
+end)
+
+------------------------------------------------------------------
+-- GIẢM HIỆU ỨNG
+------------------------------------------------------------------
+local function lowFx(d)
+    if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+        if State.SavedEffects[d] == nil then
+            State.SavedEffects[d] = d.Enabled
+        end
+        d.Enabled = false
+    end
+end
+
+local function setLowEffects(on)
+    if on then
+        if State.EffectsConn then return end
+        State.OldShadows = Lighting.GlobalShadows
+        pcall(function() Lighting.GlobalShadows = false end)
+        State.EffectsConn = Workspace.DescendantAdded:Connect(function(d)
+            pcall(lowFx, d)
+        end)
+        task.spawn(function()
+            local n = 0
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if not State.Running or not Config.LowEffects then break end
+                pcall(lowFx, d)
+                n += 1
+                if n % 300 == 0 then task.wait() end
+            end
+        end)
+    else
+        if State.EffectsConn then
+            State.EffectsConn:Disconnect()
+            State.EffectsConn = nil
+        end
+        for d, enabled in pairs(State.SavedEffects) do
+            pcall(function()
+                d.Enabled = enabled
+            end)
+        end
+        table.clear(State.SavedEffects)
+        pcall(function() Lighting.GlobalShadows = State.OldShadows end)
+    end
+end
+
+------------------------------------------------------------------
+-- UNLOAD SẠCH
+------------------------------------------------------------------
+local function Unload()
+    if not State.Running then return end
+    State.Running = false
+    HookCtx.Running = false
+    genv.HHubBFHookCtx = nil
+    Config.AutoFarm = false
+    Config.AutoPumpkin = false
+    clearHighlights()
+    pcall(stopMovers)
+    pcall(setLowEffects, false)
+    for _, connection in ipairs(State.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(State.Connections)
+    if viewportConnection then viewportConnection:Disconnect() end
+    if Gui and Gui.Parent then Gui:Destroy() end
+    if genv.HHubBloxFruits and genv.HHubBloxFruits.Unload == Unload then
+        genv.HHubBloxFruits = nil
+    end
+end
+genv.HHubBloxFruits = { Unload = Unload, Config = Config, State = State }
+
+topButton("X", -34, Color3.fromRGB(150, 55, 68), Unload)
+topButton("−", -66, Colors.Panel2, function()
+    setMinimized(not IsMinimized)
+end)
+
+------------------------------------------------------------------
+-- TAB GIAO DIỆN CHÍNH
 ------------------------------------------------------------------
 local OverviewPage = addTab("Tổng quan")
 local FarmPage = addTab("Auto Farm")
@@ -741,196 +1678,77 @@ local function bind(key)
     end
 end
 
--- TAB 1: Tổng quan
 addSection(OverviewPage, "PLAYER MONITOR")
 local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
 local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
 local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
 local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
 local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
+local AttackInfo = addInfo(OverviewPage, "CHẾ ĐỘ ĐÁNH", "--")
 local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
 
--- TAB 2: Auto Farm
 addSection(FarmPage, "AUTO FARM & TÌM QUÁI V2")
 addToggle(FarmPage, "Auto Farm Level", false, function(v)
     Config.AutoFarm = v
     if v then
+        State.LastDamageAt = os.clock()
         State.Status = "Đang khởi động..."
     else
         State.Status = "Đang tắt"
-        stopMovers()
+        State.Fleeing = false
+        if not Config.AutoPumpkin then
+            stopMovers()
+        end
     end
 end)
 addToggle(FarmPage, "Auto Quest", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob (gom quái chuẩn)", Config.BringMob, bind("BringMob"))
+addToggle(FarmPage, "Bring Mob (lực đẩy/kéo mượt)", Config.BringMob, bind("BringMob"))
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
-addToggle(FarmPage, "Multi-Hit (nhân đòn đánh)", Config.MultiHit, bind("MultiHit"))
+addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
+addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
+addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
 addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
 addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
 addToggle(FarmPage, "Auto Haki (Buso)", Config.AutoHaki, bind("AutoHaki"))
 
--- TAB 3: Halloween
 addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
 addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
     Config.AutoPumpkin = v
-    if not v and not Config.AutoFarm then stopMovers() end
+    if not v then
+        State.PumpkinStatus = "Đang tắt"
+        if not Config.AutoFarm then
+            stopMovers()
+        end
+    end
 end)
-addToggle(EventPage, "Đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
+addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
 addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
+local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
 
--- TAB 4: Thông số
-addSection(TunePage, "THÔNG SỐ CÀI ĐẶT")
+addSection(TunePage, "THÔNG SỐ")
 addStepper(TunePage, "Độ cao so với quái", 5, 30, 1, Config.FarmHeight, bind("FarmHeight"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
 addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Tốc độ bay giữa đảo", 100, 400, 25, Config.TweenSpeed, bind("TweenSpeed"))
-addStepper(TunePage, "Độ trễ mỗi vòng (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
+addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
 
--- TAB 5: Hiệu năng
-addSection(PerformancePage, "TỐI ƯU HIỆN THỊ")
+addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
 addToggle(PerformancePage, "Giảm hiệu ứng hạt / bóng", Config.LowEffects, function(v)
     Config.LowEffects = v
+    setLowEffects(v)
     saveSoon()
 end)
 
--- TAB 6: Cài đặt
-addSection(SettingsPage, "ĐIỀU KHIỂN HỆ THỐNG")
-addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function() Main.Visible = not Main.Visible end)
+addSection(SettingsPage, "ĐIỀU KHIỂN")
+addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
+    Main.Visible = not Main.Visible
+end)
 addButton(SettingsPage, "XÓA HIGHLIGHT QUÁI", clearHighlights, Colors.Panel)
-addButton(SettingsPage, "LƯU CẤU HÌNH NGAY", function() saveSoon() end)
-addButton(SettingsPage, "ĐÓNG H-HUB & KHÔI PHỤC", function()
-    if genv.HHubBloxFruits and genv.HHubBloxFruits.Unload then genv.HHubBloxFruits.Unload() end
-end, Color3.fromRGB(130, 48, 60))
+addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 48, 60))
 
 selectTab("Tổng quan")
 
 ------------------------------------------------------------------
--- LOGIC QUEST & FARM CHÍNH
-------------------------------------------------------------------
-local function currentQuest()
-    local level = getLevel()
-    local pick = FallbackQuests[1]
-    for _, entry in ipairs(FallbackQuests) do
-        if entry[1] <= level then pick = entry end
-    end
-    return { mob = pick[2], quest = pick[3], idx = pick[4], level = pick[1] }
-end
-
-local function hasQuest()
-    local main = PlayerGui:FindFirstChild("Main")
-    local quest = main and main:FindFirstChild("Quest")
-    return quest and quest.Visible
-end
-
-local function startQuest(quest)
-    local commF = getCommF()
-    if not commF then return false end
-    pcall(function() commF:InvokeServer("StartQuest", quest.quest, quest.idx) end)
-    task.wait(0.5)
-    return hasQuest()
-end
-
-local function farmStep()
-    local character = getCharacter()
-    local root = getRoot(character)
-    local humanoid = getHumanoid(character)
-    if not root or not humanoid or humanoid.Health <= 0 then
-        State.Status = "Chờ hồi sinh..."
-        return
-    end
-
-    ensureMovers(root)
-
-    if Config.AutoHaki and not character:FindFirstChild("HasBuso") then
-        pcall(function() getCommF():InvokeServer("Buso") end)
-    end
-
-    local quest = currentQuest()
-    State.Quest = quest
-
-    if Config.AutoQuest and not hasQuest() then
-        State.Status = "Đang nhận nhiệm vụ..."
-        startQuest(quest)
-        return
-    end
-
-    local scanResults, _ = scanEnemies(quest.mob)
-    if #scanResults == 0 then
-        State.Status = "Tìm quái " .. quest.mob .. "..."
-        return
-    end
-
-    local target = scanResults[1]
-    State.Status = "Đang đánh: " .. target.Name .. " (" .. #scanResults .. " con)"
-
-    if Config.BringMob then
-        for i = 2, #scanResults do
-            local mRoot = scanResults[i].RootPart
-            if mRoot then
-                mRoot.CFrame = target.RootPart.CFrame
-                mRoot.AssemblyLinearVelocity = Vector3.zero
-            end
-        end
-    end
-
-    local above = target.RootPart.Position + Vector3.new(0, Config.FarmHeight, 0)
-    root.CFrame = CFrame.lookAt(above, target.RootPart.Position)
-    root.AssemblyLinearVelocity = Vector3.zero
-
-    updateHighlights(scanResults)
-    attackMobs()
-end
-
-task.spawn(function()
-    while State.Running do
-        task.wait(Config.Delay)
-        if Config.AutoFarm and not Config.AutoPumpkin then
-            pcall(farmStep)
-        end
-    end
-end)
-
-------------------------------------------------------------------
--- HALLOWEEN PUMPKIN LOGIC
-------------------------------------------------------------------
-local function objPos(obj)
-    if obj:IsA("Model") then
-        if obj.PrimaryPart then return obj.PrimaryPart.Position end
-        local ok, pivot = pcall(function() return obj:GetPivot().Position end)
-        return ok and pivot or nil
-    elseif obj:IsA("BasePart") then
-        return obj.Position
-    end
-    return nil
-end
-
-task.spawn(function()
-    while State.Running do
-        task.wait()
-        if Config.AutoPumpkin then
-            pcall(function()
-                local folder = Workspace:FindFirstChild("PumpkinHunt")
-                local root = getRoot(getCharacter())
-                if not folder or not root then return end
-                local target, best = nil, math.huge
-                for _, obj in ipairs(folder:GetChildren()) do
-                    local pos = objPos(obj)
-                    if pos then
-                        local d = (root.Position - pos).Magnitude
-                        if d < best then best, target = d, obj end
-                    end
-                end
-                if target then
-                    local targetPos = objPos(target) + Vector3.new(0, 2, 0)
-                    root.CFrame = CFrame.new(targetPos)
-                end
-            end)
-        end
-    end
-end)
-
-------------------------------------------------------------------
--- CẬP NHẬT FPS & THÔNG TIN UI THỜI GIAN THỰC
+-- CẬP NHẬT GIAO DIỆN
 ------------------------------------------------------------------
 local frameCount, fpsStart = 0, os.clock()
 connect(RunService.RenderStepped, function()
@@ -947,37 +1765,23 @@ task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
             LevelInfo.Text = string.format("Level %d  |  Sea %d", getLevel(), getSea())
-            local humanoid = getHumanoid(getCharacter())
+            local humanoid = getHumanoid()
             HealthInfo.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
             ToolInfo.Text = getEquippedToolName()
             local quest = State.Quest or currentQuest()
             QuestInfo.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
             StatusInfo.Text = State.Status
-            local ping = 0
-            pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
-            NetworkInfo.Text = string.format("%d ms  |  %d FPS", ping, State.FPS)
-            Footer.Text = string.format("H-HUB v4.3.2  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
+            AttackInfo.Text = string.format("%s | Multi-Hit: %s", Config.AttackMode, Config.MultiHit and "ON" or "OFF")
+            local ping = ""
+            pcall(function()
+                ping = string.format("%d ms  |  ", math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()))
+            end)
+            NetworkInfo.Text = ping .. State.FPS .. " FPS"
+            PumpkinInfo.Text = State.PumpkinStatus
+            Footer.Text = string.format("H-HUB v4.2  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-------------------------------------------------------------------
--- UNLOAD / DỌN DẸP SẠCH SẼ
-------------------------------------------------------------------
-local function Unload()
-    if not State.Running then return end
-    State.Running = false
-    Config.AutoFarm = false
-    Config.AutoPumpkin = false
-    clearHighlights()
-    stopMovers()
-    for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end
-    if Gui and Gui.Parent then Gui:Destroy() end
-    if genv.HHubBloxFruits and genv.HHubBloxFruits.Unload == Unload then
-        genv.HHubBloxFruits = nil
-    end
-end
-genv.HHubBloxFruits = { Unload = Unload, Config = Config, State = State }
-
-print("[H-HUB] Companion v4.3.2 (Full Tab + Fix RegisterHit) đã khởi động thành công!")
+print("[H-HUB] Companion v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo + RegisterHit/Attack) đã khởi động thành công!")
