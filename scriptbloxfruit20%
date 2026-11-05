@@ -1,5 +1,5 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo Quái + RegisterHit/Attack Chuẩn Key)
+    H-HUB // BLOX FRUITS COMPANION v4.3 (Fix lỗi bay nhầm NPC + Thêm tốc độ bay Auto Farm)
     Auto Farm Level + Auto Quest + Halloween Pumpkin + Radar Quái v2 tối ưu
 ]]
 
@@ -69,7 +69,8 @@ local Config = {
     HitRange = 100,
     BringRadius = 300,
     SafeHP = 25,            
-    TweenSpeed = 300,
+    TweenSpeed = 300,       -- Tốc độ bay khi làm nhiệm vụ / di chuyển chung
+    FarmTweenSpeed = 350,   -- TÍNH NĂNG MỚI: Tốc độ bay riêng cho Auto Farm
     Delay = 0.05,
     HitKey = "",
     AttackMode = "Click + Activate",
@@ -84,7 +85,7 @@ local Config = {
 
 local SAVEABLE = {
     "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
-    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeight", "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
+    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeight", "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "FarmTweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
 local CONFIG_PATH = "HHub/BloxFruits_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 
@@ -192,8 +193,6 @@ local State = {
     SpawnCache = {},
     QuestNPC = {},
     Fleeing = false,
-    HookInstalled = false,
-    KeyLearned = false,
     HookActive = false,
     AmpCount = 0,
     HitCalls = 0,
@@ -203,7 +202,6 @@ local State = {
     InAttack = false,
     Rotations = 0,
     SavedRotations = 0,
-    GcInfo = "chưa quét",
     EffectsConn = nil,
     OldShadows = Lighting.GlobalShadows,
     SavedEffects = setmetatable({}, { __mode = "k" }),
@@ -464,7 +462,7 @@ make("TextLabel", {
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.2",
+    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.3",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 13,
@@ -501,7 +499,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 10, 1, -25),
     Size = UDim2.new(1, -20, 0, 18),
     BackgroundTransparency = 1,
-    Text = "H-HUB v4.2  |  Đang khởi động...",
+    Text = "H-HUB v4.3  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -931,6 +929,7 @@ end
 
 local flyTo
 
+-- ĐÃ FIX: Hàm bay an toàn, không bị bay nhầm NPC linh tinh khi nhận quest
 local function startQuest(quest)
     local commF = getCommF()
     if not commF then return false end
@@ -939,8 +938,8 @@ local function startQuest(quest)
         pcall(function()
             commF:InvokeServer("StartQuest", quest.quest, quest.idx)
         end)
-        for _ = 1, 8 do
-            task.wait(0.2)
+        for _ = 1, 6 do
+            task.wait(0.25)
             if hasQuest() then
                 return true
             end
@@ -951,7 +950,7 @@ local function startQuest(quest)
     local function goTo(position)
         local root = getRoot(getCharacter())
         if not root then return false end
-        flyTo(root, CFrame.new(position + Vector3.new(0, 3, 4)))
+        flyTo(root, CFrame.new(position + Vector3.new(0, 3, 4)), Config.TweenSpeed)
         task.wait(0.2)
         return true
     end
@@ -968,6 +967,7 @@ local function startQuest(quest)
     if remembered then
         return false
     end
+
     local root = getRoot(getCharacter())
     if not root then return false end
     local anchor = findSpawnPos(quest.mob) or root.Position
@@ -977,14 +977,16 @@ local function startQuest(quest)
         for _, npc in ipairs(npcs:GetChildren()) do
             if npc:IsA("Model") then
                 local ok, pivot = pcall(function() return npc:GetPivot().Position end)
-                if ok then
+                -- Lọc chặt chẽ chỉ lấy các NPC gần khu vực spawn của quái nhiệm vụ để tránh bay nhầm
+                if ok and (pivot - anchor).Magnitude <= 800 then
                     table.insert(list, { pivot, (pivot - anchor).Magnitude })
                 end
             end
         end
         table.sort(list, function(x, y) return x[2] < y[2] end)
     end
-    for i = 1, math.min(3, #list) do
+
+    for i = 1, math.min(2, #list) do
         if not (State.Running and Config.AutoFarm) then break end
         if goTo(list[i][1]) and attempt() then
             State.QuestNPC[quest.quest] = list[i][1]
@@ -994,7 +996,7 @@ local function startQuest(quest)
     return false
 end
 
-flyTo = function(root, targetCFrame)
+flyTo = function(root, targetCFrame, customSpeed)
     local dist = (root.Position - targetCFrame.Position).Magnitude
     if dist < 6 then
         return
@@ -1003,7 +1005,7 @@ flyTo = function(root, targetCFrame)
         root.CFrame = targetCFrame
         return
     end
-    local speed = math.max(Config.TweenSpeed, 50)
+    local speed = math.max(customSpeed or Config.TweenSpeed, 50)
     local tween = TweenService:Create(root, TweenInfo.new(dist / speed, Enum.EasingStyle.Linear), { CFrame = targetCFrame })
     local done = false
     local conn = tween.Completed:Connect(function()
@@ -1188,7 +1190,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HÀM ĐÁNH & GỌI REMOTE EVENT (TÍCH HỢP ĐẦY ĐỦ REGISTERATTACK & REGISTERHIT VỚI KEY)
+-- HÀM ĐÁNH SONG SONG: AUTO CLICK + REMOTE EVENT
 ------------------------------------------------------------------
 local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
 
@@ -1211,13 +1213,11 @@ end
 
 local function directFire()
     pcall(function()
-        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
         if RegAttack then
             local attackArgs = { 1, 4 }
             RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
         end
 
-        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
         local hits, first = collectHits()
         if first and RegHit and Config.HitKey ~= "" then
             local targetPart = first.Parent:FindFirstChild("Head") or first
@@ -1235,6 +1235,7 @@ end
 local function attackMobs()
     local mode = Config.AttackMode
     clickOnce()
+
     if mode == "Click + Activate" then
         activateTool()
         directFire()
@@ -1320,7 +1321,7 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- VÒNG LẶP AUTO FARM (GOM QUÁI LỰC ĐẨY/KÉO MƯỢT MÀ)
+-- VÒNG LẶP AUTO FARM
 ------------------------------------------------------------------
 local lastHaki = 0
 local simulationSet = false
@@ -1329,7 +1330,7 @@ local function farmStep()
     local character = getCharacter()
     local root = getRoot(character)
     local humanoid = getHumanoid()
-    if not root or not humanoid or humanoid.Health <= 0 then
+    if not root or not humanoid || humanoid.Health <= 0 then
         State.Status = "Chờ hồi sinh..."
         return
     end
@@ -1397,13 +1398,13 @@ local function farmStep()
     end
 
     local scanResults, _ = scanEnemies(quest.mob)
-    local mob = scanResults[1] and scanResults[1].Model or nil
+    local mob = scanResults[1] and scanResults[1].Model || nil
     
     if not mob then
         local spawnPos = findSpawnPos(quest.mob)
         if spawnPos then
             State.Status = "Đi tới điểm spawn " .. quest.mob
-            flyTo(root, CFrame.new(spawnPos + Vector3.new(0, Config.FarmHeight, 0)))
+            flyTo(root, CFrame.new(spawnPos + Vector3.new(0, Config.FarmHeight, 0)), Config.FarmTweenSpeed) -- Áp dụng tốc độ bay farm mới
         else
             State.Status = "Không thấy " .. quest.mob .. " - chờ spawn"
         end
@@ -1416,7 +1417,6 @@ local function farmStep()
 
     local anchorPos = mobRoot.Position
     
-    -- Cơ chế Gom Quái bằng lực đẩy & kéo mượt mà, không khóa cứng vị trí gây kẹt quái
     if Config.BringMob then
         for _, entry in ipairs(scanResults) do
             local other = entry.Model
@@ -1503,7 +1503,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HALLOWEEN: AUTO THU BÍ NGÔ (KẾT HỢP CLICK CHUỘT NHẬT/ĐÁNH)
+-- HALLOWEEN: AUTO THU BÍ NGÔ
 ------------------------------------------------------------------
 local function objPos(obj)
     if obj:IsA("Model") then
@@ -1568,7 +1568,7 @@ task.spawn(function()
 end)
 
 connect(RunService.Stepped, function()
-    if (Config.AutoFarm or Config.AutoPumpkin) and LocalPlayer.Character then
+    if (Config.AutoFarm || Config.AutoPumpkin) and LocalPlayer.Character then
         for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CanCollide = false
@@ -1729,6 +1729,7 @@ addSection(TunePage, "THÔNG SỐ")
 addStepper(TunePage, "Độ cao so với quái", 5, 30, 1, Config.FarmHeight, bind("FarmHeight"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
 addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
+addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 500, 25, Config.FarmTweenSpeed, bind("FarmTweenSpeed")) -- THÊM THANH CHỈNH TỐC ĐỘ BAY FARM
 addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
 
 addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
@@ -1778,10 +1779,10 @@ task.spawn(function()
             end)
             NetworkInfo.Text = ping .. State.FPS .. " FPS"
             PumpkinInfo.Text = State.PumpkinStatus
-            Footer.Text = string.format("H-HUB v4.2  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
+            Footer.Text = string.format("H-HUB v4.3  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-print("[H-HUB] Companion v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo + RegisterHit/Attack) đã khởi động thành công!")
+print("[H-HUB] Companion v4.3 (Đã fix lỗi bay nhầm NPC + Tốc độ bay Auto Farm) đã khởi động thành công!")
