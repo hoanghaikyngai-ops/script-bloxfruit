@@ -1,5 +1,5 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v4.3
+    H-HUB // BLOX FRUITS COMPANION v4.4
     - Nhận quest hoàn toàn qua remote (không bay tới NPC nữa)
     - Kéo quái LIÊN TỤC mỗi frame, chỉ khi bật Auto Farm
     - Auto Click chạy song song, liên tục với gọi Remote Event (RegisterAttack / RegisterHit)
@@ -72,21 +72,21 @@ local Config = {
     StatName = "Melee",
 
     -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 9,
-    FarmHeightLate = 10,
+    FarmHeight = 13,
+    FarmHeightLate = 14,
     HeightSwitchDelay = 30,
 
     HitRange = 100,
     BringRadius = 300,
     SafeHP = 25,
     TweenSpeed = 300,       -- tốc độ bay của Auto Farm
-    Delay = 0.05,           -- nhịp gọi remote event
-    ClickDelay = 0.05,      -- nhịp auto click
+    Delay = 0.05,           -- nhịp mỗi lần đánh (như bản cũ)
     HitKey = "",
 
-    AutoClick = true,       -- click liên tục
+    AttackMode = "Click + Activate",
+    AutoSwitch = true,
+    NoDamageTimeout = 8,
     ScreenClick = true,     -- đánh thường bằng cách click thật vào màn hình
-    AutoRemote = true,      -- gọi remote event liên tục (song song với click)
 
     HitFormat = "Tự động",
     MultiHit = true,
@@ -97,11 +97,11 @@ local Config = {
 
 local SAVEABLE = {
     "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
-    "MultiHit", "AutoClick", "ScreenClick", "AutoRemote", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
-    "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "ClickDelay", "PumpkinSpeed", "PumpkinAttack",
+    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "ScreenClick", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
+    "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
 -- đổi tên file để không đọc lại cấu hình cũ (độ cao 15 cũ sẽ đè mất giá trị 9 mới)
-local CONFIG_PATH = "HHub/BloxFruits_v43_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
+local CONFIG_PATH = "HHub/BloxFruits_v44_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 
 local function loadConfig()
     pcall(function()
@@ -223,6 +223,20 @@ local State = {
     FarmStartAt = os.clock(),   -- mốc bắt đầu farm để tính độ cao theo thời gian
     LastEngageAt = 0,           -- lần cuối đang bám quái (cho click/remote)
     BringPoint = nil,           -- điểm gom quái
+    TargetMob = nil,
+    MobHP = setmetatable({}, { __mode = "k" }),
+    LastDamageAt = os.clock(),
+    InAttack = false,
+    Rotations = 0,
+    SavedRotations = 0,
+    -- Theo dõi quest cục bộ (không phụ thuộc bảng quest của game)
+    QuestAccepted = false,
+    QuestSeenUI = false,
+    UIMissingSince = nil,
+    QuestKills = 0,
+    QuestNeed = 0,
+    LastQuestInvokeAt = 0,
+    SeenMobs = setmetatable({}, { __mode = "k" }),
 }
 
 local RegAttack, RegHit
@@ -482,7 +496,7 @@ make("TextLabel", {
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.3",
+    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.4",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 13,
@@ -519,7 +533,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 10, 1, -25),
     Size = UDim2.new(1, -20, 0, 18),
     BackgroundTransparency = 1,
-    Text = "H-HUB v4.3  |  Đang khởi động...",
+    Text = "H-HUB v4.4  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -863,7 +877,7 @@ local function pickQuestFromModule(level, sea)
                         if req and keys == 1 and type(mob) == "string" and type(count) == "number" and count > 1
                             and req <= level and req >= range[1] and req <= range[2] then
                             if not best or req > best[1] then
-                                best = { req, mob, questName, index }
+                                best = { req, mob, questName, index, count }
                             end
                         end
                     end
@@ -893,7 +907,7 @@ local function currentQuest()
         end
     end
     pick = pick or FallbackQuests[1]
-    local quest = { mob = pick[2], quest = pick[3], idx = pick[4], level = pick[1] }
+    local quest = { mob = pick[2], quest = pick[3], idx = pick[4], level = pick[1], count = pick[5] }
     State.QuestCache = { level = level, quest = quest }
     return quest
 end
@@ -947,21 +961,50 @@ local function findSpawnPos(mobName)
     return best or State.SpawnCache[mobName]
 end
 
--- CHỈ gọi remote nhận quest, KHÔNG bay tới NPC nào cả
+-- Quest đang làm? Ưu tiên bảng quest của game, nếu bảng không hiện thì dùng bộ đếm cục bộ
+local function questActiveNow()
+    return hasQuest()
+end
+
+local function questLabel(quest)
+    local prefix = questActiveNow() and "Đang làm: " or "Chưa nhận: "
+    local text = prefix .. quest.quest .. " (" .. quest.mob .. ")"
+    if State.QuestAccepted and State.QuestNeed > 0 then
+        text = text .. string.format(" %d/%d", math.min(State.QuestKills, State.QuestNeed), State.QuestNeed)
+    end
+    return text
+end
+
+-- Chỉ đánh dấu đã nhận khi game xác nhận bằng Quest UI.
+-- Tránh trạng thái giả khiến script spam StartQuest và bộ đếm lệch.
 local function startQuest(quest)
     local commF = getCommF()
-    if not commF then return false end
+    if not commF then
+        State.QuestRetryAt = os.clock() + 5
+        return false
+    end
 
     State.LastQuestInvokeAt = os.clock()
-    pcall(function()
+    local invoked = pcall(function()
         commF:InvokeServer("StartQuest", quest.quest, quest.idx)
     end)
-    for _ = 1, 20 do
+
+    for _ = 1, 15 do
         task.wait(0.2)
         if hasQuest() then
+            State.QuestAccepted = true
+            State.QuestSeenUI = true
+            State.QuestKills = 0
+            State.QuestNeed = quest.count or 6
+            State.UIMissingSince = nil
+            State.QuestRetryAt = 0
             return true
         end
     end
+
+    State.QuestAccepted = false
+    State.QuestSeenUI = false
+    State.QuestRetryAt = os.clock() + (invoked and 8 or 12)
     return false
 end
 
@@ -1160,13 +1203,25 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- ĐÁNH: AUTO CLICK + REMOTE EVENT (HAI VÒNG LẶP SONG SONG)
+-- HÀM ĐÁNH & GỌI REMOTE EVENT (NGUYÊN XI TỪ BẢN CŨ + CLICK MÀN HÌNH)
 ------------------------------------------------------------------
+local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
+
 local function clickOnce()
     pcall(function()
         VirtualUser:CaptureController()
         VirtualUser:ClickButton1(Vector2.new(1280, 672))
     end)
+end
+
+local function activateTool()
+    local character = getCharacter()
+    local tool = character and character:FindFirstChildOfClass("Tool")
+    if tool then
+        pcall(function()
+            tool:Activate()
+        end)
+    end
 end
 
 -- Chọn điểm click trên màn hình, tránh trúng menu H-HUB đang mở
@@ -1194,7 +1249,7 @@ local function pickScreenPoint()
     return candidates[2]
 end
 
--- Đánh thường: click chuột thật vào màn hình (như người chơi bấm)
+-- Đánh thường: click chuột thật vào màn hình
 local function screenClick()
     local point = pickScreenPoint()
     if not point then return end
@@ -1207,26 +1262,16 @@ local function screenClick()
     end
 end
 
-local function activateTool()
-    local character = getCharacter()
-    local tool = character and character:FindFirstChildOfClass("Tool")
-    if tool then
-        pcall(function()
-            tool:Activate()
-        end)
-    end
-end
-
 local function directFire()
     pcall(function()
-        -- RE/RegisterAttack
+        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
         if RegAttack then
             local attackArgs = { 1, 4 }
             RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
         end
 
-        -- RE/RegisterHit kèm Head/RootPart của quái và key học được
-        local _, first = collectHits()
+        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
+        local hits, first = collectHits()
         if first and RegHit and Config.HitKey ~= "" then
             local targetPart = first.Parent:FindFirstChild("Head") or first
             local hitArgs = {
@@ -1240,35 +1285,67 @@ local function directFire()
     end)
 end
 
--- Đang bám quái? (farmStep cập nhật LastEngageAt liên tục)
-local function isEngaged()
-    if not Config.AutoFarm or Config.AutoPumpkin or State.Fleeing then return false end
-    if State.BringPoint == nil then return false end   -- chưa có quái để đánh
-    local hum = getHumanoid()
-    return hum ~= nil and hum.Health > 0
+local function attackMobs()
+    local mode = Config.AttackMode
+    clickOnce()
+    if Config.ScreenClick then
+        screenClick()
+    end
+    if mode == "Click + Activate" then
+        activateTool()
+        directFire()
+    elseif mode == "Click" then
+        directFire()
+    elseif mode == "Activate" then
+        activateTool()
+        directFire()
+    elseif mode == "Gửi thẳng key" then
+        directFire()
+    elseif mode == "Hàm game (GC)" then
+        activateTool()
+        directFire()
+    else
+        activateTool()
+        directFire()
+    end
 end
 
--- Vòng 1: auto click liên tục
-task.spawn(function()
-    while State.Running do
-        task.wait(math.max(Config.ClickDelay, 0.01))
-        if isEngaged() then
-            if Config.AutoClick then clickOnce() end
-            if Config.ScreenClick then screenClick() end
+local function trackDamage(list)
+    local damaged = false
+    local current = {}
+    for _, mob in ipairs(list) do
+        current[mob] = true
+        local humanoid = mob:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local previous = State.MobHP[mob]
+            if previous and humanoid.Health < previous - 0.01 then
+                damaged = true
+            end
+            State.MobHP[mob] = humanoid.Health
         end
     end
-end)
+    for mob in pairs(State.MobHP) do
+        if not current[mob] then
+            damaged = true
+            State.MobHP[mob] = nil
+        end
+    end
+    if damaged then
+        State.LastDamageAt = os.clock()
+        if State.Rotations > State.SavedRotations then
+            State.SavedRotations = State.Rotations
+            saveSoon()
+        end
+    end
+end
 
--- Vòng 2: gọi remote event liên tục (chạy song song với vòng click)
-task.spawn(function()
-    while State.Running do
-        task.wait(math.max(Config.Delay, 0.02))
-        if Config.AutoRemote and isEngaged() then
-            activateTool()
-            directFire()
-        end
-    end
-end)
+local function rotateAttack()
+    local index = table.find(AttackModes, Config.AttackMode) or 1
+    index = index % #AttackModes + 1
+    Config.AttackMode = AttackModes[index]
+    State.Rotations += 1
+    State.Status = "Không gây sát thương - đổi sang: " .. Config.AttackMode
+end
 
 ------------------------------------------------------------------
 -- TRANG BỊ / HAKI
@@ -1302,51 +1379,60 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- KÉO QUÁI LIÊN TỤC (MỖI FRAME, CHỈ KHI BẬT AUTO FARM)
+-- KÉO QUÁI LIÊN TỤC BẰNG LỰC KÉO (không khóa vị trí, quái vẫn bị trừ máu)
 ------------------------------------------------------------------
-local function bringStep()
-    if not (Config.AutoFarm and Config.BringMob) or Config.AutoPumpkin then
+local function pullToward(part, point)
+    local pull = point - part.Position
+    local dist = pull.Magnitude
+    if dist > 4 then
+        part.AssemblyLinearVelocity = pull.Unit * math.min(dist * 10, 150)
+    else
+        part.AssemblyLinearVelocity = Vector3.zero
+    end
+    part.CanCollide = false
+end
+
+-- Kéo liên tục: mỗi Heartbeat cập nhật vận tốc hướng về điểm tụ.
+-- Không đặt CFrame, không Anchored/PlatformStand; quái vẫn có thể nhận sát thương
+-- và di chuyển tự nhiên khi không còn nằm trong vùng kéo.
+connect(RunService.Heartbeat, function()
+    if not (State.Running and Config.AutoFarm and Config.BringMob)
+        or Config.AutoPumpkin or State.Fleeing then
         State.BroughtCount = 0
         return
     end
-    if State.Fleeing then return end
+
     local point, quest = State.BringPoint, State.Quest
-    if not point or not quest then
+    local folder = Workspace:FindFirstChild("Enemies")
+    if not point or not quest or not folder then
         State.BroughtCount = 0
         return
     end
-    local folder = Workspace:FindFirstChild("Enemies")
-    if not folder then return end
 
     local count = 0
+    local maxRadius = math.max(tonumber(Config.BringRadius) or 350, 25)
     for _, mob in ipairs(folder:GetChildren()) do
         if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local part = mob:FindFirstChild("HumanoidRootPart")
-            if hum and part and hum.Health > 0
-                and (part.Position - point).Magnitude <= Config.BringRadius then
-                -- đặt thẳng vị trí về điểm gom, chạy lại mỗi frame nên quái không kịp đi lại
-                part.CFrame = CFrame.new(point)
-                part.AssemblyLinearVelocity = Vector3.zero
-                part.AssemblyAngularVelocity = Vector3.zero
-                part.CanCollide = false
-                pcall(function()
-                    hum.WalkSpeed = 0
-                    hum.JumpPower = 0
-                end)
-                count += 1
+            if hum and part and hum.Health > 0 then
+                local offset = point - part.Position
+                local distance = offset.Magnitude
+                if distance > 4 and distance <= maxRadius then
+                    -- Tái áp vận tốc liên tục để thắng vận tốc đi lang thang của NPC.
+                    local speed = math.clamp(distance * 10, 35, 150)
+                    part.AssemblyLinearVelocity = offset.Unit * speed
+                    part.CanCollide = false
+                    count += 1
+                elseif distance <= 4 then
+                    part.AssemblyLinearVelocity = Vector3.zero
+                    part.CanCollide = false
+                    count += 1
+                end
             end
         end
     end
     State.BroughtCount = count
-end
-
--- Chạy ở cả Stepped (trước vật lý) và Heartbeat (sau vật lý) để quái luôn bị giữ lại
-connect(RunService.Stepped, function()
-    pcall(bringStep)
-end)
-connect(RunService.Heartbeat, function()
-    pcall(bringStep)
 end)
 
 ------------------------------------------------------------------
@@ -1403,9 +1489,35 @@ local function farmStep()
     -- Nhận quest chỉ bằng remote, không di chuyển tới NPC
     if Config.AutoQuest then
         local questKey = quest.quest .. ":" .. quest.idx
-        local active = hasQuest()
+        local now = os.clock()
+        local ui = hasQuest()
 
-        if active and State.QuestKey and State.QuestKey ~= questKey then
+        if ui then
+            State.QuestSeenUI = true
+            State.UIMissingSince = nil
+            if not State.QuestAccepted then
+                State.QuestAccepted = true
+                State.QuestKills = 0
+                State.QuestNeed = quest.count or 6
+            end
+            State.QuestKey = questKey
+        elseif State.QuestSeenUI then
+            -- Quest UI đã biến mất ổn định: coi là hoàn thành/hủy và nhận lại.
+            State.UIMissingSince = State.UIMissingSince or now
+            if now - State.UIMissingSince >= 2 then
+                State.QuestSeenUI = false
+                State.QuestAccepted = false
+                State.QuestKey = nil
+                State.QuestKills = 0
+                State.UIMissingSince = nil
+                State.QuestRetryAt = now + 1
+            end
+        elseif not hasQuest() then
+            State.QuestAccepted = false
+        end
+
+        -- Quest cũ không còn hợp cấp -> bỏ quest cũ
+        if State.QuestKey and State.QuestKey ~= questKey and questActiveNow() then
             local commF = getCommF()
             if commF then
                 pcall(function()
@@ -1413,34 +1525,44 @@ local function farmStep()
                 end)
             end
             State.QuestKey = nil
+            State.QuestAccepted = false
+            State.QuestSeenUI = false
             task.wait(0.4)
-            active = hasQuest()
         end
 
-        if active then
-            State.QuestKey = State.QuestKey or questKey
-            State.QuestMissingSince = nil
-        else
-            local now = os.clock()
-            State.QuestMissingSince = State.QuestMissingSince or now
-            local missingFor = now - State.QuestMissingSince
-            local sinceInvoke = now - (State.LastQuestInvokeAt or 0)
-            -- Chỉ nhận lại quest khi: không thấy quest liên tục >= 3s,
-            -- cách lần gọi trước >= 20s, và hết thời gian chờ thử lại
-            if missingFor >= 3 and sinceInvoke >= 20 and now >= State.QuestRetryAt then
-                State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. " (remote)..."
-                if startQuest(quest) then
-                    State.QuestKey = questKey
-                    State.QuestMissingSince = nil
-                else
-                    State.QuestRetryAt = os.clock() + 20
-                    State.Status = "Không nhận được quest - farm tiếp, thử lại sau 20s"
-                end
+        if ui then
+            State.QuestKey = questKey
+        elseif not questActiveNow() and now >= State.QuestRetryAt
+            and now - State.LastQuestInvokeAt >= 3 then
+            State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. " (remote)..."
+            if startQuest(quest) then
+                State.QuestKey = questKey
+            else
+                State.Status = "Server chưa xác nhận quest - sẽ thử lại"
             end
         end
     end
 
     local scanResults = scanEnemies(quest.mob)
+
+    -- Đếm số quái đã hạ (quái biến mất khi đang ở gần) để biết khi nào xong quest
+    do
+        local current = {}
+        for _, e in ipairs(scanResults) do
+            current[e.Model] = true
+            State.SeenMobs[e.Model] = e.Distance
+        end
+        for m, dist in pairs(State.SeenMobs) do
+            if not current[m] then
+                if State.QuestAccepted and dist <= Config.HitRange + 60 then
+                    State.QuestKills += 1
+                end
+                State.SeenMobs[m] = nil
+            end
+        end
+    end
+
+    local mob = scanResults[1] and scanResults[1].Model or nil
     local mob = scanResults[1] and scanResults[1].Model or nil
 
     if not mob then
@@ -1463,6 +1585,19 @@ local function farmStep()
     State.BringPoint = anchorPos          -- vòng Heartbeat sẽ kéo các quái khác về điểm này liên tục
     mobRoot.CanCollide = false
 
+    -- Gom quái bằng lực kéo ngay trong bước farm (như bản cũ); vòng Heartbeat giữ lực kéo liên tục
+    if Config.BringMob then
+        for _, entry in ipairs(scanResults) do
+            local other = entry.Model
+            local otherRoot = entry.RootPart
+            local otherHum = other:FindFirstChildOfClass("Humanoid")
+            if otherRoot and otherHum and otherHum.Health > 0 and other ~= mob
+                and (otherRoot.Position - anchorPos).Magnitude <= Config.BringRadius then
+                pullToward(otherRoot, anchorPos)
+            end
+        end
+    end
+
     local height = currentHeight()
     local elapsed = math.floor(os.clock() - State.FarmStartAt)
     State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo %d", quest.mob, #scanResults, height, elapsed, State.BroughtCount or 0)
@@ -1476,22 +1611,28 @@ local function farmStep()
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
 
-    State.LastEngageAt = os.clock()
+    State.InAttack = true
 
-    -- Đánh ngay trong mỗi bước farm (giống bản cũ), ngoài ra 2 vòng click/remote vẫn chạy song song
-    if Config.AutoClick then clickOnce() end
-    if Config.ScreenClick then screenClick() end
-    if Config.AutoRemote then
-        activateTool()
-        directFire()
+    local rawMobsList = {}
+    for _, e in ipairs(scanResults) do table.insert(rawMobsList, e.Model) end
+    trackDamage(rawMobsList)
+
+    if Config.AutoSwitch and os.clock() - State.LastDamageAt > Config.NoDamageTimeout then
+        rotateAttack()
+        State.LastDamageAt = os.clock()
     end
+    attackMobs()
 end
 
 task.spawn(function()
     while State.Running do
-        task.wait(0.03)
+        task.wait(math.max(Config.Delay, 0.02))
         if Config.AutoFarm and not Config.AutoPumpkin then
+            State.InAttack = false
             local ok, err = pcall(farmStep)
+            if not State.InAttack then
+                State.LastDamageAt = os.clock()
+            end
             if not ok then
                 State.Status = "Lỗi: " .. tostring(err)
                 task.wait(1)
@@ -1551,6 +1692,22 @@ task.spawn(function()
             pcall(function()
                 local folder = Workspace:FindFirstChild("PumpkinHunt")
                 local root = getRoot(getCharacter())
+
+                -- Đánh/click chạy chung khi bật Auto Pumpkin (giống Auto Farm)
+                if Config.PumpkinAttack then
+                    if Config.AutoEquip then equipWeapon() end
+                    if Config.AutoHaki and os.clock() - lastHaki > 3 then
+                        lastHaki = os.clock()
+                        ensureHaki()
+                    end
+                    -- Gọi click chuột và Activate độc lập cho event bí ngô;
+                    -- attackMobs tiếp tục xử lý RegisterAttack/RegisterHit như Auto Farm.
+                    clickOnce()
+                    activateTool()
+                    if Config.ScreenClick then screenClick() end
+                    directFire()
+                end
+
                 if not folder then
                     State.PumpkinStatus = "Không có workspace.PumpkinHunt"
                     return
@@ -1558,10 +1715,6 @@ task.spawn(function()
                 if not root then
                     State.PumpkinStatus = "Chờ nhân vật..."
                     return
-                end
-
-                if Config.PumpkinAttack then
-                    clickOnce()
                 end
 
                 local bv, bg = ensureMovers(root, true)
@@ -1737,9 +1890,9 @@ end)
 addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind("AutoQuest"))
 addToggle(FarmPage, "Bring Mob (kéo liên tục khi farm)", Config.BringMob, bind("BringMob"))
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
-addToggle(FarmPage, "Auto Click (chạy liên tục)", Config.AutoClick, bind("AutoClick"))
+addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
+addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
 addToggle(FarmPage, "Đánh thường: click vào màn hình", Config.ScreenClick, bind("ScreenClick"))
-addToggle(FarmPage, "Gọi Remote Event (song song click)", Config.AutoRemote, bind("AutoRemote"))
 addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
 addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
 addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
@@ -1766,8 +1919,7 @@ addStepper(TunePage, "Đổi độ cao sau (giây)", 5, 300, 5, Config.HeightSwi
 addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
 addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Nhịp click (giây)", 0.02, 0.2, 0.01, Config.ClickDelay, bind("ClickDelay"))
-addStepper(TunePage, "Nhịp remote (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
+addStepper(TunePage, "Nhịp đánh (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
 addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
 
 addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
@@ -2101,7 +2253,7 @@ task.spawn(function()
             TrackLabel.Text = (MusicSound.Playing and "▶ " or "⏸ ") .. Music.CurrentName
 
             local quest = State.Quest or currentQuest()
-            QuestLabel.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
+            QuestLabel.Text = questLabel(quest)
 
             local info = questNpcInfo(quest)
             local root = getRoot(getCharacter())
@@ -2183,12 +2335,11 @@ task.spawn(function()
             HealthInfo.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
             ToolInfo.Text = getEquippedToolName()
             local quest = State.Quest or currentQuest()
-            QuestInfo.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
+            QuestInfo.Text = questLabel(quest)
             StatusInfo.Text = State.Status
-            AttackInfo.Text = string.format("Click: %s | Màn hình: %s | Remote: %s | Multi-Hit: %s | Key: %s",
-                Config.AutoClick and "ON" or "OFF",
+            AttackInfo.Text = string.format("%s | Màn hình: %s | Multi-Hit: %s | Key: %s",
+                Config.AttackMode,
                 Config.ScreenClick and "ON" or "OFF",
-                Config.AutoRemote and "ON" or "OFF",
                 Config.MultiHit and "ON" or "OFF",
                 State.KeyLearned and "đã học" or "chưa có")
             local ping = ""
@@ -2197,7 +2348,7 @@ task.spawn(function()
             end)
             NetworkInfo.Text = ping .. State.FPS .. " FPS"
             PumpkinInfo.Text = State.PumpkinStatus
-            Footer.Text = string.format("H-HUB v4.3  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
+            Footer.Text = string.format("H-HUB v4.4  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
         end)
         task.wait(0.5)
     end
