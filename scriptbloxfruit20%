@@ -72,8 +72,8 @@ local Config = {
     StatName = "Melee",
 
     -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 7,
-    FarmHeightLate = 11,
+    FarmHeight = 9,
+    FarmHeightLate = 10,
     HeightSwitchDelay = 30,
 
     HitRange = 100,
@@ -952,10 +952,11 @@ local function startQuest(quest)
     local commF = getCommF()
     if not commF then return false end
 
+    State.LastQuestInvokeAt = os.clock()
     pcall(function()
         commF:InvokeServer("StartQuest", quest.quest, quest.idx)
     end)
-    for _ = 1, 8 do
+    for _ = 1, 20 do
         task.wait(0.2)
         if hasQuest() then
             return true
@@ -1303,31 +1304,49 @@ end
 ------------------------------------------------------------------
 -- KÉO QUÁI LIÊN TỤC (MỖI FRAME, CHỈ KHI BẬT AUTO FARM)
 ------------------------------------------------------------------
-connect(RunService.Heartbeat, function()
-    if not (Config.AutoFarm and Config.BringMob) or Config.AutoPumpkin then return end
+local function bringStep()
+    if not (Config.AutoFarm and Config.BringMob) or Config.AutoPumpkin then
+        State.BroughtCount = 0
+        return
+    end
     if State.Fleeing then return end
     local point, quest = State.BringPoint, State.Quest
-    if not point or not quest then return end
+    if not point or not quest then
+        State.BroughtCount = 0
+        return
+    end
     local folder = Workspace:FindFirstChild("Enemies")
     if not folder then return end
 
+    local count = 0
     for _, mob in ipairs(folder:GetChildren()) do
-        if nameMatches(mob.Name, quest.mob) then
+        if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local part = mob:FindFirstChild("HumanoidRootPart")
-            if hum and part and hum.Health > 0 and mob ~= State.TargetMob
+            if hum and part and hum.Health > 0
                 and (part.Position - point).Magnitude <= Config.BringRadius then
-                local pull = point - part.Position
-                local dist = pull.Magnitude
-                if dist > 4 then
-                    part.AssemblyLinearVelocity = pull.Unit * math.min(dist * 10, 150)
-                else
-                    part.AssemblyLinearVelocity = Vector3.zero
-                end
+                -- đặt thẳng vị trí về điểm gom, chạy lại mỗi frame nên quái không kịp đi lại
+                part.CFrame = CFrame.new(point)
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
                 part.CanCollide = false
+                pcall(function()
+                    hum.WalkSpeed = 0
+                    hum.JumpPower = 0
+                end)
+                count += 1
             end
         end
     end
+    State.BroughtCount = count
+end
+
+-- Chạy ở cả Stepped (trước vật lý) và Heartbeat (sau vật lý) để quái luôn bị giữ lại
+connect(RunService.Stepped, function()
+    pcall(bringStep)
+end)
+connect(RunService.Heartbeat, function()
+    pcall(bringStep)
 end)
 
 ------------------------------------------------------------------
@@ -1352,6 +1371,10 @@ local function farmStep()
         pcall(function()
             sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
         end)
+    end
+    if setsimulationradius and not State.SimRadiusSet then
+        State.SimRadiusSet = true
+        pcall(setsimulationradius, math.huge, math.huge)
     end
 
     local hpPercent = humanoid.Health / math.max(humanoid.MaxHealth, 1) * 100
@@ -1396,13 +1419,23 @@ local function farmStep()
 
         if active then
             State.QuestKey = State.QuestKey or questKey
-        elseif os.clock() >= State.QuestRetryAt then
-            State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. " (remote)..."
-            if startQuest(quest) then
-                State.QuestKey = questKey
-            else
-                State.QuestRetryAt = os.clock() + 10
-                State.Status = "Không nhận được quest - farm tiếp, thử lại sau 10s"
+            State.QuestMissingSince = nil
+        else
+            local now = os.clock()
+            State.QuestMissingSince = State.QuestMissingSince or now
+            local missingFor = now - State.QuestMissingSince
+            local sinceInvoke = now - (State.LastQuestInvokeAt or 0)
+            -- Chỉ nhận lại quest khi: không thấy quest liên tục >= 3s,
+            -- cách lần gọi trước >= 20s, và hết thời gian chờ thử lại
+            if missingFor >= 3 and sinceInvoke >= 20 and now >= State.QuestRetryAt then
+                State.Status = "Đang nhận nhiệm vụ " .. quest.quest .. " (remote)..."
+                if startQuest(quest) then
+                    State.QuestKey = questKey
+                    State.QuestMissingSince = nil
+                else
+                    State.QuestRetryAt = os.clock() + 20
+                    State.Status = "Không nhận được quest - farm tiếp, thử lại sau 20s"
+                end
             end
         end
     end
@@ -1432,7 +1465,7 @@ local function farmStep()
 
     local height = currentHeight()
     local elapsed = math.floor(os.clock() - State.FarmStartAt)
-    State.Status = string.format("Farm %s (%d con) | cao %d | %ds", quest.mob, #scanResults, height, elapsed)
+    State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo %d", quest.mob, #scanResults, height, elapsed, State.BroughtCount or 0)
 
     -- Tới gần quái nếu đang ở xa (dùng tốc độ bay Auto Farm), còn lại bám trên đầu quái
     local above = anchorPos + Vector3.new(0, height, 0)
@@ -1629,9 +1662,12 @@ end
 ------------------------------------------------------------------
 -- UNLOAD SẠCH
 ------------------------------------------------------------------
+local MusicCleanup
+
 local function Unload()
     if not State.Running then return end
     State.Running = false
+    if MusicCleanup then pcall(MusicCleanup) end
     HookCtx.Running = false
     genv.HHubBFHookCtx = nil
     Config.AutoFarm = false
@@ -1747,6 +1783,381 @@ addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
 end)
 addButton(SettingsPage, "XÓA HIGHLIGHT QUÁI", clearHighlights, Colors.Panel)
 addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 48, 60))
+
+------------------------------------------------------------------
+-- TAB NHẠC + BẢNG NHẠC/NHIỆM VỤ TÁCH RỜI + HIỆU ỨNG THEO NHẠC
+------------------------------------------------------------------
+local SoundService = game:GetService("SoundService")
+
+local MusicDefaultId = "1845922899"
+local MusicPlaylist = {
+    { Name = "Quốc ca Việt Nam", Id = "1845922899" },
+    { Name = "See Tình", Id = "121242950842428" },
+    { Name = "2 Phút Hơn KAIZ Remix", Id = "124166975687737" },
+    { Name = "Trái đất yêu mặt trời & Nắng có mang em đi", Id = "140553267266985", From = 29, To = 77 },
+    { Name = "Cùng Anh Remix", Id = "71716020610625" },
+    { Name = "Khuê Mộc Lan", Id = "98361989582185" },
+    { Name = "TRẢ CHO ANH GOJO VS SUKUNA", Id = "110396752508363", From = 163, To = 180 },
+    { Name = "Ai đưa em về", Id = "110919391228823" },
+}
+
+local MusicSound = Instance.new("Sound")
+MusicSound.Name = "HHubMusicTrack"
+MusicSound.Volume = 1
+MusicSound.Looped = true
+MusicSound.Parent = SoundService
+
+local Music = {
+    CurrentId = nil,
+    CurrentName = "Chưa phát",
+    Toast = "",
+    ToastUntil = 0,
+    NpcCache = {},
+    PlayToken = 0,
+}
+
+MusicCleanup = function()
+    pcall(function()
+        MusicSound:Stop()
+        MusicSound:Destroy()
+    end)
+end
+
+local function musicNotify(title, content)
+    Music.Toast = title .. ": " .. content
+    Music.ToastUntil = os.clock() + 3
+end
+
+local function playId(id, label, from, to)
+    local numeric = tostring(id):match("%d+")
+    if not numeric then
+        musicNotify("Lỗi", "Audio ID không hợp lệ: " .. tostring(id))
+        return false
+    end
+    Music.PlayToken += 1
+    local token = Music.PlayToken
+    MusicSound.SoundId = "rbxassetid://" .. numeric
+    Music.CurrentId = numeric
+    Music.CurrentName = label or ("ID " .. numeric)
+    if from then
+        MusicSound.TimePosition = from
+    end
+    local ok = pcall(function()
+        MusicSound:Play()
+    end)
+    if not ok then
+        musicNotify("Lỗi", "Không phát được ID " .. numeric)
+        return false
+    end
+    if from or to then
+        task.spawn(function()
+            for _ = 1, 100 do
+                if MusicSound.IsLoaded then
+                    break
+                end
+                task.wait(0.1)
+            end
+            if token ~= Music.PlayToken then return end
+            if from then
+                MusicSound.TimePosition = from
+            end
+            while State.Running and token == Music.PlayToken and MusicSound.Playing
+                and (not to or MusicSound.TimePosition < to) do
+                task.wait(0.1)
+            end
+            if to and token == Music.PlayToken and MusicSound.Playing then
+                MusicSound:Pause()
+            end
+        end)
+    end
+    musicNotify("Đang phát", Music.CurrentName)
+    return true
+end
+
+-- Ô nhập chữ cho menu
+local function addInput(page, text, placeholder, callback)
+    local row = make("Frame", {
+        Size = UDim2.new(1, -6, 0, 38),
+        BackgroundColor3 = Colors.Panel2,
+        BorderSizePixel = 0,
+    }, page)
+    round(row, 7)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(10, 0),
+        Size = UDim2.new(1, -150, 1, 0),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local box = make("TextBox", {
+        Size = UDim2.fromOffset(130, 24),
+        Position = UDim2.new(1, -138, 0.5, -12),
+        BackgroundColor3 = Colors.Background,
+        Text = "",
+        PlaceholderText = placeholder,
+        PlaceholderColor3 = Colors.Muted,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        ClearTextOnFocus = false,
+        BorderSizePixel = 0,
+    }, row)
+    round(box, 6)
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed and box.Text ~= "" then
+            callback(box.Text)
+        end
+    end)
+end
+
+-- Kéo thả cho bảng nổi
+local function makeDraggable(handle, frame)
+    local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    connect(UserInputService.InputChanged, function(input)
+        if dragging and input == dragInput and dragStart and startPos then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- ===== Bảng nổi tách rời: tên nhạc + nhiệm vụ + NPC + khoảng cách + visualizer =====
+local MusicPanel = make("Frame", {
+    Name = "MusicPanel",
+    Size = UDim2.fromOffset(270, 214),
+    Position = UDim2.new(1, -286, 0, 60),
+    BackgroundColor3 = Colors.Background,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    Visible = true,
+}, Gui)
+round(MusicPanel, 12)
+stroke(MusicPanel, Colors.Gold, 1.5, 0.15)
+
+local PanelTop = make("Frame", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundColor3 = Colors.Panel,
+    BorderSizePixel = 0,
+}, MusicPanel)
+make("TextLabel", {
+    Position = UDim2.fromOffset(10, 0),
+    Size = UDim2.new(1, -44, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "♪  H-HUB MUSIC  (kéo để di chuyển)",
+    TextColor3 = Colors.Gold,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, PanelTop)
+local PanelClose = make("TextButton", {
+    Text = "X",
+    Size = UDim2.fromOffset(22, 20),
+    Position = UDim2.new(1, -28, 0, 4),
+    BackgroundColor3 = Color3.fromRGB(150, 55, 68),
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    BorderSizePixel = 0,
+}, PanelTop)
+round(PanelClose, 5)
+PanelClose.Activated:Connect(function()
+    MusicPanel.Visible = false
+end)
+makeDraggable(PanelTop, MusicPanel)
+
+-- Visualizer: các cột cong lên cong xuống theo độ lớn của nhạc
+local Viz = make("Frame", {
+    Position = UDim2.fromOffset(10, 36),
+    Size = UDim2.new(1, -20, 0, 64),
+    BackgroundColor3 = Colors.Panel,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+}, MusicPanel)
+round(Viz, 8)
+
+local BAR_COUNT = 28
+local VizBars = {}
+for i = 1, BAR_COUNT do
+    local bar = make("Frame", {
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new((i - 0.5) / BAR_COUNT, 0, 1, -3),
+        Size = UDim2.new(0.6 / BAR_COUNT, 0, 0.1, 0),
+        BackgroundColor3 = Colors.Accent,
+        BorderSizePixel = 0,
+    }, Viz)
+    round(bar, 3)
+    VizBars[i] = { frame = bar, h = 0.1 }
+end
+
+local function panelRow(y, title)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(12, y),
+        Size = UDim2.fromOffset(62, 16),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Colors.Muted,
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, MusicPanel)
+    return make("TextLabel", {
+        Position = UDim2.fromOffset(76, y),
+        Size = UDim2.new(1, -88, 0, 16),
+        BackgroundTransparency = 1,
+        Text = "--",
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, MusicPanel)
+end
+local TrackLabel = panelRow(108, "Nhạc")
+local QuestLabel = panelRow(128, "Nhiệm vụ")
+local NpcLabel = panelRow(148, "NPC")
+local DistLabel = panelRow(168, "Khoảng cách")
+local ToastLabel = make("TextLabel", {
+    Position = UDim2.fromOffset(12, 190),
+    Size = UDim2.new(1, -24, 0, 16),
+    BackgroundTransparency = 1,
+    Text = "",
+    TextColor3 = Colors.Accent,
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+}, MusicPanel)
+
+-- Hiệu ứng cột nhảy theo PlaybackLoudness của bài đang phát
+local vizTime = 0
+connect(RunService.RenderStepped, function(dt)
+    if not MusicPanel.Visible then return end
+    vizTime += dt
+    local loud = MusicSound.Playing and math.clamp(MusicSound.PlaybackLoudness / 500, 0, 1) or 0
+    local energy = loud ^ 0.7
+    for i, bar in ipairs(VizBars) do
+        local waveA = 0.5 + 0.5 * math.sin(vizTime * 7 + i * 0.55)
+        local waveB = 0.5 + 0.5 * math.sin(vizTime * 3.1 - i * 0.9)
+        local target = 0.08 + energy * (0.25 + 0.67 * (waveA * 0.6 + waveB * 0.4))
+        bar.h = bar.h + (target - bar.h) * math.clamp(dt * 14, 0, 1)
+        local h = math.clamp(bar.h, 0.05, 1)
+        bar.frame.Size = UDim2.new(0.6 / BAR_COUNT, 0, h, 0)
+        bar.frame.BackgroundColor3 = Colors.Accent:Lerp(Colors.Gold, h)
+    end
+end)
+
+-- NPC giao nhiệm vụ: NPC gần điểm spawn của quái nhiệm vụ nhất (chỉ để HIỂN THỊ, không bay tới)
+local function questNpcInfo(quest)
+    local cached = Music.NpcCache[quest.quest]
+    if cached then return cached end
+    local npcs = Workspace:FindFirstChild("NPCs")
+    local anchor = findSpawnPos(quest.mob)
+    if not npcs or not anchor then return nil end
+    local best
+    for _, npc in ipairs(npcs:GetChildren()) do
+        if npc:IsA("Model") then
+            local ok, pivot = pcall(function() return npc:GetPivot().Position end)
+            if ok then
+                local d = (pivot - anchor).Magnitude
+                if not best or d < best.d then
+                    best = { name = npc.Name, pos = pivot, d = d }
+                end
+            end
+        end
+    end
+    if best then
+        Music.NpcCache[quest.quest] = best
+    end
+    return best
+end
+
+local NEAR_NPC = 250
+task.spawn(function()
+    while State.Running and Gui.Parent do
+        pcall(function()
+            TrackLabel.Text = (MusicSound.Playing and "▶ " or "⏸ ") .. Music.CurrentName
+
+            local quest = State.Quest or currentQuest()
+            QuestLabel.Text = (hasQuest() and "Đang làm: " or "Chưa nhận: ") .. quest.quest .. " (" .. quest.mob .. ")"
+
+            local info = questNpcInfo(quest)
+            local root = getRoot(getCharacter())
+            if info and root then
+                local d = (info.pos - root.Position).Magnitude
+                local near = d <= NEAR_NPC
+                NpcLabel.Text = info.name
+                DistLabel.Text = string.format("%d stud - %s", math.floor(d), near and "GẦN" or "XA")
+                DistLabel.TextColor3 = near and Colors.Green or Colors.Red
+            else
+                NpcLabel.Text = "Chưa tìm thấy"
+                DistLabel.Text = "--"
+                DistLabel.TextColor3 = Colors.Text
+            end
+
+            ToastLabel.Text = os.clock() < Music.ToastUntil and Music.Toast or ""
+        end)
+        task.wait(0.4)
+    end
+end)
+
+-- ===== Tab Nhạc trong menu chính (giống tab nhạc gốc) =====
+local MusicPage = addTab("Nhạc")
+
+addSection(MusicPage, "TRÌNH ĐIỀU KHIỂN")
+addToggle(MusicPage, "Phát / Tạm dừng", false, function(on)
+    if on then
+        if Music.CurrentId then
+            pcall(function()
+                MusicSound:Resume()
+            end)
+        else
+            playId(MusicDefaultId, "Bài mặc định")
+        end
+    else
+        pcall(function()
+            MusicSound:Pause()
+        end)
+    end
+end)
+addStepper(MusicPage, "Âm lượng", 0, 10, 0.5, 1, function(value)
+    MusicSound.Volume = value
+end)
+addInput(MusicPage, "Audio ID tùy chỉnh", "Dán ID rồi Enter...", function(text)
+    playId(text)
+end)
+addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC & NHIỆM VỤ", function()
+    MusicPanel.Visible = not MusicPanel.Visible
+end, Colors.Panel)
+
+addSection(MusicPage, "PLAYLIST")
+for _, track in ipairs(MusicPlaylist) do
+    addButton(MusicPage, track.Name, function()
+        playId(track.Id, track.Name, track.From, track.To)
+    end)
+end
 
 selectTab("Tổng quan")
 
