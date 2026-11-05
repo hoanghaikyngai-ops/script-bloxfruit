@@ -1,5 +1,5 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v4.2.1 (Fix Lạc NPC + Continuous Bring Mob + Continuous Auto Click)
+    H-HUB // BLOX FRUITS COMPANION v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo Quái + RegisterHit/Attack Chuẩn Key)
     Auto Farm Level + Auto Quest + Halloween Pumpkin + Radar Quái v2 tối ưu
 ]]
 
@@ -381,6 +381,15 @@ local function updateHighlights(results)
     end
 end
 
+local function getMobs(mobName)
+    local results, _ = scanEnemies(mobName)
+    local out = {}
+    for _, item in ipairs(results) do
+        table.insert(out, item.Model)
+    end
+    return out
+end
+
 ------------------------------------------------------------------
 -- BỘ DI CHUYỂN
 ------------------------------------------------------------------
@@ -455,7 +464,7 @@ make("TextLabel", {
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.2.1",
+    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.2",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 13,
@@ -492,7 +501,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 10, 1, -25),
     Size = UDim2.new(1, -20, 0, 18),
     BackgroundTransparency = 1,
-    Text = "H-HUB v4.2.1  |  Đang khởi động...",
+    Text = "H-HUB v4.2  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -947,7 +956,6 @@ local function startQuest(quest)
         return true
     end
 
-    -- Fix: Kiểm tra đúng chính xác NPC nhận nhiệm vụ của Quest hiện tại, tránh bay nhầm NPC khác
     local remembered = State.QuestNPC[quest.quest]
     if remembered then
         if goTo(remembered) and attempt() then
@@ -958,9 +966,8 @@ local function startQuest(quest)
     end
 
     if remembered then
-        State.QuestNPC[quest.quest] = nil -- Reset nếu NPC cũ không còn đúng
+        return false
     end
-    
     local root = getRoot(getCharacter())
     if not root then return false end
     local anchor = findSpawnPos(quest.mob) or root.Position
@@ -977,9 +984,7 @@ local function startQuest(quest)
         end
         table.sort(list, function(x, y) return x[2] < y[2] end)
     end
-    
-    -- Chỉ thử tối đa NPC gần nhất với khu vực spawn quái mục tiêu để tránh bay lang thang
-    for i = 1, math.min(1, #list) do
+    for i = 1, math.min(3, #list) do
         if not (State.Running and Config.AutoFarm) then break end
         if goTo(list[i][1]) and attempt() then
             State.QuestNPC[quest.quest] = list[i][1]
@@ -1044,11 +1049,11 @@ local function collectHits()
     local root = getRoot(getCharacter())
     if not quest or not root then return nil, nil end
     local hits, first = {}, nil
-    for _, mob in ipairs(scanEnemies(quest.mob)) do
-        local part = mob.RootPart
+    for _, mob in ipairs(getMobs(quest.mob)) do
+        local part = mob:FindFirstChild("HumanoidRootPart")
         if part and (part.Position - root.Position).Magnitude <= Config.HitRange then
             first = first or part
-            table.insert(hits, { mob.Model, part })
+            table.insert(hits, { mob, part })
         end
     end
     return hits, first
@@ -1183,7 +1188,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HÀM ĐÁNH & AUTO CLICK LIÊN TỤC
+-- HÀM ĐÁNH & GỌI REMOTE EVENT (TÍCH HỢP ĐẦY ĐỦ REGISTERATTACK & REGISTERHIT VỚI KEY)
 ------------------------------------------------------------------
 local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
 
@@ -1206,11 +1211,13 @@ end
 
 local function directFire()
     pcall(function()
+        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
         if RegAttack then
             local attackArgs = { 1, 4 }
             RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
         end
 
+        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
         local hits, first = collectHits()
         if first and RegHit and Config.HitKey ~= "" then
             local targetPart = first.Parent:FindFirstChild("Head") or first
@@ -1227,7 +1234,6 @@ end
 
 local function attackMobs()
     local mode = Config.AttackMode
-    -- Đảm bảo ấn click chuột liên tục khi đánh quái
     clickOnce()
     if mode == "Click + Activate" then
         activateTool()
@@ -1314,7 +1320,7 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- VÒNG LẶP AUTO FARM (GOM QUÁI LIÊN TỤC & FIX LỖI BAY LẠC NPC)
+-- VÒNG LẶP AUTO FARM (GOM QUÁI LỰC ĐẨY/KÉO MƯỢT MÀ)
 ------------------------------------------------------------------
 local lastHaki = 0
 local simulationSet = false
@@ -1410,7 +1416,7 @@ local function farmStep()
 
     local anchorPos = mobRoot.Position
     
-    -- Fix: Chạy liên tục (continuous loop) thay vì chạy 1 lần để đẩy/kéo quái luôn bám sát vị trí farm
+    -- Cơ chế Gom Quái bằng lực đẩy & kéo mượt mà, không khóa cứng vị trí gây kẹt quái
     if Config.BringMob then
         for _, entry in ipairs(scanResults) do
             local other = entry.Model
@@ -1421,7 +1427,7 @@ local function farmStep()
                 local pullDirection = (anchorPos - otherRoot.Position)
                 local dist = pullDirection.Magnitude
                 if dist > 4 then
-                    otherRoot.AssemblyLinearVelocity = pullDirection.Unit * math.min(dist * 12, 160)
+                    otherRoot.AssemblyLinearVelocity = pullDirection.Unit * math.min(dist * 10, 150)
                 else
                     otherRoot.AssemblyLinearVelocity = Vector3.zero
                 end
@@ -1497,7 +1503,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HALLOWEEN: AUTO THU BÍ NGÔ (KÈM AUTO CLICK LIÊN TỤC)
+-- HALLOWEEN: AUTO THU BÍ NGÔ (KẾT HỢP CLICK CHUỘT NHẬT/ĐÁNH)
 ------------------------------------------------------------------
 local function objPos(obj)
     if obj:IsA("Model") then
@@ -1526,7 +1532,6 @@ task.spawn(function()
                     return
                 end
                 
-                -- Luôn ấn click liên tục khi đang làm nhiệm vụ nhặt bí ngô
                 if Config.PumpkinAttack then
                     clickOnce()
                 end
@@ -1697,7 +1702,7 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
     end
 end)
 addToggle(FarmPage, "Auto Quest", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob (kéo liên tục)", Config.BringMob, bind("BringMob"))
+addToggle(FarmPage, "Bring Mob (lực đẩy/kéo mượt)", Config.BringMob, bind("BringMob"))
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
 addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
 addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
@@ -1716,7 +1721,7 @@ addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
         end
     end
 end)
-addToggle(EventPage, "Click & đánh liên tục khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
+addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
 addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
 local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
 
@@ -1773,10 +1778,10 @@ task.spawn(function()
             end)
             NetworkInfo.Text = ping .. State.FPS .. " FPS"
             PumpkinInfo.Text = State.PumpkinStatus
-            Footer.Text = string.format("H-HUB v4.2.1  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
+            Footer.Text = string.format("H-HUB v4.2  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-print("[H-HUB] Companion v4.2.1 đã cập nhật thành công (Auto Click liên tục, Fix lỗi lệch NPC & Real-time Bring Mob)!")
+print("[H-HUB] Companion v4.2 (Tích hợp Radar v2 & Fix Lực Đẩy/Kéo + RegisterHit/Attack) đã khởi động thành công!")
