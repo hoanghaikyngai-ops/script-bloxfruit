@@ -1,11 +1,11 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v4.4 (Đã tối ưu hóa phần gom quái)
-    - Nhận quest hoàn toàn qua remote (không bay tới NPC nữa)
-    - Kéo quái LIÊN TỤC mỗi frame, chỉ khi bật Auto Farm
-    - Auto Click tự chạy đến khi học được HitKey rồi dừng ngay
-    - Độ cao cố định 7 trước HitKey; sau khi có key chuyển sang độ cao tùy chỉnh (mặc định 25)
-    - Bring Mob kéo quái nhiệm vụ về điểm bên dưới nhân vật khi Auto Farm (Đã khắc phục lỗi quái đứng yên / stalled)
-    - Có chỉnh tốc độ bay của Auto Farm
+    H-HUB // BLOX FRUITS COMPANION v5.1  -  FUTURE EDITION
+    - Giao diện mới: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
+    - Bring Mob V5: kéo quái liên tục MỖI FRAME, đồng thời với đánh (Multi-Hit), có chẩn đoán
+    - Farm Level tới 2800 (có quest Tiki Outpost + Submerged Island), tự dừng khi đạt level mục tiêu
+    - Tính năng mới: Auto Skill, Auto Sea, Auto Stats, Server Hop, Auto Chest, Auto Fruit,
+      Auto Store, Fruit ESP, Auto Ken, Fullbright, Auto Rejoin, thống kê phiên + ETA
+    - Giữ nguyên: Auto Quest qua remote, học HitKey, Multi-Hit, độ cao 7 -> 25, Halloween, Nhạc
 ]]
 
 if not game:IsLoaded() then
@@ -23,6 +23,8 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
+local CollectionService = game:GetService("CollectionService")
 
 local genv = (getgenv and getgenv()) or _G
 
@@ -63,14 +65,25 @@ local Config = {
     AutoFarm = false,
     AutoQuest = true,
     BringMob = true,
+    BringHitbox = true,
+    BringSafe = true,
+    HitboxSize = 35,
     AutoEquip = true,
     AutoHaki = true,
+    AutoKen = false,
     AutoStats = false,
     LowEffects = false,
     MobHighlight = true,
     ScanRadius = 2500,
     Weapon = "Melee",
     StatName = "Melee",
+    StatAmount = 10,
+
+    FarmMode = "Level Quest",
+    TargetLevel = 2800,
+    AutoSea = false,
+    AutoHop = false,
+    HopAfter = 45,
 
     -- Trước khi học HitKey luôn giữ độ cao 7; sau khi học dùng FarmHeightLate.
     FarmHeightLate = 25,
@@ -78,8 +91,8 @@ local Config = {
     HitRange = 100,
     BringRadius = 300,
     SafeHP = 25,
-    TweenSpeed = 300,       -- tốc độ bay của Auto Farm
-    Delay = 0.05,           -- nhịp mỗi lần đánh (như bản cũ)
+    TweenSpeed = 300,
+    Delay = 0.05,
     HitKey = "",
 
     AttackMode = "Click + Activate",
@@ -87,18 +100,36 @@ local Config = {
     NoDamageTimeout = 8,
     HitFormat = "Tự động",
     MultiHit = true,
+
+    AutoSkill = false,
+    SkillDelay = 1.5,
+    SkillZ = true, SkillX = true, SkillC = true, SkillV = false, SkillF = false,
+
+    AutoChest = false,
+    AutoFruit = false,
+    AutoStore = false,
+    FruitESP = false,
+    FullBright = false,
+    AutoRejoin = true,
+
     AutoPumpkin = false,
     PumpkinSpeed = 300,
     PumpkinAttack = true,
 }
 
 local SAVEABLE = {
-    "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
-    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeightLate",
+    "AutoQuest", "BringMob", "BringHitbox", "BringSafe", "HitboxSize", "AutoEquip", "AutoHaki", "AutoKen", "AutoStats", "LowEffects",
+    "MobHighlight", "ScanRadius", "Weapon", "StatName", "StatAmount", "FarmMode", "TargetLevel", "AutoSea", "AutoHop",
+    "HopAfter", "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeightLate",
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
+    "AutoSkill", "SkillDelay", "SkillZ", "SkillX", "SkillC", "SkillV", "SkillF",
+    "AutoChest", "AutoFruit", "AutoStore", "FruitESP", "FullBright", "AutoRejoin",
 }
 -- Tách file cấu hình theo phiên bản để tránh dữ liệu cũ ghi đè thiết lập mới.
-local CONFIG_PATH = "HHub/BloxFruits_v44_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
+local CONFIG_PATH = "HHub/BloxFruits_v51_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
+
+-- Các tính năng có thể gây di chuyển/đổi server luôn tắt khi mới nạp script.
+local STARTUP_OFF = { "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea" }
 
 local function loadConfig()
     pcall(function()
@@ -113,12 +144,16 @@ local function loadConfig()
             end
         end
     end)
-    Config.AutoFarm = false
-    Config.AutoPumpkin = false
+    for _, key in ipairs(STARTUP_OFF) do
+        Config[key] = false
+    end
 end
 loadConfig()
--- Độ cao trước khi có HitKey là cố định, không đọc từ file cấu hình cũ.
 Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
+Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 2800)
+if Config.FarmMode ~= "Level Quest" and Config.FarmMode ~= "Quái gần nhất" then
+    Config.FarmMode = "Level Quest"
+end
 
 local saveRevision = 0
 local function saveSoon()
@@ -180,21 +215,31 @@ local FallbackQuests = {
     {2300, "Cocoa Warrior", "ChocQuest1", 1}, {2325, "Chocolate Bar Battler", "ChocQuest1", 2},
     {2350, "Sweet Thief", "ChocQuest2", 1}, {2375, "Candy Rebel", "ChocQuest2", 2},
     {2400, "Candy Pirate", "CandyQuest1", 1}, {2425, "Snow Demon", "CandyQuest1", 2},
+    -- Tiki Outpost (2450+) và Submerged Island (2600-2800). Dữ liệu chính vẫn đọc từ module Quests của game;
+    -- bảng này chỉ là dự phòng khi module không đọc được.
+    {2450, "Isle Outlaw", "TikiQuest1", 1}, {2475, "Island Boy", "TikiQuest1", 2},
+    {2500, "Sun-kissed Warrior", "TikiQuest2", 1}, {2525, "Isle Champion", "TikiQuest2", 2},
+    {2550, "Serpent Hunter", "TikiQuest3", 1}, {2575, "Skull Slayer", "TikiQuest3", 2},
+    {2600, "Reef Bandit", "SubmergedQuest1", 1}, {2625, "Coral Pirate", "SubmergedQuest1", 2},
+    {2650, "Sea Chanter", "SubmergedQuest2", 1}, {2675, "Ocean Prophet", "SubmergedQuest2", 2},
+    {2700, "High Disciple", "SubmergedQuest3", 1}, {2725, "Grand Devotee", "SubmergedQuest3", 2},
 }
 
 local SeaRange = { [1] = { 0, 699 }, [2] = { 700, 1499 }, [3] = { 1500, math.huge } }
 local SeaByPlace = { [2753915549] = 1, [4442272183] = 2, [7449423635] = 3 }
 
 local Colors = {
-    Background = Color3.fromRGB(10, 14, 25),
-    Panel = Color3.fromRGB(18, 26, 43),
-    Panel2 = Color3.fromRGB(25, 36, 57),
-    Accent = Color3.fromRGB(0, 210, 255),
-    Gold = Color3.fromRGB(255, 190, 70),
-    Text = Color3.fromRGB(238, 245, 255),
-    Muted = Color3.fromRGB(145, 160, 182),
-    Green = Color3.fromRGB(55, 220, 145),
-    Red = Color3.fromRGB(245, 90, 105),
+    Background = Color3.fromRGB(3, 7, 15),
+    Panel = Color3.fromRGB(7, 15, 30),
+    Panel2 = Color3.fromRGB(10, 22, 42),
+    Accent = Color3.fromRGB(0, 200, 255),
+    Blue = Color3.fromRGB(25, 105, 255),
+    Gold = Color3.fromRGB(120, 215, 255),
+    Text = Color3.fromRGB(232, 244, 255),
+    Muted = Color3.fromRGB(128, 160, 190),
+    Green = Color3.fromRGB(45, 235, 160),
+    Red = Color3.fromRGB(255, 80, 105),
+    Off = Color3.fromRGB(26, 38, 58),
 }
 
 local State = {
@@ -238,6 +283,20 @@ local State = {
     LastQuestInvokeAt = 0,
     QuestPendingSince = nil,
     SeenMobs = setmetatable({}, { __mode = "k" }),
+    ClusterPoint = nil,         -- điểm gom quái (cố định theo mục tiêu)
+    BroughtCount = 0,
+    Busy = nil,                 -- tác vụ đang chiếm di chuyển (chest / trái)
+    FarmAny = false,
+    TotalKills = 0,
+    StartLevel = 0,
+    SessionStart = os.clock(),
+    NoMobSince = nil,
+    Hopping = false,
+    FruitCount = 0,
+    ChestCount = 0,
+    LastSkillAt = 0,
+    Blacklist = setmetatable({}, { __mode = "k" }),   -- quái nghi bị lệch đồng bộ server
+    SimAt = 0,
 }
 
 local RegAttack, RegHit
@@ -266,6 +325,7 @@ local function stroke(object, color, thickness, transparency)
         Color = color or Colors.Accent,
         Thickness = thickness or 1,
         Transparency = transparency or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
     }, object)
 end
 
@@ -461,10 +521,63 @@ local function stopMovers()
         end
     end
 end
+------------------------------------------------------------------
+-- GIAO DIỆN V5: NỀN ĐEN TRONG SUỐT + VIỀN NEON XANH NƯỚC BIỂN NHẤP NHÁY
+------------------------------------------------------------------
+local Toggles = {}          -- [key] = { Set = function(value, silent) }
+local NeonList = {}         -- các viền neon cần animate
+local NeonTexts = {}        -- các đối tượng đổi màu theo neon { obj, prop }
 
-------------------------------------------------------------------
--- GUI DASHBOARD
-------------------------------------------------------------------
+local function neonBorder(frame, thickness, phase)
+    local s = make("UIStroke", {
+        Color = Color3.new(1, 1, 1),
+        Thickness = thickness or 2,
+        Transparency = 0.1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, frame)
+    local g = make("UIGradient", { Rotation = 0 }, s)
+    table.insert(NeonList, { stroke = s, grad = g, base = thickness or 2, phase = phase or 0 })
+    return s
+end
+
+local function trackNeon(obj, prop)
+    table.insert(NeonTexts, { obj = obj, prop = prop or "TextColor3" })
+end
+
+connect(RunService.RenderStepped, function()
+    local t = os.clock()
+    -- Màu neon chung: dao động giữa cyan và xanh nước biển đậm
+    local hue = 0.575 + 0.075 * math.sin(t * 1.3)
+    local neon = Color3.fromHSV(hue, 0.9, 1)
+    for i = #NeonTexts, 1, -1 do
+        local item = NeonTexts[i]
+        if item.obj.Parent then
+            item.obj[item.prop] = neon
+        else
+            table.remove(NeonTexts, i)
+        end
+    end
+    for i = #NeonList, 1, -1 do
+        local n = NeonList[i]
+        if not n.stroke.Parent then
+            table.remove(NeonList, i)
+        else
+            local p = t + n.phase
+            local pulse = 0.5 + 0.5 * math.sin(p * 5)                  -- nhấp nháy
+            local c1 = Color3.fromHSV(0.575 + 0.075 * math.sin(p * 1.3), 0.85, 1)
+            local c2 = Color3.fromHSV(0.575 + 0.075 * math.sin(p * 1.3 + 2.1), 1, 1)
+            n.grad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, c1),
+                ColorSequenceKeypoint.new(0.5, c2),
+                ColorSequenceKeypoint.new(1, c1),
+            })
+            n.grad.Rotation = (p * 70) % 360
+            n.stroke.Transparency = 0.04 + 0.5 * (1 - pulse)
+            n.stroke.Thickness = n.base * (0.8 + 0.5 * pulse)
+        end
+    end
+end)
+
 local Gui = make("ScreenGui", {
     Name = "HHubCompanion",
     ResetOnSpawn = false,
@@ -473,87 +586,182 @@ local Gui = make("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, GuiParent)
 
-local FullSize = UDim2.fromOffset(520, 420)
+-- Thông báo nổi (toast)
+local ToastHolder = make("Frame", {
+    Name = "Toasts",
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -14, 1, -14),
+    Size = UDim2.fromOffset(280, 260),
+    BackgroundTransparency = 1,
+}, Gui)
+make("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+}, ToastHolder)
+
+local function notify(title, text)
+    pcall(function()
+        local toast = make("Frame", {
+            Size = UDim2.fromOffset(270, 44),
+            BackgroundColor3 = Colors.Background,
+            BackgroundTransparency = 0.25,
+            BorderSizePixel = 0,
+        }, ToastHolder)
+        round(toast, 8)
+        neonBorder(toast, 1.5, math.random() * 6)
+        make("TextLabel", {
+            Position = UDim2.fromOffset(10, 4),
+            Size = UDim2.new(1, -20, 0, 16),
+            BackgroundTransparency = 1,
+            Text = tostring(title),
+            TextColor3 = Colors.Accent,
+            Font = Enum.Font.GothamBold,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, toast)
+        make("TextLabel", {
+            Position = UDim2.fromOffset(10, 21),
+            Size = UDim2.new(1, -20, 0, 18),
+            BackgroundTransparency = 1,
+            Text = tostring(text),
+            TextColor3 = Colors.Text,
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        }, toast)
+        task.delay(3.5, function()
+            if toast.Parent then
+                toast:Destroy()
+            end
+        end)
+    end)
+end
+
+local FullSize = UDim2.fromOffset(660, 430)
 local Main = make("Frame", {
     Name = "Main",
     Size = FullSize,
-    Position = UDim2.new(0.5, -260, 0.5, -210),
+    Position = UDim2.new(0.5, -330, 0.5, -215),
     BackgroundColor3 = Colors.Background,
+    BackgroundTransparency = 0.38,          -- đế đen trong suốt
     BorderSizePixel = 0,
     ClipsDescendants = true,
 }, Gui)
-round(Main, 12)
-stroke(Main, Colors.Accent, 1.5, 0.12)
+round(Main, 14)
+neonBorder(Main, 2, 0)
+make("UIGradient", {
+    Color = ColorSequence.new(Color3.fromRGB(2, 5, 12), Color3.fromRGB(5, 22, 52)),
+    Rotation = 90,
+}, Main)
 local Scale = make("UIScale", { Scale = 1 }, Main)
 
 local TopBar = make("Frame", {
     Name = "TopBar",
-    Size = UDim2.new(1, 0, 0, 36),
+    Size = UDim2.new(1, 0, 0, 40),
     BackgroundColor3 = Colors.Panel,
+    BackgroundTransparency = 0.55,
     BorderSizePixel = 0,
 }, Main)
 
-make("TextLabel", {
-    Position = UDim2.fromOffset(12, 0),
+local TitleLabel = make("TextLabel", {
+    Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "H-HUB  //  BLOX FRUITS COMPANION v4.4",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.1 FUTURE",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
-    TextSize = 13,
+    TextSize = 14,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, TopBar)
+trackNeon(TitleLabel)
+
+-- Đường quét sáng chạy dưới thanh tiêu đề
+local ScanLine = make("Frame", {
+    Position = UDim2.fromOffset(0, 40),
+    Size = UDim2.new(1, 0, 0, 2),
+    BackgroundColor3 = Colors.Accent,
+    BorderSizePixel = 0,
+}, Main)
+local ScanGrad = make("UIGradient", {
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.35, 1),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(0.65, 1),
+        NumberSequenceKeypoint.new(1, 1),
+    }),
+}, ScanLine)
+connect(RunService.RenderStepped, function()
+    ScanGrad.Offset = Vector2.new(((os.clock() * 0.6) % 2) - 1, 0)
+end)
 
 local function topButton(text, x, color, callback)
     local button = make("TextButton", {
         Text = text,
-        Size = UDim2.fromOffset(26, 24),
-        Position = UDim2.new(1, x, 0, 6),
+        Size = UDim2.fromOffset(28, 24),
+        Position = UDim2.new(1, x, 0, 8),
         BackgroundColor3 = color,
+        BackgroundTransparency = 0.35,
         TextColor3 = Colors.Text,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
         BorderSizePixel = 0,
+        AutoButtonColor = true,
     }, TopBar)
     round(button, 6)
+    stroke(button, Colors.Accent, 1, 0.6)
     button.Activated:Connect(callback)
     return button
 end
 
-local TabColumn = make("Frame", {
-    Position = UDim2.fromOffset(8, 44),
-    Size = UDim2.new(0, 100, 1, -76),
+local TabColumn = make("ScrollingFrame", {
+    Position = UDim2.fromOffset(10, 52),
+    Size = UDim2.new(0, 132, 1, -92),
     BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 2,
+    ScrollBarImageColor3 = Colors.Accent,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
 }, Main)
+make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, TabColumn)
+
 local Content = make("Frame", {
-    Position = UDim2.fromOffset(116, 44),
-    Size = UDim2.new(1, -124, 1, -76),
+    Position = UDim2.fromOffset(152, 52),
+    Size = UDim2.new(1, -162, 1, -92),
     BackgroundTransparency = 1,
 }, Main)
+
 local Footer = make("TextLabel", {
-    Position = UDim2.new(0, 10, 1, -25),
-    Size = UDim2.new(1, -20, 0, 18),
+    Position = UDim2.new(0, 14, 1, -30),
+    Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v4.4  |  Đang khởi động...",
+    Text = "H-HUB v5.1  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
     TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
 }, Main)
 
 local FloatingButton = make("TextButton", {
     Name = "FloatingButton",
-    Size = UDim2.fromOffset(42, 42),
-    Position = UDim2.new(0, 12, 0.5, -21),
-    BackgroundColor3 = Colors.Accent,
+    Size = UDim2.fromOffset(46, 46),
+    Position = UDim2.new(0, 12, 0.5, -23),
+    BackgroundColor3 = Colors.Background,
+    BackgroundTransparency = 0.3,
     Text = "H",
-    TextColor3 = Color3.new(1, 1, 1),
+    TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBlack,
-    TextSize = 18,
+    TextSize = 20,
     BorderSizePixel = 0,
 }, Gui)
-round(FloatingButton, 21)
-stroke(FloatingButton, Color3.fromRGB(255, 255, 255), 1, 0.45)
+round(FloatingButton, 23)
+neonBorder(FloatingButton, 2, 1.7)
+trackNeon(FloatingButton)
 FloatingButton.Activated:Connect(function()
     Main.Visible = not Main.Visible
 end)
@@ -564,7 +772,7 @@ local function setMinimized(value)
     TabColumn.Visible = not value
     Content.Visible = not value
     Footer.Visible = not value
-    Main.Size = value and UDim2.fromOffset(520, 36) or FullSize
+    Main.Size = value and UDim2.fromOffset(660, 42) or FullSize
 end
 
 local viewportConnection
@@ -572,7 +780,7 @@ local function updateScale()
     local camera = Workspace.CurrentCamera
     if not camera then return end
     local viewport = camera.ViewportSize
-    Scale.Scale = math.clamp(math.min(viewport.X / 760, viewport.Y / 560), 0.55, 1)
+    Scale.Scale = math.clamp(math.min(viewport.X / 720, viewport.Y / 500), 0.5, 1)
 end
 local function bindCamera()
     if viewportConnection then
@@ -588,40 +796,48 @@ end
 bindCamera()
 connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
 
-local Dragging, DragInput, DragStart, StartPosition = false, nil, nil, nil
-TopBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        Dragging = true
-        DragStart = input.Position
-        StartPosition = Main.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                Dragging = false
-            end
-        end)
-    end
-end)
-TopBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        DragInput = input
-    end
-end)
-connect(UserInputService.InputChanged, function(input)
-    if Dragging and input == DragInput and DragStart and StartPosition then
-        local delta = input.Position - DragStart
-        Main.Position = UDim2.new(
-            StartPosition.X.Scale, StartPosition.X.Offset + delta.X,
-            StartPosition.Y.Scale, StartPosition.Y.Offset + delta.Y
-        )
-    end
-end)
+-- Kéo thả (dùng cho menu chính và bảng nổi)
+local function makeDraggable(handle, frame)
+    local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    connect(UserInputService.InputChanged, function(input)
+        if dragging and input == dragInput and dragStart and startPos then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+makeDraggable(TopBar, Main)
+
 connect(UserInputService.InputBegan, function(input, processed)
     if not processed and input.KeyCode == Enum.KeyCode.RightShift then
         Main.Visible = not Main.Visible
     end
 end)
 
-local Pages, TabButtons, TabOrder = {}, {}, 0
+------------------------------------------------------------------
+-- TAB + WIDGET
+------------------------------------------------------------------
+local Pages, TabButtons, TabIndicators, TabOrder = {}, {}, {}, 0
 
 local function selectTab(name)
     for tabName, page in pairs(Pages) do
@@ -629,23 +845,36 @@ local function selectTab(name)
     end
     for tabName, button in pairs(TabButtons) do
         local selected = tabName == name
-        button.BackgroundColor3 = selected and Colors.Accent or Colors.Panel2
-        button.TextColor3 = selected and Colors.Background or Colors.Muted
+        button.BackgroundTransparency = selected and 0.55 or 0.85
+        button.TextColor3 = selected and Colors.Text or Colors.Muted
+        TabIndicators[tabName].Visible = selected
     end
 end
 
-local function addTab(name)
+local function addTab(name, glyph)
+    TabOrder += 1
     local button = make("TextButton", {
-        Text = name,
-        Size = UDim2.new(1, 0, 0, 30),
-        Position = UDim2.fromOffset(0, TabOrder * 35),
-        BackgroundColor3 = Colors.Panel2,
+        Text = "   " .. (glyph or "◈") .. "  " .. name,
+        Size = UDim2.new(1, -4, 0, 34),
+        LayoutOrder = TabOrder,
+        BackgroundColor3 = Colors.Accent,
+        BackgroundTransparency = 0.85,
         TextColor3 = Colors.Muted,
         Font = Enum.Font.GothamSemibold,
         TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
         BorderSizePixel = 0,
     }, TabColumn)
-    round(button, 7)
+    round(button, 8)
+    local bar = make("Frame", {
+        Size = UDim2.new(0, 3, 0.6, 0),
+        Position = UDim2.new(0, 3, 0.2, 0),
+        BackgroundColor3 = Colors.Accent,
+        BorderSizePixel = 0,
+        Visible = false,
+    }, button)
+    round(bar, 2)
+    trackNeon(bar, "BackgroundColor3")
     local page = make("ScrollingFrame", {
         Name = name .. "Page",
         Size = UDim2.fromScale(1, 1),
@@ -660,35 +889,58 @@ local function addTab(name)
     make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
     Pages[name] = page
     TabButtons[name] = button
-    TabOrder += 1
+    TabIndicators[name] = bar
     button.Activated:Connect(function()
         selectTab(name)
     end)
     return page
 end
 
-local function addSection(page, text)
+local function card(page, height, tint)
+    local frame = make("Frame", {
+        Size = UDim2.new(1, -8, 0, height),
+        BackgroundColor3 = tint or Colors.Panel2,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+    }, page)
+    round(frame, 8)
+    stroke(frame, Colors.Accent, 1, 0.78)
+    return frame
+end
+
+local function cardLabel(parent, text, width)
     return make("TextLabel", {
-        Size = UDim2.new(1, -6, 0, 24),
+        Position = UDim2.fromOffset(12, 0),
+        Size = UDim2.new(1, -(width or 70), 1, 0),
         BackgroundTransparency = 1,
         Text = text,
-        TextColor3 = Colors.Gold,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+end
+
+local function addSection(page, text)
+    local label = make("TextLabel", {
+        Size = UDim2.new(1, -8, 0, 24),
+        BackgroundTransparency = 1,
+        Text = "▍" .. text,
+        TextColor3 = Colors.Accent,
         Font = Enum.Font.GothamBold,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, page)
+    trackNeon(label)
+    return label
 end
 
 local function addInfo(page, title, initial)
-    local box = make("Frame", {
-        Size = UDim2.new(1, -6, 0, 48),
-        BackgroundColor3 = Colors.Panel2,
-        BorderSizePixel = 0,
-    }, page)
-    round(box, 7)
+    local box = card(page, 46)
     make("TextLabel", {
-        Position = UDim2.fromOffset(10, 5),
-        Size = UDim2.new(1, -20, 0, 14),
+        Position = UDim2.fromOffset(12, 5),
+        Size = UDim2.new(1, -24, 0, 14),
         BackgroundTransparency = 1,
         Text = title,
         TextColor3 = Colors.Muted,
@@ -697,8 +949,8 @@ local function addInfo(page, title, initial)
         TextXAlignment = Enum.TextXAlignment.Left,
     }, box)
     return make("TextLabel", {
-        Position = UDim2.fromOffset(10, 20),
-        Size = UDim2.new(1, -20, 0, 22),
+        Position = UDim2.fromOffset(12, 20),
+        Size = UDim2.new(1, -24, 0, 22),
         BackgroundTransparency = 1,
         Text = initial or "--",
         TextColor3 = Colors.Text,
@@ -709,45 +961,81 @@ local function addInfo(page, title, initial)
     }, box)
 end
 
+-- Thanh tiến độ (trả về hàm cập nhật)
+local function addProgress(page, title)
+    local box = card(page, 58)
+    make("TextLabel", {
+        Position = UDim2.fromOffset(12, 5),
+        Size = UDim2.new(0.6, 0, 0, 14),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Colors.Muted,
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, box)
+    local valueLabel = make("TextLabel", {
+        Position = UDim2.new(0.4, 0, 0, 5),
+        Size = UDim2.new(0.6, -12, 0, 14),
+        BackgroundTransparency = 1,
+        Text = "--",
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    }, box)
+    local track = make("Frame", {
+        Position = UDim2.fromOffset(12, 28),
+        Size = UDim2.new(1, -24, 0, 16),
+        BackgroundColor3 = Colors.Off,
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+    }, box)
+    round(track, 8)
+    local fill = make("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = Colors.Accent,
+        BorderSizePixel = 0,
+    }, track)
+    round(fill, 8)
+    make("UIGradient", {
+        Color = ColorSequence.new(Colors.Blue, Colors.Accent),
+    }, fill)
+    return function(fraction, text)
+        fill.Size = UDim2.new(math.clamp(fraction, 0, 1), 0, 1, 0)
+        valueLabel.Text = text or ""
+    end
+end
+
 local function addButton(page, text, callback, tint)
     local button = make("TextButton", {
-        Size = UDim2.new(1, -6, 0, 34),
+        Size = UDim2.new(1, -8, 0, 34),
         BackgroundColor3 = tint or Colors.Panel2,
+        BackgroundTransparency = 0.45,
         Text = text,
         TextColor3 = Colors.Text,
         Font = Enum.Font.GothamSemibold,
         TextSize = 11,
         BorderSizePixel = 0,
     }, page)
-    round(button, 7)
+    round(button, 8)
+    stroke(button, Colors.Accent, 1, 0.6)
     button.Activated:Connect(callback)
     return button
 end
 
-local function addToggle(page, text, default, callback)
-    local row = make("Frame", {
-        Size = UDim2.new(1, -6, 0, 38),
-        BackgroundColor3 = Colors.Panel2,
-        BorderSizePixel = 0,
-    }, page)
-    round(row, 7)
-    make("TextLabel", {
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -66, 1, 0),
-        BackgroundTransparency = 1,
-        Text = text,
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
+local function addToggle(page, text, default, callback, key)
+    local row = card(page, 38)
+    cardLabel(row, text, 70)
     local button = make("TextButton", {
-        Size = UDim2.fromOffset(42, 22),
-        Position = UDim2.new(1, -52, 0.5, -11),
+        Size = UDim2.fromOffset(44, 22),
+        Position = UDim2.new(1, -54, 0.5, -11),
         Text = "",
         BorderSizePixel = 0,
+        AutoButtonColor = false,
     }, row)
     round(button, 11)
+    local glow = stroke(button, Colors.Accent, 1, 1)
     local knob = make("Frame", {
         Size = UDim2.fromOffset(16, 16),
         BackgroundColor3 = Color3.new(1, 1, 1),
@@ -756,56 +1044,55 @@ local function addToggle(page, text, default, callback)
     round(knob, 8)
     local state = default and true or false
     local function paint()
-        button.BackgroundColor3 = state and Colors.Green or Colors.Red
-        knob.Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+        button.BackgroundColor3 = state and Colors.Accent or Colors.Off
+        button.BackgroundTransparency = state and 0.1 or 0.2
+        glow.Transparency = state and 0.2 or 1
+        TweenService:Create(knob, TweenInfo.new(0.12), {
+            Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
+        }):Play()
+    end
+    local api = {}
+    function api.Set(value, silent)
+        state = value and true or false
+        paint()
+        if not silent and callback then callback(state) end
     end
     button.Activated:Connect(function()
-        state = not state
-        paint()
-        callback(state)
+        api.Set(not state)
     end)
     paint()
+    if key then Toggles[key] = api end
+    return api
 end
 
 local function addStepper(page, text, min, max, step, default, callback)
-    local row = make("Frame", {
-        Size = UDim2.new(1, -6, 0, 38),
-        BackgroundColor3 = Colors.Panel2,
-        BorderSizePixel = 0,
-    }, page)
-    round(row, 7)
-    make("TextLabel", {
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -140, 1, 0),
-        BackgroundTransparency = 1,
-        Text = text,
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
+    local row = card(page, 38)
+    cardLabel(row, text, 150)
     local value = default
     local valueLabel = make("TextLabel", {
-        Size = UDim2.new(0, 52, 0, 24),
-        Position = UDim2.new(1, -88, 0.5, -12),
+        Size = UDim2.new(0, 56, 0, 24),
+        Position = UDim2.new(1, -92, 0.5, -12),
         BackgroundTransparency = 1,
         Text = tostring(value),
         TextColor3 = Colors.Accent,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
     }, row)
+    trackNeon(valueLabel)
     local function makeButton(label, x, direction)
         local b = make("TextButton", {
             Text = label,
             Size = UDim2.new(0, 24, 0, 24),
             Position = UDim2.new(1, x, 0.5, -12),
-            BackgroundColor3 = Colors.Red,
+            BackgroundColor3 = Colors.Blue,
+            BackgroundTransparency = 0.35,
             TextColor3 = Colors.Text,
             Font = Enum.Font.GothamBold,
             TextSize = 14,
             BorderSizePixel = 0,
         }, row)
-        round(b, 5)
+        round(b, 6)
+        stroke(b, Colors.Accent, 1, 0.5)
         b.Activated:Connect(function()
             value = math.clamp(value + direction * step, min, max)
             value = math.floor(value * 1000 + 0.5) / 1000
@@ -813,43 +1100,58 @@ local function addStepper(page, text, min, max, step, default, callback)
             callback(value)
         end)
     end
-    makeButton("-", -116, -1)
+    makeButton("-", -120, -1)
     makeButton("+", -34, 1)
 end
 
 local function addCycle(page, text, options, current, callback)
     local index = table.find(options, current) or 1
-    local row = make("Frame", {
-        Size = UDim2.new(1, -6, 0, 38),
-        BackgroundColor3 = Colors.Panel2,
-        BorderSizePixel = 0,
-    }, page)
-    round(row, 7)
-    make("TextLabel", {
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -150, 1, 0),
-        BackgroundTransparency = 1,
-        Text = text,
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
+    local row = card(page, 38)
+    cardLabel(row, text, 160)
     local button = make("TextButton", {
-        Size = UDim2.fromOffset(130, 24),
-        Position = UDim2.new(1, -138, 0.5, -12),
-        BackgroundColor3 = Colors.Accent,
+        Size = UDim2.fromOffset(140, 24),
+        Position = UDim2.new(1, -148, 0.5, -12),
+        BackgroundColor3 = Colors.Blue,
+        BackgroundTransparency = 0.3,
         Text = options[index],
-        TextColor3 = Colors.Background,
+        TextColor3 = Colors.Text,
         Font = Enum.Font.GothamBold,
-        TextSize = 11,
+        TextSize = 10,
         BorderSizePixel = 0,
+        TextTruncate = Enum.TextTruncate.AtEnd,
     }, row)
     round(button, 6)
+    stroke(button, Colors.Accent, 1, 0.45)
     button.Activated:Connect(function()
         index = index % #options + 1
         button.Text = options[index]
         callback(options[index])
+    end)
+end
+
+local function addInput(page, text, placeholder, callback)
+    local row = card(page, 38)
+    cardLabel(row, text, 160)
+    local box = make("TextBox", {
+        Size = UDim2.fromOffset(140, 24),
+        Position = UDim2.new(1, -148, 0.5, -12),
+        BackgroundColor3 = Colors.Background,
+        BackgroundTransparency = 0.3,
+        Text = "",
+        PlaceholderText = placeholder,
+        PlaceholderColor3 = Colors.Muted,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        ClearTextOnFocus = false,
+        BorderSizePixel = 0,
+    }, row)
+    round(box, 6)
+    stroke(box, Colors.Accent, 1, 0.55)
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed and box.Text ~= "" then
+            callback(box.Text)
+        end
     end)
 end
 
@@ -935,6 +1237,7 @@ local function questText()
         return nil
     end
 
+    -- Blox Fruits có thể thay đổi một vài tầng con của Quest UI theo phiên bản.
     local container = quest:FindFirstChild("Container", true) or quest
     local title = container:FindFirstChild("QuestTitle", true)
     local label = title and (title:FindFirstChild("Title", true) or title)
@@ -942,6 +1245,7 @@ local function questText()
         return label.Text
     end
 
+    -- Fallback: tìm TextLabel có nội dung trong khung Quest đang hiển thị.
     for _, item in ipairs(container:GetDescendants()) do
         if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
             local value = item.Text
@@ -990,7 +1294,9 @@ local function findSpawnPos(mobName)
     return best or State.SpawnCache[mobName]
 end
 
+-- Quest đang làm? Ưu tiên bảng quest của game, nếu bảng không hiện thì dùng bộ đếm cục bộ
 local function questActiveNow()
+    -- Quest UI có thể không render, nhưng remote đã trả về không lỗi thì giữ trạng thái cục bộ.
     return hasQuest() or State.QuestAccepted
 end
 
@@ -1003,6 +1309,8 @@ local function questLabel(quest)
     return text
 end
 
+-- Chỉ đánh dấu đã nhận khi game xác nhận bằng Quest UI.
+-- Tránh trạng thái giả khiến script spam StartQuest và bộ đếm lệch.
 local function startQuest(quest)
     local commF = getCommF()
     if not commF then
@@ -1011,6 +1319,7 @@ local function startQuest(quest)
     end
 
     local now = os.clock()
+    -- Chống gọi lặp cùng một quest khi UI chưa kịp hiện.
     if State.QuestKey == (quest.quest .. ":" .. quest.idx)
         and State.QuestAccepted then
         return true
@@ -1031,6 +1340,8 @@ local function startQuest(quest)
         return false
     end
 
+    -- Không đòi hỏi UI phải xuất hiện mới ghi nhận lần gọi thành công.
+    -- UI được theo dõi riêng; nếu UI không render thì không spam remote nữa.
     State.QuestAccepted = true
     State.QuestSeenUI = hasQuest()
     State.QuestKey = quest.quest .. ":" .. quest.idx
@@ -1042,7 +1353,8 @@ local function startQuest(quest)
     return true
 end
 
-local function flyTo(root, targetCFrame)
+-- Bay tới vị trí (tốc độ theo Config.TweenSpeed). cond: hàm kiểm tra còn được phép bay không
+local function flyTo(root, targetCFrame, cond)
     local dist = (root.Position - targetCFrame.Position).Magnitude
     if dist < 6 then
         return
@@ -1059,7 +1371,11 @@ local function flyTo(root, targetCFrame)
     end)
     tween:Play()
     local limit = os.clock() + dist / speed + 3
-    while not done and State.Running and Config.AutoFarm and os.clock() < limit do
+    local function allowed()
+        if cond then return cond() end
+        return Config.AutoFarm
+    end
+    while not done and State.Running and allowed() and os.clock() < limit do
         task.wait(0.1)
     end
     conn:Disconnect()
@@ -1097,9 +1413,11 @@ local function collectHits()
     local root = getRoot(getCharacter())
     if not quest or not root then return nil, nil end
     local hits, first = {}, nil
-    for _, mob in ipairs(getMobs(quest.mob)) do
+    local wantedName = quest.mob
+    if State.FarmAny then wantedName = nil end
+    for _, mob in ipairs(getMobs(wantedName)) do
         local part = mob:FindFirstChild("HumanoidRootPart")
-        if part and (part.Position - root.Position).Magnitude <= Config.HitRange then
+        if part and not State.Blacklist[mob] and (part.Position - root.Position).Magnitude <= Config.HitRange then
             first = first or part
             table.insert(hits, { mob, part })
         end
@@ -1236,7 +1554,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HÀM ĐÁNH & GỌI REMOTE EVENT
+-- HÀM ĐÁNH & GỌI REMOTE EVENT (NGUYÊN XI TỪ BẢN CŨ + CLICK MÀN HÌNH)
 ------------------------------------------------------------------
 local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
 
@@ -1257,6 +1575,7 @@ local function activateTool()
     end
 end
 
+-- Chọn điểm click trên màn hình, tránh trúng menu H-HUB đang mở
 local function pickScreenPoint()
     local camera = Workspace.CurrentCamera
     if not camera then return nil end
@@ -1281,6 +1600,7 @@ local function pickScreenPoint()
     return candidates[2]
 end
 
+-- Đánh thường: click chuột thật vào màn hình
 local function screenClick()
     local point = pickScreenPoint()
     if not point then return end
@@ -1295,11 +1615,13 @@ end
 
 local function directFire()
     pcall(function()
+        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
         if RegAttack then
             local attackArgs = { 1, 4 }
             RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
         end
 
+        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
         local hits, first = collectHits()
         if first and RegHit and Config.HitKey ~= "" then
             local targetPart = first.Parent:FindFirstChild("Head") or first
@@ -1315,6 +1637,7 @@ local function directFire()
 end
 
 local function shouldScreenClick()
+    -- Tự click trong lúc farm cho tới khi HitKey được học; dừng ngay khi có key.
     return Config.AutoFarm and not (State.KeyLearned and Config.HitKey ~= "")
 end
 
@@ -1410,150 +1733,275 @@ local function ensureHaki()
         end)
     end
 end
-
 ------------------------------------------------------------------
--- GOM QUÁI (ĐÃ SỬA LỖI TỐI ƯU TRẠNG THÁI STALLED / ANCHORED)
+-- TÍNH NĂNG MỚI (PHẦN 1): SEA / SERVER HOP / FULLBRIGHT / THỐNG KÊ
 ------------------------------------------------------------------
-local BringMovers = setmetatable({}, { __mode = "k" })
-local BringSamples = setmetatable({}, { __mode = "k" })
-local lastBringUpdate = 0
+State.StartLevel = getLevel()
 
-local function removeBringMover(part)
-    local mover = BringMovers[part]
-    if mover then
-        pcall(function() mover:Destroy() end)
-        BringMovers[part] = nil
+local lastSeaTravel = 0
+local function autoSeaStep()
+    local commF = getCommF()
+    if not commF then return false end
+    local level, sea = getLevel(), getSea()
+    local remote
+    if sea == 1 and level >= 700 then
+        remote = "TravelDressrosa"
+    elseif sea == 2 and level >= 1500 then
+        remote = "TravelZou"
     end
-    BringSamples[part] = nil
+    if remote and os.clock() - lastSeaTravel > 25 then
+        lastSeaTravel = os.clock()
+        State.Status = "Đang chuyển Sea (" .. remote .. ")..."
+        pcall(function()
+            commF:InvokeServer(remote)
+        end)
+        return true
+    end
+    return false
+end
+
+local function serverHop(reason)
+    if State.Hopping then return end
+    State.Hopping = true
+    notify("SERVER HOP", reason or "Đang tìm server mới...")
+    task.spawn(function()
+        local ok = pcall(function()
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
+                .. "/servers/Public?sortOrder=Asc&limit=100"
+            local body = game:HttpGet(url)
+            local data = HttpService:JSONDecode(body)
+            local candidates = {}
+            for _, server in ipairs(data.data or {}) do
+                if server.id ~= game.JobId and server.playing and server.maxPlayers
+                    and server.playing < server.maxPlayers - 1 then
+                    table.insert(candidates, server.id)
+                end
+            end
+            if #candidates == 0 then
+                error("không có server phù hợp")
+            end
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, candidates[math.random(#candidates)], LocalPlayer)
+        end)
+        if not ok then
+            -- Không đọc được danh sách server -> vào lại ngẫu nhiên
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+        end
+        task.wait(15)
+        State.Hopping = false
+    end)
+end
+
+local Fullbright = { saved = nil }
+local function setFullbright(on)
+    if on then
+        if not Fullbright.saved then
+            Fullbright.saved = {
+                Brightness = Lighting.Brightness,
+                ClockTime = Lighting.ClockTime,
+                FogEnd = Lighting.FogEnd,
+                Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient,
+            }
+        end
+        pcall(function()
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 1e6
+            Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+            Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+        end)
+    elseif Fullbright.saved then
+        for key, value in pairs(Fullbright.saved) do
+            pcall(function() Lighting[key] = value end)
+        end
+        Fullbright.saved = nil
+    end
+end
+
+local function formatDuration(seconds)
+    seconds = math.max(0, math.floor(seconds))
+    return string.format("%02d:%02d:%02d", math.floor(seconds / 3600), math.floor(seconds % 3600 / 60), seconds % 60)
+end
+
+local function sessionSummary()
+    local elapsed = os.clock() - State.SessionStart
+    local level = getLevel()
+    local gained = level - State.StartLevel
+    local perHour = elapsed > 30 and gained / elapsed * 3600 or 0
+    local left = math.max((Config.TargetLevel or 2800) - level, 0)
+    local eta = "--"
+    if left == 0 then
+        eta = "Đã đạt mục tiêu"
+    elseif perHour > 0.01 then
+        eta = formatDuration(left / perHour * 3600)
+    end
+    return elapsed, gained, perHour, eta
+end
+
+------------------------------------------------------------------
+-- GOM QUÁI V5 (KÉO LIÊN TỤC MỖI FRAME, CHẠY ĐỒNG THỜI VỚI ĐÁNH)
+--   * Mở SimulationRadius vô hạn để máy bạn giữ quyền vật lý của quái gần đó.
+--   * Mỗi frame (Stepped + Heartbeat) đặt CFrame của TẤT CẢ quái nhiệm vụ về điểm gom,
+--     triệt vận tốc, tắt va chạm, đóng băng AI (WalkSpeed 0) và mở rộng hitbox.
+--   * Điểm gom cố định theo mục tiêu hiện tại; nhân vật lơ lửng phía trên điểm đó.
+--   * Chẩn đoán: K = đang kéo, D = đứng yên (server không nhường quyền), A = khóa neo, G = đã gom.
+-- Nếu server không nhường quyền (D > 0 lâu) farm vẫn chạy vì nhân vật tự bay tới quái.
+------------------------------------------------------------------
+local Bring = { list = {}, lastScan = 0, pulledAt = setmetatable({}, { __mode = "k" }), active = false }
+
+local function resetBring()
+    Bring.list = {}
+    Bring.active = false
+    State.BroughtCount = 0
+    State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
 end
 
 local function clearBringMovers()
-    for part in pairs(BringMovers) do
-        removeBringMover(part)
-    end
-    for part in pairs(BringSamples) do
-        BringSamples[part] = nil
-    end
+    resetBring()
 end
 
-local function pullToward(part, point)
-    if not part or not part.Parent or not point then return false end
-    
-    -- Ép mở khóa Anchorage để khắc phục tận gốc tình trạng quái bị kẹt/đứng yên (stalled)
-    pcall(function()
-        if part.Anchored then
-            part.Anchored = false
+-- Chỉ quái mà máy bạn SỞ HỮU vật lý (network owner) mới được CFrame: khi đó vị trí mới được
+-- replicate lên server nên quái không bị "bất tử do lệch vị trí". Quái chưa sở hữu thì để nguyên.
+local function ownsPart(part)
+    if not Config.BringSafe then return true end
+    if isnetworkowner then
+        local ok, result = pcall(isnetworkowner, part)
+        return ok and result == true
+    end
+    return true   -- executor không có isnetworkowner -> dùng cơ chế phát hiện lệch ở farmStep
+end
+
+local function blacklistPulled(reason)
+    local count = 0
+    for _, entry in ipairs(Bring.list) do
+        local model = entry[3]
+        if model then
+            State.Blacklist[model] = true
+            count += 1
         end
-    end)
-
-    local offset = point - part.Position
-    local distance = offset.Magnitude
-    if distance <= 5 then
-        removeBringMover(part)
-        return true
     end
-
-    part.CanCollide = false
-    local mover = BringMovers[part]
-    if not mover or not mover.Parent then
-        mover = Instance.new("BodyVelocity")
-        mover.Name = "HHubBringVelocity"
-        -- Tối ưu lực tối đa và độ nhạy P cao hơn để thắng vật lý cản trở của quái
-        mover.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-        mover.P = 50000
-        mover.Parent = part
-        BringMovers[part] = mover
-        BringSamples[part] = { position = part.Position, sampledAt = os.clock(), movedAt = os.clock() }
+    if State.TargetMob then
+        State.Blacklist[State.TargetMob] = true
     end
-
-    local speed = math.clamp(distance * 15, 80, 300)
-    local velocity = offset.Unit * speed
-    mover.Velocity = velocity
-
-    pcall(function()
-        part.AssemblyLinearVelocity = velocity
-    end)
-    return true
+    State.TargetMob = nil
+    State.ClusterPoint = nil
+    resetBring()
+    if count > 0 then
+        notify("BRING MOB", (reason or "Nghi quái lệch đồng bộ") .. " - bỏ qua " .. count .. " con")
+    end
 end
 
-connect(RunService.Heartbeat, function()
+local function bringStep()
     if not (State.Running and Config.AutoFarm and Config.BringMob)
-        or Config.AutoPumpkin or State.Fleeing then
-        State.BroughtCount = 0
-        State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
-        clearBringMovers()
+        or Config.AutoPumpkin or State.Fleeing or State.Busy then
+        if Bring.active then resetBring() end
         return
     end
 
-    local now = os.clock()
-    if now - lastBringUpdate < 0.08 then return end
-    lastBringUpdate = now
-
-    local point, quest = State.BringPoint, State.Quest
+    local point, quest = State.ClusterPoint, State.Quest
     local folder = Workspace:FindFirstChild("Enemies")
     if not point or not quest or not folder then
-        State.BroughtCount = 0
-        State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
-        clearBringMovers()
+        if Bring.active then resetBring() end
         return
     end
+    Bring.active = true
 
-    local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
-    local active = {}
-    local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
-    for _, mob in ipairs(folder:GetChildren()) do
-        if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
-            local hum = mob:FindFirstChildOfClass("Humanoid")
-            local part = mob:FindFirstChild("HumanoidRootPart")
-            if hum and part and hum.Health > 0 then
-                local distance = (point - part.Position).Magnitude
-                if distance <= maxRadius then
+    local now = os.clock()
+    if now - Bring.lastScan >= 0.1 then
+        Bring.lastScan = now
+        local list = {}
+        local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
+        local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
+        local wanted = quest.mob
+        if State.FarmAny then wanted = nil end
+        local size = math.clamp(tonumber(Config.HitboxSize) or 35, 5, 80)
+        for _, mob in ipairs(folder:GetChildren()) do
+            if (not wanted or nameMatches(mob.Name, wanted)) and not State.Blacklist[mob] then
+                local hum = mob:FindFirstChildOfClass("Humanoid")
+                local part = mob:FindFirstChild("HumanoidRootPart")
+                if hum and part and hum.Health > 0
+                    and (part.Position - point).Magnitude <= maxRadius then
                     diag.candidates += 1
-                    active[part] = true
                     if part.Anchored then
                         diag.anchored += 1
-                    elseif distance <= 5 then
-                        diag.settled += 1
-                        removeBringMover(part)
+                    elseif not ownsPart(part) then
+                        diag.stalled += 1      -- chưa sở hữu vật lý: KHÔNG di chuyển, tránh lệch server
                     else
-                        pullToward(part, point)
-                        local sample = BringSamples[part]
-                        if sample then
-                            local elapsed = now - sample.sampledAt
-                            local delta = (part.Position - sample.position).Magnitude
-                            if delta >= 1.5 then
-                                diag.moving += 1
-                                sample.position = part.Position
-                                sample.sampledAt = now
-                                sample.movedAt = now
-                            elseif now - (sample.movedAt or sample.sampledAt) >= 1.0 then
-                                diag.stalled += 1
-                            end
-                        else
+                        local distance = (part.Position - point).Magnitude
+                        local firstPull = Bring.pulledAt[part]
+                        if distance <= 12 then
+                            diag.settled += 1
+                        elseif firstPull and now - firstPull > 0.6 then
                             diag.stalled += 1
+                        else
+                            diag.moving += 1
                         end
+                        -- đóng băng AI + mở rộng hitbox (mỗi nhịp quét, không phải mỗi frame)
+                        pcall(function()
+                            if hum.WalkSpeed ~= 0 then hum.WalkSpeed = 0 end
+                            if hum.PlatformStand ~= true then hum.PlatformStand = true end
+                            part.CanCollide = false
+                            if Config.BringHitbox and part.Size.X < size then
+                                part.Size = Vector3.new(size, size, size)
+                            end
+                        end)
+                        list[#list + 1] = { hum, part, mob }
                     end
                 end
             end
         end
+        Bring.list = list
+        State.BringDiagnostics = diag
+        State.BroughtCount = diag.settled + diag.moving
     end
 
-    for part in pairs(BringMovers) do
-        if not active[part] or not part.Parent then
-            removeBringMover(part)
+    -- Áp dụng vị trí MỖI FRAME (không throttle) để quái không kịp bị server kéo lại
+    for index, entry in ipairs(Bring.list) do
+        local hum, part = entry[1], entry[2]
+        if part.Parent and hum.Health > 0 and not part.Anchored then
+            local angle = index * 2.399
+            local radius = math.min(index * 0.3, 3.5)
+            local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+            part.CFrame = CFrame.new(point + offset)
+            part.AssemblyLinearVelocity = Vector3.zero
+            part.AssemblyAngularVelocity = Vector3.zero
+            if not Bring.pulledAt[part] then
+                Bring.pulledAt[part] = now
+            end
         end
     end
-    State.BringDiagnostics = diag
-    State.BroughtCount = diag.moving
-end)
+end
+connect(RunService.Stepped, bringStep)
+connect(RunService.Heartbeat, bringStep)
 
 ------------------------------------------------------------------
 -- VÒNG LẶP AUTO FARM
 ------------------------------------------------------------------
 local lastHaki = 0
+local lastKen = 0
 local simulationSet = false
 
+local function stopFarm(reason)
+    Config.AutoFarm = false
+    State.Status = reason or "Đang tắt"
+    State.Fleeing = false
+    State.ClusterPoint = nil
+    State.TargetMob = nil
+    resetBring()
+    if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
+    if not Config.AutoPumpkin then
+        stopMovers()
+    end
+end
+
 local function farmStep()
+    if State.Busy then
+        State.Status = "Tạm dừng farm: " .. tostring(State.Busy)
+        return
+    end
+
     local character = getCharacter()
     local root = getRoot(character)
     local humanoid = getHumanoid()
@@ -1562,13 +2010,27 @@ local function farmStep()
         return
     end
 
+    -- Dừng khi đạt level mục tiêu (mặc định 2800)
+    local level = getLevel()
+    if Config.TargetLevel > 0 and level >= Config.TargetLevel then
+        stopFarm("Đã đạt level mục tiêu " .. Config.TargetLevel)
+        notify("HOÀN THÀNH", "Đã đạt level " .. level .. " - tự tắt Auto Farm")
+        return
+    end
+
+    if Config.AutoSea and autoSeaStep() then
+        return
+    end
+
     ensureMovers(root, false)
 
-    if not simulationSet and sethiddenproperty then
+    if not simulationSet or os.clock() - State.SimAt > 2 then
         simulationSet = true
-        pcall(function()
-            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
-        end)
+        State.SimAt = os.clock()
+        if sethiddenproperty then
+            pcall(function() sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge) end)
+            pcall(function() sethiddenproperty(LocalPlayer, "MaximumSimulationRadius", math.huge) end)
+        end
     end
     if setsimulationradius and not State.SimRadiusSet then
         State.SimRadiusSet = true
@@ -1594,11 +2056,21 @@ local function farmStep()
         lastHaki = os.clock()
         ensureHaki()
     end
+    if Config.AutoKen and os.clock() - lastKen > 12 then
+        lastKen = os.clock()
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local commE = remotes and remotes:FindFirstChild("CommE")
+            if commE then commE:FireServer("Ken", true) end
+        end)
+    end
 
+    State.FarmAny = (Config.FarmMode == "Quái gần nhất")
     local quest = currentQuest()
     State.Quest = quest
 
-    if Config.AutoQuest then
+    -- Nhận quest chỉ bằng remote, không di chuyển tới NPC
+    if Config.AutoQuest and not State.FarmAny then
         local questKey = quest.quest .. ":" .. quest.idx
         local now = os.clock()
         local ui = hasQuest()
@@ -1614,6 +2086,7 @@ local function farmStep()
             State.QuestKey = questKey
             State.QuestPendingSince = nil
         elseif State.QuestSeenUI then
+            -- Chỉ kết luận quest kết thúc nếu UI từng xuất hiện rồi mới biến mất.
             State.UIMissingSince = State.UIMissingSince or now
             if now - State.UIMissingSince >= 3 then
                 State.QuestSeenUI = false
@@ -1626,6 +2099,7 @@ local function farmStep()
             end
         end
 
+        -- Nếu đã hạ đủ số quái theo bộ đếm cục bộ, coi nhiệm vụ hoàn tất.
         if State.QuestAccepted and State.QuestNeed > 0
             and State.QuestKills >= State.QuestNeed then
             State.QuestAccepted = false
@@ -1637,6 +2111,11 @@ local function farmStep()
             State.QuestRetryAt = now + 2
         end
 
+        -- Nếu remote đã được gọi thành công nhưng Quest UI không hiện,
+        -- giữ trạng thái đã nhận và KHÔNG tự động gọi StartQuest lần nữa.
+        -- Chỉ reset khi UI từng hiện rồi biến mất, đủ số quái, hoặc đổi quest.
+
+        -- Quest cũ không còn hợp cấp -> bỏ quest cũ
         if State.QuestKey and State.QuestKey ~= questKey and questActiveNow() then
             local commF = getCommF()
             if commF then
@@ -1661,8 +2140,17 @@ local function farmStep()
         end
     end
 
-    local scanResults = scanEnemies(quest.mob)
+    local wantedName = quest.mob
+    if State.FarmAny then wantedName = nil end
+    local rawScan = scanEnemies(wantedName)
+    local scanResults = {}
+    for _, e in ipairs(rawScan) do
+        if not State.Blacklist[e.Model] then
+            scanResults[#scanResults + 1] = e
+        end
+    end
 
+    -- Đếm số quái đã hạ (quái biến mất khi đang ở gần) để biết khi nào xong quest
     do
         local current = {}
         for _, e in ipairs(scanResults) do
@@ -1671,71 +2159,95 @@ local function farmStep()
         end
         for m, dist in pairs(State.SeenMobs) do
             if not current[m] then
-                if State.QuestAccepted and dist <= Config.HitRange + 60 then
-                    State.QuestKills += 1
+                if dist <= Config.HitRange + 60 then
+                    State.TotalKills += 1
+                    if State.QuestAccepted then
+                        State.QuestKills += 1
+                    end
                 end
                 State.SeenMobs[m] = nil
             end
         end
     end
 
-    local mob = scanResults[1] and scanResults[1].Model or nil
+    -- Giữ mục tiêu hiện tại tới khi nó chết (tránh đổi mục tiêu liên tục làm lệch điểm gom)
+    local mob = State.TargetMob
+    local keep = false
+    if mob and mob.Parent then
+        local hum = mob:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 and mob:FindFirstChild("HumanoidRootPart")
+            and (State.FarmAny or nameMatches(mob.Name, quest.mob)) then
+            keep = true
+        end
+    end
+    if not keep then
+        mob = scanResults[1] and scanResults[1].Model or nil
+        State.TargetMob = mob
+        State.ClusterPoint = nil
+    end
 
     if not mob then
-        State.BringPoint = nil
-        local spawnPos = findSpawnPos(quest.mob)
+        State.ClusterPoint = nil
+        State.NoMobSince = State.NoMobSince or os.clock()
+        local spawnPos = (not State.FarmAny) and findSpawnPos(quest.mob) or nil
         if spawnPos then
             State.Status = "Đi tới điểm spawn " .. quest.mob
             flyTo(root, CFrame.new(spawnPos + Vector3.new(0, currentHeight(), 0)))
         else
-            State.Status = "Không thấy " .. quest.mob .. " - chờ spawn"
+            State.Status = "Không thấy quái - chờ spawn"
+        end
+        if Config.AutoHop and os.clock() - State.NoMobSince >= Config.HopAfter then
+            State.NoMobSince = os.clock()
+            serverHop("Không có quái " .. Config.HopAfter .. "s")
         end
         return
     end
+    State.NoMobSince = nil
 
     local mobRoot = mob:FindFirstChild("HumanoidRootPart")
     if not mobRoot then return end
-
-    local anchorPos = mobRoot.Position
-    State.TargetMob = mob
-    State.BringPoint = anchorPos
     mobRoot.CanCollide = false
 
+    -- Điểm gom: có Bring Mob thì khóa cố định (quái được kéo về đây); không có thì bám theo quái
     if Config.BringMob then
-        for _, entry in ipairs(scanResults) do
-            local other = entry.Model
-            local otherRoot = entry.RootPart
-            local otherHum = other:FindFirstChildOfClass("Humanoid")
-            if otherRoot and otherHum and otherHum.Health > 0 and other ~= mob
-                and (otherRoot.Position - anchorPos).Magnitude <= Config.BringRadius then
-                pullToward(otherRoot, anchorPos)
-            end
+        if not State.ClusterPoint then
+            State.ClusterPoint = mobRoot.Position
         end
+    else
+        State.ClusterPoint = mobRoot.Position
     end
+    local anchorPos = State.ClusterPoint
 
     local height = currentHeight()
     local elapsed = math.floor(os.clock() - State.FarmStartAt)
     local bd = State.BringDiagnostics or {}
+    local label = State.FarmAny and "quái gần nhất" or quest.mob
     State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo: %d/%d | đứng: %d | khóa: %d",
-        quest.mob, #scanResults, height, elapsed, bd.moving or 0, bd.candidates or 0, bd.stalled or 0, bd.anchored or 0)
+        label, #scanResults, height, elapsed, bd.moving or 0, bd.candidates or 0, bd.stalled or 0, bd.anchored or 0)
 
+    -- Tới gần quái nếu đang ở xa (dùng tốc độ bay Auto Farm), còn lại bám trên đầu điểm gom
     local above = anchorPos + Vector3.new(0, height, 0)
     if (root.Position - above).Magnitude > 120 then
         flyTo(root, CFrame.lookAt(above, anchorPos))
     end
     root.CFrame = CFrame.lookAt(above, anchorPos)
-    State.BringPoint = root.Position - Vector3.new(0, height, 0)
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
 
     State.InAttack = true
+    State.LastEngageAt = os.clock()
 
     local rawMobsList = {}
     for _, e in ipairs(scanResults) do table.insert(rawMobsList, e.Model) end
     trackDamage(rawMobsList)
 
     if Config.AutoSwitch and os.clock() - State.LastDamageAt > Config.NoDamageTimeout then
-        rotateAttack()
+        if Config.BringMob and Config.BringSafe and not isnetworkowner and #Bring.list > 0 then
+            -- Không đo được quyền sở hữu: quái bị kéo mà không nhận sát thương => nghi lệch server, bỏ chúng
+            blacklistPulled("Quái bị kéo không nhận sát thương")
+        else
+            rotateAttack()
+        end
         State.LastDamageAt = os.clock()
     end
     attackMobs()
@@ -1760,7 +2272,7 @@ end)
 
 task.spawn(function()
     while State.Running do
-        task.wait(3)
+        task.wait(1)
         if Config.MobHighlight then
             pcall(function()
                 local results, _ = scanEnemies(nil)
@@ -1772,6 +2284,11 @@ task.spawn(function()
     end
 end)
 
+
+------------------------------------------------------------------
+-- TÍNH NĂNG MỚI (PHẦN 2): SKILL / STATS / CHEST / TRÁI / STORE / REJOIN
+------------------------------------------------------------------
+-- Auto Stats
 task.spawn(function()
     while State.Running do
         task.wait(3)
@@ -1781,11 +2298,241 @@ task.spawn(function()
                 local points = data and data:FindFirstChild("Points")
                 local commF = getCommF()
                 if points and commF and points.Value > 0 then
-                    commF:InvokeServer("AddPoint", Config.StatName, math.min(points.Value, 10))
+                    commF:InvokeServer("AddPoint", Config.StatName, math.min(points.Value, math.max(Config.StatAmount, 1)))
                 end
             end)
         end
     end
+end)
+
+-- Auto Skill (Z X C V F) khi đang đánh quái
+local SkillCodes = {
+    SkillZ = Enum.KeyCode.Z, SkillX = Enum.KeyCode.X, SkillC = Enum.KeyCode.C,
+    SkillV = Enum.KeyCode.V, SkillF = Enum.KeyCode.F,
+}
+local SkillOrder = { "SkillZ", "SkillX", "SkillC", "SkillV", "SkillF" }
+
+local function pressKey(code)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, code, false, game)
+        task.wait(0.06)
+        VirtualInputManager:SendKeyEvent(false, code, false, game)
+    end)
+end
+
+task.spawn(function()
+    while State.Running do
+        task.wait(math.max(Config.SkillDelay, 0.3))
+        if Config.AutoSkill and Config.AutoFarm and not State.Busy
+            and os.clock() - State.LastEngageAt < 1.2 then
+            for _, key in ipairs(SkillOrder) do
+                if Config[key] and State.Running and Config.AutoFarm then
+                    pressKey(SkillCodes[key])
+                    task.wait(0.18)
+                end
+            end
+        end
+    end
+end)
+
+-- Tìm trái ác quỷ rơi trên bản đồ
+local function findFruits()
+    local out = {}
+    local character = getCharacter()
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if (obj:IsA("Tool") or obj:IsA("Model")) and obj.Name:find("Fruit")
+            and not (character and obj:IsDescendantOf(character)) then
+            local part = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart", true)
+            if part then
+                out[#out + 1] = { obj = obj, part = part }
+            end
+        end
+    end
+    return out
+end
+
+local FruitMarks = {}
+local function clearFruitMarks()
+    for obj, mark in pairs(FruitMarks) do
+        pcall(function() mark:Destroy() end)
+        FruitMarks[obj] = nil
+    end
+end
+
+-- Fruit ESP + Auto Collect Fruit
+task.spawn(function()
+    while State.Running do
+        task.wait(1)
+        pcall(function()
+            local fruits = findFruits()
+            State.FruitCount = #fruits
+
+            if Config.FruitESP then
+                local wanted = {}
+                for _, f in ipairs(fruits) do
+                    wanted[f.obj] = true
+                    if not FruitMarks[f.obj] then
+                        local highlight = Instance.new("Highlight")
+                        highlight.Name = "HHubFruitESP"
+                        highlight.Adornee = f.obj
+                        highlight.FillColor = Colors.Accent
+                        highlight.OutlineColor = Color3.new(1, 1, 1)
+                        highlight.FillTransparency = 0.6
+                        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        highlight.Parent = Workspace
+                        FruitMarks[f.obj] = highlight
+                        notify("TRÁI ÁC QUỶ", f.obj.Name .. " vừa xuất hiện")
+                    end
+                end
+                for obj, mark in pairs(FruitMarks) do
+                    if not wanted[obj] or not obj.Parent then
+                        pcall(function() mark:Destroy() end)
+                        FruitMarks[obj] = nil
+                    end
+                end
+            else
+                clearFruitMarks()
+            end
+
+            if Config.AutoFruit and #fruits > 0 and (State.Busy == nil or State.Busy == "Nhặt trái ác quỷ") then
+                local root = getRoot(getCharacter())
+                if root then
+                    State.Busy = "Nhặt trái ác quỷ"
+                    local best, bestDist
+                    for _, f in ipairs(fruits) do
+                        local d = (f.part.Position - root.Position).Magnitude
+                        if not bestDist or d < bestDist then
+                            best, bestDist = f, d
+                        end
+                    end
+                    local function allowed()
+                        return Config.AutoFruit and State.Running
+                    end
+                    flyTo(root, CFrame.new(best.part.Position + Vector3.new(0, 3, 0)), allowed)
+                    pcall(function()
+                        root.CFrame = best.part.CFrame
+                        if firetouchinterest then
+                            firetouchinterest(root, best.part, 0)
+                            firetouchinterest(root, best.part, 1)
+                        end
+                    end)
+                    task.wait(0.8)
+                    notify("TRÁI ÁC QUỶ", "Đã chạm: " .. best.obj.Name)
+                end
+            end
+        end)
+        if State.Busy == "Nhặt trái ác quỷ" then
+            State.Busy = nil
+        end
+    end
+end)
+
+-- Auto Chest (CollectionService tag "_ChestTagged")
+task.spawn(function()
+    while State.Running do
+        task.wait(0.5)
+        if Config.AutoChest and (State.Busy == nil or State.Busy == "Nhặt rương") then
+            pcall(function()
+                local root = getRoot(getCharacter())
+                if not root then return end
+                local best, bestDist
+                local total = 0
+                for _, chest in ipairs(CollectionService:GetTagged("_ChestTagged")) do
+                    if chest:IsA("BasePart") and chest.Parent then
+                        total += 1
+                        local d = (chest.Position - root.Position).Magnitude
+                        if not bestDist or d < bestDist then
+                            best, bestDist = chest, d
+                        end
+                    end
+                end
+                State.ChestCount = total
+                if best then
+                    State.Busy = "Nhặt rương"
+                    local function allowed()
+                        return Config.AutoChest and State.Running
+                    end
+                    flyTo(root, CFrame.new(best.Position + Vector3.new(0, 2, 0)), allowed)
+                    pcall(function()
+                        root.CFrame = best.CFrame
+                        if firetouchinterest then
+                            firetouchinterest(root, best, 0)
+                            firetouchinterest(root, best, 1)
+                        end
+                    end)
+                    task.wait(0.35)
+                else
+                    State.Status = "Không còn rương trong server"
+                end
+            end)
+            if State.Busy == "Nhặt rương" then
+                State.Busy = nil
+            end
+        end
+    end
+end)
+
+-- Noclip khi đang nhặt rương / trái (farm đã có noclip riêng)
+connect(RunService.Stepped, function()
+    if State.Busy and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- Auto Store trái ác quỷ vào kho
+task.spawn(function()
+    while State.Running do
+        task.wait(6)
+        if Config.AutoStore then
+            pcall(function()
+                local commF = getCommF()
+                if not commF then return end
+                local containers = { LocalPlayer:FindFirstChildOfClass("Backpack"), getCharacter() }
+                for _, container in ipairs(containers) do
+                    if container then
+                        for _, tool in ipairs(container:GetChildren()) do
+                            if tool:IsA("Tool") and tool.ToolTip == "Blox Fruit" then
+                                local fruitName = tool:GetAttribute("OriginalName") or tool.Name
+                                pcall(function()
+                                    commF:InvokeServer("StoreFruit", fruitName, tool)
+                                end)
+                                task.wait(0.4)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- Auto Rejoin khi bị kick / mất kết nối
+task.spawn(function()
+    pcall(function()
+        local CoreGui = game:GetService("CoreGui")
+        local gui = CoreGui:WaitForChild("RobloxPromptGui", 10)
+        local overlay = gui and gui:WaitForChild("promptOverlay", 10)
+        if overlay then
+            connect(overlay.ChildAdded, function(child)
+                if Config.AutoRejoin and child.Name == "ErrorPrompt" then
+                    task.wait(2)
+                    pcall(function()
+                        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+                    end)
+                end
+            end)
+        end
+    end)
+end)
+
+connect(LocalPlayer.CharacterAdded, function()
+    State.ClusterPoint = nil
+    State.TargetMob = nil
+    State.Busy = nil
 end)
 
 ------------------------------------------------------------------
@@ -1810,12 +2557,15 @@ task.spawn(function()
                 local folder = Workspace:FindFirstChild("PumpkinHunt")
                 local root = getRoot(getCharacter())
 
+                -- Đánh/click chạy chung khi bật Auto Pumpkin (giống Auto Farm)
                 if Config.PumpkinAttack then
                     if Config.AutoEquip then equipWeapon() end
                     if Config.AutoHaki and os.clock() - lastHaki > 3 then
                         lastHaki = os.clock()
                         ensureHaki()
                     end
+                    -- Gọi click chuột và Activate độc lập cho event bí ngô;
+                    -- attackMobs tiếp tục xử lý RegisterAttack/RegisterHit như Auto Farm.
                     activateTool()
                     directFire()
                 end
@@ -1924,6 +2674,8 @@ local function setLowEffects(on)
     end
 end
 
+
+
 ------------------------------------------------------------------
 -- UNLOAD SẠCH
 ------------------------------------------------------------------
@@ -1937,10 +2689,15 @@ local function Unload()
     genv.HHubBFHookCtx = nil
     Config.AutoFarm = false
     Config.AutoPumpkin = false
+    Config.AutoChest = false
+    Config.AutoFruit = false
+    State.Busy = nil
     clearHighlights()
+    pcall(clearFruitMarks)
     pcall(clearBringMovers)
     pcall(stopMovers)
     pcall(setLowEffects, false)
+    pcall(setFullbright, false)
     for _, connection in ipairs(State.Connections) do
         pcall(function() connection:Disconnect() end)
     end
@@ -1953,105 +2710,11 @@ local function Unload()
 end
 genv.HHubBloxFruits = { Unload = Unload, Config = Config, State = State }
 
-topButton("X", -34, Color3.fromRGB(150, 55, 68), Unload)
-topButton("−", -66, Colors.Panel2, function()
+topButton("X", -38, Color3.fromRGB(190, 50, 70), Unload)
+topButton("−", -72, Colors.Panel2, function()
     setMinimized(not IsMinimized)
 end)
 
-------------------------------------------------------------------
--- TAB GIAO DIỆN CHÍNH
-------------------------------------------------------------------
-local OverviewPage = addTab("Tổng quan")
-local FarmPage = addTab("Auto Farm")
-local EventPage = addTab("Halloween")
-local TunePage = addTab("Thông số")
-local PerformancePage = addTab("Hiệu năng")
-local SettingsPage = addTab("Cài đặt")
-
-local function bind(key)
-    return function(value)
-        Config[key] = value
-        saveSoon()
-    end
-end
-
-addSection(OverviewPage, "PLAYER MONITOR")
-local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
-local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
-local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
-local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
-local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
-local AttackInfo = addInfo(OverviewPage, "ĐÁNH", "--")
-local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
-
-addSection(FarmPage, "AUTO FARM")
-addToggle(FarmPage, "Auto Farm Level", false, function(v)
-    Config.AutoFarm = v
-    if v then
-        State.FarmStartAt = os.clock()
-        State.LastEngageAt = 0
-        State.Status = State.KeyLearned and "Đã có HitKey - dùng độ cao sau key" or "Chưa có HitKey - click thường, độ cao 7"
-    else
-        State.Status = "Đang tắt"
-        State.Fleeing = false
-        State.BringPoint = nil
-        State.TargetMob = nil
-        clearBringMovers()
-        if not Config.AutoPumpkin then
-            stopMovers()
-        end
-    end
-end)
-addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob (kéo liên tục khi farm)", Config.BringMob, bind("BringMob"))
-addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
-addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
-addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
-addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
-addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
-addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
-addToggle(FarmPage, "Auto Haki (Buso)", Config.AutoHaki, bind("AutoHaki"))
-
-addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
-addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
-    Config.AutoPumpkin = v
-    if not v then
-        State.PumpkinStatus = "Đang tắt"
-        if not Config.AutoFarm then
-            stopMovers()
-        end
-    end
-end)
-addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
-addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
-local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
-
-addSection(TunePage, "THÔNG SỐ AUTO FARM")
-addInfo(TunePage, "ĐỘ CAO TRƯỚC KHI CÓ HIT KEY", "7 (cố định, tự động giữ đến khi học được key)")
-addStepper(TunePage, "Độ cao sau khi có HitKey", 5, 60, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
-addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
-addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
-addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Nhịp đánh (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
-addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
-
-addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
-addToggle(PerformancePage, "Giảm hiệu ứng hạt / bóng", Config.LowEffects, function(v)
-    Config.LowEffects = v
-    setLowEffects(v)
-    saveSoon()
-end)
-
-addSection(SettingsPage, "ĐIỀU KHIỂN")
-addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
-    Main.Visible = not Main.Visible
-end)
-addButton(SettingsPage, "XÓA HIGHLIGHT QUÁI", clearHighlights, Colors.Panel)
-addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 48, 60))
-
-------------------------------------------------------------------
--- TAB NHẠC + BẢNG NHẠC/NHIỆM VỤ TÁCH RỜI + HIỆU ỨNG THEO NHẠC
-------------------------------------------------------------------
 local SoundService = game:GetService("SoundService")
 
 local MusicDefaultId = "1845922899"
@@ -2091,6 +2754,7 @@ end
 local function musicNotify(title, content)
     Music.Toast = title .. ": " .. content
     Music.ToastUntil = os.clock() + 3
+    notify("♪ " .. title, content)
 end
 
 local function playId(id, label, from, to)
@@ -2139,106 +2803,48 @@ local function playId(id, label, from, to)
     return true
 end
 
-local function addInput(page, text, placeholder, callback)
-    local row = make("Frame", {
-        Size = UDim2.new(1, -6, 0, 38),
-        BackgroundColor3 = Colors.Panel2,
-        BorderSizePixel = 0,
-    }, page)
-    round(row, 7)
-    make("TextLabel", {
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -150, 1, 0),
-        BackgroundTransparency = 1,
-        Text = text,
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
-    local box = make("TextBox", {
-        Size = UDim2.fromOffset(130, 24),
-        Position = UDim2.new(1, -138, 0.5, -12),
-        BackgroundColor3 = Colors.Background,
-        Text = "",
-        PlaceholderText = placeholder,
-        PlaceholderColor3 = Colors.Muted,
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.Gotham,
-        TextSize = 11,
-        ClearTextOnFocus = false,
-        BorderSizePixel = 0,
-    }, row)
-    round(box, 6)
-    box.FocusLost:Connect(function(enterPressed)
-        if enterPressed and box.Text ~= "" then
-            callback(box.Text)
-        end
-    end)
-end
 
-local function makeDraggable(handle, frame)
-    local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
-    handle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    handle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end)
-    connect(UserInputService.InputChanged, function(input)
-        if dragging and input == dragInput and dragStart and startPos then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-end
-
+-- ===== Bảng nổi tách rời: nhạc + nhiệm vụ + quái đang gom + khoảng cách + visualizer =====
 local MusicPanel = make("Frame", {
     Name = "MusicPanel",
     Size = UDim2.fromOffset(350, 214),
     Position = UDim2.new(1, -366, 0, 60),
     BackgroundColor3 = Colors.Background,
+    BackgroundTransparency = 0.38,
     BorderSizePixel = 0,
     ClipsDescendants = true,
     Visible = true,
 }, Gui)
 round(MusicPanel, 12)
-stroke(MusicPanel, Colors.Gold, 1.5, 0.15)
+neonBorder(MusicPanel, 2, 3.1)
+make("UIGradient", {
+    Color = ColorSequence.new(Color3.fromRGB(2, 5, 12), Color3.fromRGB(5, 22, 52)),
+    Rotation = 90,
+}, MusicPanel)
 
 local PanelTop = make("Frame", {
     Size = UDim2.new(1, 0, 0, 28),
     BackgroundColor3 = Colors.Panel,
+    BackgroundTransparency = 0.55,
     BorderSizePixel = 0,
 }, MusicPanel)
-make("TextLabel", {
-    Position = UDim2.fromOffset(10, 0),
+local PanelTitle = make("TextLabel", {
+    Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -44, 1, 0),
     BackgroundTransparency = 1,
-    Text = "♪  H-HUB MUSIC  (kéo để di chuyển)",
-    TextColor3 = Colors.Gold,
+    Text = "♪  H-HUB MUSIC  ·  kéo để di chuyển",
+    TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, PanelTop)
+trackNeon(PanelTitle)
 local PanelClose = make("TextButton", {
     Text = "X",
     Size = UDim2.fromOffset(22, 20),
     Position = UDim2.new(1, -28, 0, 4),
-    BackgroundColor3 = Color3.fromRGB(150, 55, 68),
+    BackgroundColor3 = Color3.fromRGB(190, 50, 70),
+    BackgroundTransparency = 0.35,
     TextColor3 = Colors.Text,
     Font = Enum.Font.GothamBold,
     TextSize = 12,
@@ -2254,6 +2860,7 @@ local Viz = make("Frame", {
     Position = UDim2.fromOffset(10, 36),
     Size = UDim2.new(1, -20, 0, 64),
     BackgroundColor3 = Colors.Panel,
+    BackgroundTransparency = 0.55,
     BorderSizePixel = 0,
     ClipsDescendants = true,
 }, MusicPanel)
@@ -2276,7 +2883,7 @@ end
 local function panelRow(y, title)
     make("TextLabel", {
         Position = UDim2.fromOffset(12, y),
-        Size = UDim2.fromOffset(62, 16),
+        Size = UDim2.fromOffset(70, 16),
         BackgroundTransparency = 1,
         Text = title,
         TextColor3 = Colors.Muted,
@@ -2285,8 +2892,8 @@ local function panelRow(y, title)
         TextXAlignment = Enum.TextXAlignment.Left,
     }, MusicPanel)
     return make("TextLabel", {
-        Position = UDim2.fromOffset(76, y),
-        Size = UDim2.new(1, -88, 0, 16),
+        Position = UDim2.fromOffset(84, y),
+        Size = UDim2.new(1, -96, 0, 16),
         BackgroundTransparency = 1,
         Text = "--",
         TextColor3 = Colors.Text,
@@ -2312,6 +2919,7 @@ local ToastLabel = make("TextLabel", {
     TextTruncate = Enum.TextTruncate.AtEnd,
 }, MusicPanel)
 
+-- Cột nhảy theo PlaybackLoudness của bài đang phát
 local vizTime = 0
 connect(RunService.RenderStepped, function(dt)
     if not MusicPanel.Visible then return end
@@ -2325,19 +2933,21 @@ connect(RunService.RenderStepped, function(dt)
         bar.h = bar.h + (target - bar.h) * math.clamp(dt * 14, 0, 1)
         local h = math.clamp(bar.h, 0.05, 1)
         bar.frame.Size = UDim2.new(0.6 / BAR_COUNT, 0, h, 0)
-        bar.frame.BackgroundColor3 = Colors.Accent:Lerp(Colors.Gold, h)
+        bar.frame.BackgroundColor3 = Colors.Blue:Lerp(Colors.Accent, h)
     end
 end)
 
+-- Quái thật trong Workspace.Enemies thuộc nhiệm vụ hiện tại (không lấy NPC giao nhiệm vụ)
 local function bringMobInfo(quest, root)
     local enemies = Workspace:FindFirstChild("Enemies")
     if not enemies or not quest or not root then return nil end
 
-    local best, count
-    count = 0
+    local best, count = nil, 0
     local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
+    local wanted = quest.mob
+    if State.FarmAny then wanted = nil end
     for _, mob in ipairs(enemies:GetChildren()) do
-        if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
+        if not wanted or nameMatches(mob.Name, wanted) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local part = mob:FindFirstChild("HumanoidRootPart")
             if hum and part and hum.Health > 0 then
@@ -2345,7 +2955,7 @@ local function bringMobInfo(quest, root)
                 if d <= maxRadius then
                     count += 1
                     if not best or d < best.d then
-                        best = { name = mob.Name, pos = part.Position, d = d }
+                        best = { name = mob.Name, d = d }
                     end
                 end
             end
@@ -2382,7 +2992,7 @@ task.spawn(function()
                 DistLabel.TextColor3 = info.d <= 250 and Colors.Green or Colors.Red
             else
                 NpcLabel.Text = string.format("%s: chưa có quái | K:%d/%d D:%d A:%d G:%d",
-                    quest.mob, moving, candidates, stalled, anchored, settled)
+                    State.FarmAny and "Quái" or quest.mob, moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = Colors.Text
                 DistLabel.Text = "--"
                 DistLabel.TextColor3 = Colors.Text
@@ -2394,8 +3004,175 @@ task.spawn(function()
     end
 end)
 
-local MusicPage = addTab("Nhạc")
+------------------------------------------------------------------
+-- CÁC TAB GIAO DIỆN
+------------------------------------------------------------------
+local OverviewPage = addTab("Tổng quan", "◈")
+local FarmPage = addTab("Auto Farm", "⚔")
+local FeaturePage = addTab("Tính năng", "✦")
+local TunePage = addTab("Thông số", "⚙")
+local EventPage = addTab("Halloween", "☾")
+local PerformancePage = addTab("Hiệu năng", "▣")
+local MusicPage = addTab("Nhạc", "♪")
+local SettingsPage = addTab("Cài đặt", "☰")
 
+local function bind(key)
+    return function(value)
+        Config[key] = value
+        saveSoon()
+    end
+end
+
+-- ===== TỔNG QUAN =====
+addSection(OverviewPage, "PLAYER MONITOR")
+local setLevelProgress = addProgress(OverviewPage, "TIẾN ĐỘ LEVEL → MỤC TIÊU")
+local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
+local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
+local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
+local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
+local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
+local AttackInfo = addInfo(OverviewPage, "ĐÁNH", "--")
+local BringInfo = addInfo(OverviewPage, "BRING MOB (K kéo / D đứng / A khóa / G đã gom)", "--")
+local SessionInfo = addInfo(OverviewPage, "PHIÊN FARM", "--")
+local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
+
+-- ===== AUTO FARM =====
+addSection(FarmPage, "AUTO FARM")
+addToggle(FarmPage, "Auto Farm Level", false, function(v)
+    Config.AutoFarm = v
+    if v then
+        State.FarmStartAt = os.clock()
+        State.LastEngageAt = 0
+        State.NoMobSince = nil
+        State.ClusterPoint = nil
+        State.TargetMob = nil
+        State.Status = State.KeyLearned and "Đã có HitKey - dùng độ cao sau key" or "Chưa có HitKey - click thường, độ cao 7"
+    else
+        State.Status = "Đang tắt"
+        State.Fleeing = false
+        State.ClusterPoint = nil
+        State.TargetMob = nil
+        clearBringMovers()
+        if not Config.AutoPumpkin then
+            stopMovers()
+        end
+    end
+end, "AutoFarm")
+addCycle(FarmPage, "Chế độ farm", { "Level Quest", "Quái gần nhất" }, Config.FarmMode, bind("FarmMode"))
+addStepper(FarmPage, "Level mục tiêu (0 = không dừng)", 0, 2800, 50, Config.TargetLevel, bind("TargetLevel"))
+addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind("AutoQuest"))
+addToggle(FarmPage, "Bring Mob V5 (kéo mỗi frame)", Config.BringMob, bind("BringMob"))
+addToggle(FarmPage, "Bring an toàn: chỉ kéo quái đã sở hữu (đồng bộ server)", Config.BringSafe, bind("BringSafe"))
+addToggle(FarmPage, "Mở rộng hitbox quái khi gom", Config.BringHitbox, bind("BringHitbox"))
+addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
+addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
+addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
+addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
+addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
+addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
+addToggle(FarmPage, "Auto Haki (Buso)", Config.AutoHaki, bind("AutoHaki"))
+addToggle(FarmPage, "Auto Ken (Haki quan sát)", Config.AutoKen, bind("AutoKen"))
+
+-- ===== TÍNH NĂNG MỚI =====
+addSection(FeaturePage, "AUTO SKILL")
+addToggle(FeaturePage, "Auto Skill khi đang đánh quái", Config.AutoSkill, bind("AutoSkill"))
+addToggle(FeaturePage, "Dùng skill Z", Config.SkillZ, bind("SkillZ"))
+addToggle(FeaturePage, "Dùng skill X", Config.SkillX, bind("SkillX"))
+addToggle(FeaturePage, "Dùng skill C", Config.SkillC, bind("SkillC"))
+addToggle(FeaturePage, "Dùng skill V", Config.SkillV, bind("SkillV"))
+addToggle(FeaturePage, "Dùng skill F", Config.SkillF, bind("SkillF"))
+addStepper(FeaturePage, "Nhịp dùng skill (giây)", 0.3, 6, 0.1, Config.SkillDelay, bind("SkillDelay"))
+
+addSection(FeaturePage, "CHỈ SỐ")
+addToggle(FeaturePage, "Auto cộng điểm chỉ số", Config.AutoStats, bind("AutoStats"))
+addCycle(FeaturePage, "Chỉ số cộng", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, bind("StatName"))
+addStepper(FeaturePage, "Điểm cộng mỗi lần", 1, 50, 1, Config.StatAmount, bind("StatAmount"))
+
+addSection(FeaturePage, "SEA / SERVER")
+addToggle(FeaturePage, "Auto chuyển Sea khi đủ level", false, function(v)
+    Config.AutoSea = v
+end, "AutoSea")
+addToggle(FeaturePage, "Auto Server Hop khi hết quái", false, function(v)
+    Config.AutoHop = v
+    State.NoMobSince = nil
+end, "AutoHop")
+addStepper(FeaturePage, "Hop sau khi không thấy quái (giây)", 15, 300, 5, Config.HopAfter, bind("HopAfter"))
+addButton(FeaturePage, "ĐỔI SERVER NGAY", function()
+    serverHop("Đổi server theo yêu cầu")
+end)
+
+addSection(FeaturePage, "TRÁI ÁC QUỶ & RƯƠNG")
+addToggle(FeaturePage, "Auto nhặt trái ác quỷ", false, function(v)
+    Config.AutoFruit = v
+end, "AutoFruit")
+addToggle(FeaturePage, "Auto cất trái vào kho", Config.AutoStore, bind("AutoStore"))
+addToggle(FeaturePage, "Fruit ESP + thông báo khi có trái", Config.FruitESP, bind("FruitESP"))
+addToggle(FeaturePage, "Auto nhặt rương", false, function(v)
+    Config.AutoChest = v
+end, "AutoChest")
+local FruitInfo = addInfo(FeaturePage, "TRÁI / RƯƠNG TRONG SERVER", "--")
+
+-- ===== THÔNG SỐ =====
+addSection(TunePage, "THÔNG SỐ AUTO FARM")
+addInfo(TunePage, "ĐỘ CAO TRƯỚC KHI CÓ HIT KEY", "7 (cố định, tự động giữ đến khi học được key)")
+addStepper(TunePage, "Độ cao sau khi có HitKey", 5, 60, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
+addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
+addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
+addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
+addStepper(TunePage, "Kích thước hitbox quái", 10, 80, 5, Config.HitboxSize, bind("HitboxSize"))
+addStepper(TunePage, "Nhịp đánh (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
+addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
+
+-- ===== HALLOWEEN =====
+addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
+addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
+    Config.AutoPumpkin = v
+    if not v then
+        State.PumpkinStatus = "Đang tắt"
+        if not Config.AutoFarm then
+            stopMovers()
+        end
+    end
+end, "AutoPumpkin")
+addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
+addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
+local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
+
+-- ===== HIỆU NĂNG =====
+addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
+addToggle(PerformancePage, "Giảm hiệu ứng hạt / bóng", Config.LowEffects, function(v)
+    Config.LowEffects = v
+    setLowEffects(v)
+    saveSoon()
+end)
+addToggle(PerformancePage, "Fullbright (sáng toàn map)", Config.FullBright, function(v)
+    Config.FullBright = v
+    setFullbright(v)
+    saveSoon()
+end)
+addSection(PerformancePage, "KẾT NỐI")
+addToggle(PerformancePage, "Auto Rejoin khi bị kick", Config.AutoRejoin, bind("AutoRejoin"))
+addButton(PerformancePage, "RESET NHÂN VẬT", function()
+    pcall(function()
+        local humanoid = getHumanoid()
+        if humanoid then humanoid.Health = 0 end
+    end)
+end)
+addButton(PerformancePage, "VÀO LẠI SERVER (REJOIN)", function()
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+end)
+
+-- ===== CÀI ĐẶT =====
+addSection(SettingsPage, "ĐIỀU KHIỂN")
+addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
+    Main.Visible = not Main.Visible
+end)
+addButton(SettingsPage, "XÓA HIGHLIGHT QUÁI", clearHighlights, Colors.Panel)
+addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 40, 60))
+
+-- ===== NHẠC =====
 addSection(MusicPage, "TRÌNH ĐIỀU KHIỂN")
 addToggle(MusicPage, "Phát / Tạm dừng", false, function(on)
     if on then
@@ -2421,7 +3198,6 @@ end)
 addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC & NHIỆM VỤ", function()
     MusicPanel.Visible = not MusicPanel.Visible
 end, Colors.Panel)
-
 addSection(MusicPage, "PLAYLIST")
 for _, track in ipairs(MusicPlaylist) do
     addButton(MusicPage, track.Name, function()
@@ -2430,6 +3206,8 @@ for _, track in ipairs(MusicPlaylist) do
 end
 
 selectTab("Tổng quan")
+if Config.FullBright then setFullbright(true) end
+if Config.LowEffects then setLowEffects(true) end
 
 ------------------------------------------------------------------
 -- CẬP NHẬT GIAO DIỆN
@@ -2448,28 +3226,39 @@ end)
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
-            LevelInfo.Text = string.format("Level %d  |  Sea %d", getLevel(), getSea())
+            local level = getLevel()
+            local target = Config.TargetLevel > 0 and Config.TargetLevel or 2800
+            setLevelProgress(level / target, string.format("%d / %d  (%.1f%%)", level, target, math.min(level / target, 1) * 100))
+            LevelInfo.Text = string.format("Level %d  |  Sea %d", level, getSea())
             local humanoid = getHumanoid()
             HealthInfo.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
             ToolInfo.Text = getEquippedToolName()
             local quest = State.Quest or currentQuest()
-            QuestInfo.Text = questLabel(quest)
+            QuestInfo.Text = State.FarmAny and "Chế độ quái gần nhất (không dùng quest)" or questLabel(quest)
             StatusInfo.Text = State.Status
             AttackInfo.Text = string.format("%s | Click chờ key: %s | Multi-Hit: %s | Key: %s",
                 Config.AttackMode,
                 (Config.AutoFarm and not State.KeyLearned) and "ON" or "OFF",
                 Config.MultiHit and "ON" or "OFF",
                 State.KeyLearned and "đã học" or "chưa có")
+            local bd = State.BringDiagnostics or {}
+            BringInfo.Text = string.format("K:%d  D:%d  A:%d  G:%d  /  %d quái",
+                bd.moving or 0, bd.stalled or 0, bd.anchored or 0, bd.settled or 0, bd.candidates or 0)
+            local elapsed, gained, perHour, eta = sessionSummary()
+            SessionInfo.Text = string.format("%s | hạ %d quái | +%d level (%.1f/giờ) | ETA: %s",
+                formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
             local ping = ""
             pcall(function()
                 ping = string.format("%d ms  |  ", math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()))
             end)
             NetworkInfo.Text = ping .. State.FPS .. " FPS"
             PumpkinInfo.Text = State.PumpkinStatus
-            Footer.Text = string.format("H-HUB v4.4  |  Level %d  |  %s  |  RightShift: ẩn/hiện", getLevel(), State.Status)
+            FruitInfo.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
+            Footer.Text = string.format("H-HUB v5.1  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-print("[H-HUB] Companion v4.4 (Đã sửa lỗi gom quái) đã khởi động thành công!")
+notify("H-HUB v5.1", "Đã khởi động - RightShift để ẩn/hiện menu")
+print("[H-HUB] Companion v5.1 FUTURE đã khởi động thành công!")
