@@ -80,7 +80,7 @@ local Config = {
     BringRadius = 300,
     SafeHP = 25,
     TweenSpeed = 300,       -- tốc độ bay của Auto Farm
-    Delay = 0.05,           -- nhịp mỗi lần đánh (như bản cũ)
+    Delay = 0.03,           -- nhịp đánh nhanh hơn; có thể chỉnh trong Tune
     HitKey = "",
 
     AttackMode = "Click + Activate",
@@ -123,8 +123,9 @@ loadConfig()
 -- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
 Config.FarmHeight = 7
 Config.FarmHeightLate = 25
--- Click màn hình liên tục mặc định luôn OFF sau mỗi lần nạp script.
+-- Auto Farm tự click đánh thường; tùy chọn ScreenClick vẫn dùng cho các chế độ khác.
 Config.ScreenClick = false
+Config.Delay = 0.03
 
 local saveRevision = 0
 local function saveSoon()
@@ -328,7 +329,7 @@ local function getEquippedToolName()
     return tool and tool.Name or "Không cầm gì"
 end
 
--- Độ cao hiện tại: ban đầu FarmHeight, sau HeightSwitchDelay giây dùng FarmHeightLate
+-- Độ cao hiện tại: ban đầu 7, sau HeightSwitchDelay (mặc định 30 giây) dùng 25
 local function currentHeight()
     if os.clock() - State.FarmStartAt >= Config.HeightSwitchDelay then
         return Config.FarmHeightLate
@@ -1336,8 +1337,13 @@ local function directFire()
 end
 
 local function shouldScreenClick()
-    -- Không tự click màn hình để khởi tạo key.
-    -- Chỉ click khi người dùng chủ động bật ScreenClick.
+    -- Chỉ bootstrap click tối đa 30 giây; dừng ngay khi hook học được HitKey.
+    -- Nếu chưa có key sau 30 giây thì cũng tự ngừng click, nhưng remote vẫn chạy.
+    if Config.AutoFarm then
+        local elapsed = os.clock() - (State.FarmStartAt or os.clock())
+        return (not State.KeyLearned) and elapsed < 30
+    end
+    -- Ngoài Auto Farm, chỉ click nếu người dùng bật ScreenClick.
     return Config.ScreenClick
 end
 
@@ -1435,16 +1441,19 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- GOM QUÁI + CHẨN ĐOÁN THỰC TẾ.
+-- GOM QUÁI: kéo giữ bằng BodyPosition + đẩy hướng về điểm gom bằng BodyVelocity/Impulse.
 -- Lưu ý: client chỉ có thể yêu cầu mô phỏng; server có thể ghi đè vật lý NPC.
 local BringMovers = setmetatable({}, { __mode = "k" })
 local BringSamples = setmetatable({}, { __mode = "k" })
 local lastBringUpdate = 0
 
 local function removeBringMover(part)
-    local mover = BringMovers[part]
-    if mover then
-        pcall(function() mover:Destroy() end)
+    local movers = BringMovers[part]
+    if movers then
+        pcall(function()
+            if movers.grab then movers.grab:Destroy() end
+            if movers.push then movers.push:Destroy() end
+        end)
         BringMovers[part] = nil
     end
     BringSamples[part] = nil
@@ -1459,6 +1468,8 @@ local function clearBringMovers()
     end
 end
 
+-- Kéo bằng BodyPosition như đang "nắm" NPC, đồng thời BodyVelocity đẩy NPC
+-- theo hướng điểm gom. Không dùng CFrame để dịch chuyển NPC.
 local function pullToward(part, point)
     if not part or not part.Parent or not point then return false end
     if part.Anchored then return false end
@@ -1471,25 +1482,33 @@ local function pullToward(part, point)
     end
 
     part.CanCollide = false
-    local mover = BringMovers[part]
-    if not mover or not mover.Parent then
-        mover = Instance.new("BodyVelocity")
-        mover.Name = "HHubBringVelocity"
-        mover.MaxForce = Vector3.new(1e7, 1e7, 1e7)
-        mover.P = 25000
-        mover.Parent = part
-        BringMovers[part] = mover
+    local movers = BringMovers[part]
+    if not movers or not movers.grab or not movers.grab.Parent then
+        local grab = Instance.new("BodyPosition")
+        grab.Name = "HHubBringGrab"
+        grab.MaxForce = Vector3.new(1e7, 1e7, 1e7)
+        grab.P = 18000
+        grab.D = 1200
+        grab.Position = point
+        grab.Parent = part
+
+        local push = Instance.new("BodyVelocity")
+        push.Name = "HHubBringPush"
+        push.MaxForce = Vector3.new(1e7, 1e7, 1e7)
+        push.P = 22000
+        push.Parent = part
+
+        movers = { grab = grab, push = push }
+        BringMovers[part] = movers
         BringSamples[part] = { position = part.Position, sampledAt = os.clock(), movedAt = os.clock() }
     end
 
-    local speed = math.clamp(distance * 8, 35, 120)
-    local velocity = offset.Unit * speed
-    mover.Velocity = velocity
-
-    -- Fallback ngắn: cập nhật vận tốc assembly cùng hướng với BodyVelocity.
-    -- Không teleport CFrame; kết quả vẫn được xác minh bằng vị trí thực tế ở heartbeat.
+    movers.grab.Position = point
+    local speed = math.clamp(distance * 5, 28, 85)
+    movers.push.Velocity = offset.Unit * speed
+    -- Hỗ trợ lực đẩy tức thời; server vẫn có thể ghi đè vật lý NPC.
     pcall(function()
-        part.AssemblyLinearVelocity = velocity
+        part:ApplyImpulse(offset.Unit * math.min(part.AssemblyMass * speed * 0.35, 50000))
     end)
     return true
 end
@@ -2027,8 +2046,10 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
     if v then
         State.FarmStartAt = os.clock()   -- tính lại mốc 30s cho độ cao
         State.FarmClickBootstrapUntil = 0
+        State.KeyLearned = false
+        Config.HitKey = ""
         State.LastEngageAt = 0
-        State.Status = "Đang khởi động... (chờ game phát key qua đòn đánh)"
+        State.Status = "Click lấy HitKey tối đa 30 giây; có key thì tự dừng click. Độ cao 7 -> 25 sau 30 giây."
     else
         State.FarmClickBootstrapUntil = 0
         State.Status = "Đang tắt"
@@ -2375,32 +2396,6 @@ connect(RunService.RenderStepped, function(dt)
     end
 end)
 
--- NPC giao nhiệm vụ: NPC gần điểm spawn của quái nhiệm vụ nhất (chỉ để HIỂN THỊ, không bay tới)
-local function questNpcInfo(quest)
-    local cached = Music.NpcCache[quest.quest]
-    if cached then return cached end
-    local npcs = Workspace:FindFirstChild("NPCs")
-    local anchor = findSpawnPos(quest.mob)
-    if not npcs or not anchor then return nil end
-    local best
-    for _, npc in ipairs(npcs:GetChildren()) do
-        if npc:IsA("Model") then
-            local ok, pivot = pcall(function() return npc:GetPivot().Position end)
-            if ok then
-                local d = (pivot - anchor).Magnitude
-                if not best or d < best.d then
-                    best = { name = npc.Name, pos = pivot, d = d }
-                end
-            end
-        end
-    end
-    if best then
-        Music.NpcCache[quest.quest] = best
-    end
-    return best
-end
-
-local NEAR_NPC = 250
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
@@ -2409,30 +2404,27 @@ task.spawn(function()
             local quest = State.Quest or currentQuest()
             QuestLabel.Text = questLabel(quest)
 
-            local info = questNpcInfo(quest)
-            local root = getRoot(getCharacter())
-            if info and root then
-                local d = (info.pos - root.Position).Magnitude
-                local near = d <= NEAR_NPC
-                local bd = State.BringDiagnostics or {}
-                local candidates = tonumber(bd.candidates) or 0
-                local moving = tonumber(bd.moving) or 0
-                local stalled = tonumber(bd.stalled) or 0
-                local anchored = tonumber(bd.anchored) or 0
-                local settled = tonumber(bd.settled) or 0
-                -- Hiển thị chẩn đoán kéo ngay trên dòng NPC của bảng nhạc.
+            -- Chỉ quét quái trong Workspace.Enemies theo tên quái của nhiệm vụ.
+            -- Không tìm/hiển thị NPC giao nhiệm vụ trong Workspace.NPCs nữa.
+            local mobs = scanEnemies(quest and quest.mob or nil)
+            local nearest = mobs[1]
+            local bd = State.BringDiagnostics or {}
+            local candidates = tonumber(bd.candidates) or 0
+            local moving = tonumber(bd.moving) or 0
+            local stalled = tonumber(bd.stalled) or 0
+            local anchored = tonumber(bd.anchored) or 0
+            local settled = tonumber(bd.settled) or 0
+            if nearest then
                 NpcLabel.Text = string.format("%s | K:%d/%d D:%d A:%d G:%d",
-                    info.name, moving, candidates, stalled, anchored, settled)
+                    nearest.Name, moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = (candidates > 0 and stalled == 0 and anchored == 0)
                     and Colors.Green or Colors.Text
-                DistLabel.Text = string.format("%d stud - %s", math.floor(d), near and "GẦN" or "XA")
-                DistLabel.TextColor3 = near and Colors.Green or Colors.Red
+                DistLabel.Text = string.format("%d stud - %s", math.floor(nearest.Distance),
+                    nearest.Distance <= 250 and "GẦN" or "XA")
+                DistLabel.TextColor3 = nearest.Distance <= 250 and Colors.Green or Colors.Red
             else
-                local bd = State.BringDiagnostics or {}
-                NpcLabel.Text = string.format("NPC: -- | K:%d/%d D:%d A:%d G:%d",
-                    tonumber(bd.moving) or 0, tonumber(bd.candidates) or 0,
-                    tonumber(bd.stalled) or 0, tonumber(bd.anchored) or 0,
-                    tonumber(bd.settled) or 0)
+                NpcLabel.Text = string.format("Không có quái | K:%d/%d D:%d A:%d G:%d",
+                    moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = Colors.Text
                 DistLabel.Text = "--"
                 DistLabel.TextColor3 = Colors.Text
