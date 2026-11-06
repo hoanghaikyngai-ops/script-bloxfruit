@@ -3,7 +3,7 @@
     - Nhận quest hoàn toàn qua remote (không bay tới NPC nữa)
     - Kéo quái LIÊN TỤC mỗi frame, chỉ khi bật Auto Farm
     - Auto Click chạy song song, liên tục với gọi Remote Event (RegisterAttack / RegisterHit)
-    - Độ cao: ban đầu 10, sau 30 giây tự nâng lên 25
+    - Độ cao: ban đầu 7, sau 30 giây tự nâng lên 25
     - Có chỉnh tốc độ bay của Auto Farm
 ]]
 
@@ -121,7 +121,7 @@ local function loadConfig()
 end
 loadConfig()
 -- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
-Config.FarmHeight = 10
+Config.FarmHeight = 7
 Config.FarmHeightLate = 25
 -- Click màn hình liên tục mặc định luôn OFF sau mỗi lần nạp script.
 Config.ScreenClick = false
@@ -1336,10 +1336,9 @@ local function directFire()
 end
 
 local function shouldScreenClick()
-    -- Giai đoạn bắt buộc: Auto Farm tự click mục tiêu trong 30 giây đầu.
-    -- Sau đó chỉ click liên tục nếu người dùng tự bật ScreenClick.
-    return (Config.AutoFarm and os.clock() < (State.FarmClickBootstrapUntil or 0))
-        or Config.ScreenClick
+    -- Không tự click màn hình để khởi tạo key.
+    -- Chỉ click khi người dùng chủ động bật ScreenClick.
+    return Config.ScreenClick
 end
 
 local function attackMobs()
@@ -2027,9 +2026,9 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
     Config.AutoFarm = v
     if v then
         State.FarmStartAt = os.clock()   -- tính lại mốc 30s cho độ cao
-        State.FarmClickBootstrapUntil = os.clock() + 30 -- bắt buộc click mục tiêu 30 giây đầu
+        State.FarmClickBootstrapUntil = 0
         State.LastEngageAt = 0
-        State.Status = "Đang khởi động... (click NPC 30 giây)"
+        State.Status = "Đang khởi động... (chờ game phát key qua đòn đánh)"
     else
         State.FarmClickBootstrapUntil = 0
         State.Status = "Đang tắt"
