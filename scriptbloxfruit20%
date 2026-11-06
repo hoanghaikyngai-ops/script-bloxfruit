@@ -2,8 +2,9 @@
     H-HUB // BLOX FRUITS COMPANION v4.4
     - Nhận quest hoàn toàn qua remote (không bay tới NPC nữa)
     - Kéo quái LIÊN TỤC mỗi frame, chỉ khi bật Auto Farm
-    - Auto Click chạy song song, liên tục với gọi Remote Event (RegisterAttack / RegisterHit)
-    - Độ cao: ban đầu 7, sau 30 giây tự nâng lên 25
+    - Auto Click tự chạy đến khi học được HitKey rồi dừng ngay
+    - Độ cao cố định 7 trước HitKey; sau khi có key chuyển sang độ cao tùy chỉnh (mặc định 25)
+    - Bring Mob kéo quái nhiệm vụ về điểm bên dưới nhân vật khi Auto Farm
     - Có chỉnh tốc độ bay của Auto Farm
 ]]
 
@@ -71,23 +72,19 @@ local Config = {
     Weapon = "Melee",
     StatName = "Melee",
 
-    -- Độ cao: ban đầu FarmHeight, sau HeightSwitchDelay giây thì dùng FarmHeightLate
-    FarmHeight = 7,
+    -- Trước khi học HitKey luôn giữ độ cao 7; sau khi học dùng FarmHeightLate.
     FarmHeightLate = 25,
-    HeightSwitchDelay = 30,
 
     HitRange = 100,
     BringRadius = 300,
     SafeHP = 25,
     TweenSpeed = 300,       -- tốc độ bay của Auto Farm
-    Delay = 0.03,           -- nhịp đánh nhanh hơn; có thể chỉnh trong Tune
+    Delay = 0.05,           -- nhịp mỗi lần đánh (như bản cũ)
     HitKey = "",
 
     AttackMode = "Click + Activate",
     AutoSwitch = true,
     NoDamageTimeout = 8,
-    ScreenClick = false,    -- click màn hình liên tục chỉ chạy khi người dùng bật
-
     HitFormat = "Tự động",
     MultiHit = true,
     AutoPumpkin = false,
@@ -97,7 +94,7 @@ local Config = {
 
 local SAVEABLE = {
     "AutoQuest", "BringMob", "AutoEquip", "AutoHaki", "AutoStats", "LowEffects", "MobHighlight", "ScanRadius", "Weapon", "StatName",
-    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "ScreenClick", "HitFormat", "FarmHeight", "FarmHeightLate", "HeightSwitchDelay",
+    "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeightLate",
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
 }
 -- Tách file cấu hình theo phiên bản để tránh dữ liệu cũ ghi đè thiết lập mới.
@@ -120,12 +117,8 @@ local function loadConfig()
     Config.AutoPumpkin = false
 end
 loadConfig()
--- Áp dụng đúng độ cao người dùng yêu cầu, không để cấu hình cũ ghi đè.
-Config.FarmHeight = 7
-Config.FarmHeightLate = 25
--- Auto Farm tự click đánh thường; tùy chọn ScreenClick vẫn dùng cho các chế độ khác.
-Config.ScreenClick = false
-Config.Delay = 0.03
+-- Độ cao trước khi có HitKey là cố định, không đọc từ file cấu hình cũ.
+Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
 
 local saveRevision = 0
 local function saveSoon()
@@ -226,9 +219,8 @@ local State = {
     QuestRetryAt = 0,
     Highlights = {},
     LastEnemyScan = {},
-    FarmStartAt = os.clock(),   -- mốc bắt đầu farm để tính độ cao theo thời gian
-    LastEngageAt = 0,           -- lần cuối đang bám quái (cho click/remote)
-    FarmClickBootstrapUntil = 0, -- Auto Farm tự click NPC trong 30 giây đầu, không có nút tắt
+    FarmStartAt = os.clock(),   -- chỉ dùng hiển thị thời gian farm
+    LastEngageAt = 0,
     BringPoint = nil,           -- điểm gom quái
     BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 },
     TargetMob = nil,
@@ -329,12 +321,12 @@ local function getEquippedToolName()
     return tool and tool.Name or "Không cầm gì"
 end
 
--- Độ cao hiện tại: ban đầu 7, sau HeightSwitchDelay (mặc định 30 giây) dùng 25
+-- Chỉ đổi độ cao khi hook thực sự bắt được HitKey hợp lệ.
 local function currentHeight()
-    if os.clock() - State.FarmStartAt >= Config.HeightSwitchDelay then
+    if State.KeyLearned and type(Config.HitKey) == "string" and Config.HitKey ~= "" then
         return Config.FarmHeightLate
     end
-    return Config.FarmHeight
+    return 7
 end
 
 ------------------------------------------------------------------
@@ -1337,14 +1329,8 @@ local function directFire()
 end
 
 local function shouldScreenClick()
-    -- Chỉ bootstrap click tối đa 30 giây; dừng ngay khi hook học được HitKey.
-    -- Nếu chưa có key sau 30 giây thì cũng tự ngừng click, nhưng remote vẫn chạy.
-    if Config.AutoFarm then
-        local elapsed = os.clock() - (State.FarmStartAt or os.clock())
-        return (not State.KeyLearned) and elapsed < 30
-    end
-    -- Ngoài Auto Farm, chỉ click nếu người dùng bật ScreenClick.
-    return Config.ScreenClick
+    -- Tự click trong lúc farm cho tới khi HitKey được học; dừng ngay khi có key.
+    return Config.AutoFarm and not (State.KeyLearned and Config.HitKey ~= "")
 end
 
 local function attackMobs()
@@ -1441,19 +1427,16 @@ local function ensureHaki()
 end
 
 ------------------------------------------------------------------
--- GOM QUÁI: kéo giữ bằng BodyPosition + đẩy hướng về điểm gom bằng BodyVelocity/Impulse.
+-- GOM QUÁI + CHẨN ĐOÁN THỰC TẾ.
 -- Lưu ý: client chỉ có thể yêu cầu mô phỏng; server có thể ghi đè vật lý NPC.
 local BringMovers = setmetatable({}, { __mode = "k" })
 local BringSamples = setmetatable({}, { __mode = "k" })
 local lastBringUpdate = 0
 
 local function removeBringMover(part)
-    local movers = BringMovers[part]
-    if movers then
-        pcall(function()
-            if movers.grab then movers.grab:Destroy() end
-            if movers.push then movers.push:Destroy() end
-        end)
+    local mover = BringMovers[part]
+    if mover then
+        pcall(function() mover:Destroy() end)
         BringMovers[part] = nil
     end
     BringSamples[part] = nil
@@ -1468,8 +1451,6 @@ local function clearBringMovers()
     end
 end
 
--- Kéo bằng BodyPosition như đang "nắm" NPC, đồng thời BodyVelocity đẩy NPC
--- theo hướng điểm gom. Không dùng CFrame để dịch chuyển NPC.
 local function pullToward(part, point)
     if not part or not part.Parent or not point then return false end
     if part.Anchored then return false end
@@ -1482,33 +1463,25 @@ local function pullToward(part, point)
     end
 
     part.CanCollide = false
-    local movers = BringMovers[part]
-    if not movers or not movers.grab or not movers.grab.Parent then
-        local grab = Instance.new("BodyPosition")
-        grab.Name = "HHubBringGrab"
-        grab.MaxForce = Vector3.new(1e7, 1e7, 1e7)
-        grab.P = 18000
-        grab.D = 1200
-        grab.Position = point
-        grab.Parent = part
-
-        local push = Instance.new("BodyVelocity")
-        push.Name = "HHubBringPush"
-        push.MaxForce = Vector3.new(1e7, 1e7, 1e7)
-        push.P = 22000
-        push.Parent = part
-
-        movers = { grab = grab, push = push }
-        BringMovers[part] = movers
+    local mover = BringMovers[part]
+    if not mover or not mover.Parent then
+        mover = Instance.new("BodyVelocity")
+        mover.Name = "HHubBringVelocity"
+        mover.MaxForce = Vector3.new(1e7, 1e7, 1e7)
+        mover.P = 25000
+        mover.Parent = part
+        BringMovers[part] = mover
         BringSamples[part] = { position = part.Position, sampledAt = os.clock(), movedAt = os.clock() }
     end
 
-    movers.grab.Position = point
-    local speed = math.clamp(distance * 5, 28, 85)
-    movers.push.Velocity = offset.Unit * speed
-    -- Hỗ trợ lực đẩy tức thời; server vẫn có thể ghi đè vật lý NPC.
+    local speed = math.clamp(distance * 12, 60, 250)
+    local velocity = offset.Unit * speed
+    mover.Velocity = velocity
+
+    -- Fallback ngắn: cập nhật vận tốc assembly cùng hướng với BodyVelocity.
+    -- Không teleport CFrame; kết quả vẫn được xác minh bằng vị trí thực tế ở heartbeat.
     pcall(function()
-        part:ApplyImpulse(offset.Unit * math.min(part.AssemblyMass * speed * 0.35, 50000))
+        part.AssemblyLinearVelocity = velocity
     end)
     return true
 end
@@ -1746,7 +1719,7 @@ local function farmStep()
 
     local anchorPos = mobRoot.Position
     State.TargetMob = mob
-    State.BringPoint = anchorPos          -- vòng Heartbeat sẽ kéo các quái khác về điểm này liên tục
+    State.BringPoint = anchorPos          -- điểm gom nằm ngay dưới vị trí farm của nhân vật
     mobRoot.CanCollide = false
 
     -- Gom quái bằng lực kéo ngay trong bước farm (như bản cũ); vòng Heartbeat giữ lực kéo liên tục
@@ -1774,6 +1747,8 @@ local function farmStep()
         flyTo(root, CFrame.lookAt(above, anchorPos))
     end
     root.CFrame = CFrame.lookAt(above, anchorPos)
+    -- Cập nhật điểm gom theo vị trí nhân vật: luôn nằm bên dưới khi nhân vật bay farm.
+    State.BringPoint = root.Position - Vector3.new(0, height, 0)
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
 
@@ -1868,10 +1843,6 @@ task.spawn(function()
                     end
                     -- Gọi click chuột và Activate độc lập cho event bí ngô;
                     -- attackMobs tiếp tục xử lý RegisterAttack/RegisterHit như Auto Farm.
-                    if Config.ScreenClick then
-                        clickOnce()
-                        screenClick()
-                    end
                     activateTool()
                     directFire()
                 end
@@ -2044,14 +2015,10 @@ addSection(FarmPage, "AUTO FARM")
 addToggle(FarmPage, "Auto Farm Level", false, function(v)
     Config.AutoFarm = v
     if v then
-        State.FarmStartAt = os.clock()   -- tính lại mốc 30s cho độ cao
-        State.FarmClickBootstrapUntil = 0
-        State.KeyLearned = false
-        Config.HitKey = ""
+        State.FarmStartAt = os.clock()
         State.LastEngageAt = 0
-        State.Status = "Click lấy HitKey tối đa 30 giây; có key thì tự dừng click. Độ cao 7 -> 25 sau 30 giây."
+        State.Status = State.KeyLearned and "Đã có HitKey - dùng độ cao sau key" or "Chưa có HitKey - click thường, độ cao 7"
     else
-        State.FarmClickBootstrapUntil = 0
         State.Status = "Đang tắt"
         State.Fleeing = false
         State.BringPoint = nil
@@ -2067,7 +2034,6 @@ addToggle(FarmPage, "Bring Mob (kéo liên tục khi farm)", Config.BringMob, bi
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
 addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
 addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
-addToggle(FarmPage, "Đánh thường: click vào màn hình", Config.ScreenClick, bind("ScreenClick"))
 addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
 addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
 addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
@@ -2088,9 +2054,8 @@ addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.Pump
 local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
 
 addSection(TunePage, "THÔNG SỐ AUTO FARM")
-addStepper(TunePage, "Độ cao ban đầu", 5, 30, 1, Config.FarmHeight, bind("FarmHeight"))
-addStepper(TunePage, "Độ cao sau khi đổi", 5, 30, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
-addStepper(TunePage, "Đổi độ cao sau (giây)", 5, 300, 5, Config.HeightSwitchDelay, bind("HeightSwitchDelay"))
+addInfo(TunePage, "ĐỘ CAO TRƯỚC KHI CÓ HIT KEY", "7 (cố định, tự động giữ đến khi học được key)")
+addStepper(TunePage, "Độ cao sau khi có HitKey", 5, 60, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
 addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
 addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
@@ -2396,6 +2361,32 @@ connect(RunService.RenderStepped, function(dt)
     end
 end)
 
+-- NPC giao nhiệm vụ: NPC gần điểm spawn của quái nhiệm vụ nhất (chỉ để HIỂN THỊ, không bay tới)
+local function questNpcInfo(quest)
+    local cached = Music.NpcCache[quest.quest]
+    if cached then return cached end
+    local npcs = Workspace:FindFirstChild("NPCs")
+    local anchor = findSpawnPos(quest.mob)
+    if not npcs or not anchor then return nil end
+    local best
+    for _, npc in ipairs(npcs:GetChildren()) do
+        if npc:IsA("Model") then
+            local ok, pivot = pcall(function() return npc:GetPivot().Position end)
+            if ok then
+                local d = (pivot - anchor).Magnitude
+                if not best or d < best.d then
+                    best = { name = npc.Name, pos = pivot, d = d }
+                end
+            end
+        end
+    end
+    if best then
+        Music.NpcCache[quest.quest] = best
+    end
+    return best
+end
+
+local NEAR_NPC = 250
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
@@ -2404,27 +2395,30 @@ task.spawn(function()
             local quest = State.Quest or currentQuest()
             QuestLabel.Text = questLabel(quest)
 
-            -- Chỉ quét quái trong Workspace.Enemies theo tên quái của nhiệm vụ.
-            -- Không tìm/hiển thị NPC giao nhiệm vụ trong Workspace.NPCs nữa.
-            local mobs = scanEnemies(quest and quest.mob or nil)
-            local nearest = mobs[1]
-            local bd = State.BringDiagnostics or {}
-            local candidates = tonumber(bd.candidates) or 0
-            local moving = tonumber(bd.moving) or 0
-            local stalled = tonumber(bd.stalled) or 0
-            local anchored = tonumber(bd.anchored) or 0
-            local settled = tonumber(bd.settled) or 0
-            if nearest then
+            local info = questNpcInfo(quest)
+            local root = getRoot(getCharacter())
+            if info and root then
+                local d = (info.pos - root.Position).Magnitude
+                local near = d <= NEAR_NPC
+                local bd = State.BringDiagnostics or {}
+                local candidates = tonumber(bd.candidates) or 0
+                local moving = tonumber(bd.moving) or 0
+                local stalled = tonumber(bd.stalled) or 0
+                local anchored = tonumber(bd.anchored) or 0
+                local settled = tonumber(bd.settled) or 0
+                -- Hiển thị chẩn đoán kéo ngay trên dòng NPC của bảng nhạc.
                 NpcLabel.Text = string.format("%s | K:%d/%d D:%d A:%d G:%d",
-                    nearest.Name, moving, candidates, stalled, anchored, settled)
+                    info.name, moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = (candidates > 0 and stalled == 0 and anchored == 0)
                     and Colors.Green or Colors.Text
-                DistLabel.Text = string.format("%d stud - %s", math.floor(nearest.Distance),
-                    nearest.Distance <= 250 and "GẦN" or "XA")
-                DistLabel.TextColor3 = nearest.Distance <= 250 and Colors.Green or Colors.Red
+                DistLabel.Text = string.format("%d stud - %s", math.floor(d), near and "GẦN" or "XA")
+                DistLabel.TextColor3 = near and Colors.Green or Colors.Red
             else
-                NpcLabel.Text = string.format("Không có quái | K:%d/%d D:%d A:%d G:%d",
-                    moving, candidates, stalled, anchored, settled)
+                local bd = State.BringDiagnostics or {}
+                NpcLabel.Text = string.format("NPC: -- | K:%d/%d D:%d A:%d G:%d",
+                    tonumber(bd.moving) or 0, tonumber(bd.candidates) or 0,
+                    tonumber(bd.stalled) or 0, tonumber(bd.anchored) or 0,
+                    tonumber(bd.settled) or 0)
                 NpcLabel.TextColor3 = Colors.Text
                 DistLabel.Text = "--"
                 DistLabel.TextColor3 = Colors.Text
@@ -2498,9 +2492,9 @@ task.spawn(function()
             local quest = State.Quest or currentQuest()
             QuestInfo.Text = questLabel(quest)
             StatusInfo.Text = State.Status
-            AttackInfo.Text = string.format("%s | Màn hình: %s | Multi-Hit: %s | Key: %s",
+            AttackInfo.Text = string.format("%s | Click chờ key: %s | Multi-Hit: %s | Key: %s",
                 Config.AttackMode,
-                Config.ScreenClick and "ON" or "OFF",
+                (Config.AutoFarm and not State.KeyLearned) and "ON" or "OFF",
                 Config.MultiHit and "ON" or "OFF",
                 State.KeyLearned and "đã học" or "chưa có")
             local ping = ""
