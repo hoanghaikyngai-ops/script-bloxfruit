@@ -2236,7 +2236,7 @@ local function makeDraggable(handle, frame)
     end)
 end
 
--- ===== Bảng nổi tách rời: tên nhạc + nhiệm vụ + NPC + khoảng cách + visualizer =====
+-- ===== Bảng nổi tách rời: tên nhạc + nhiệm vụ + quái đang gom + khoảng cách + visualizer =====
 local MusicPanel = make("Frame", {
     Name = "MusicPanel",
     Size = UDim2.fromOffset(350, 214),
@@ -2329,7 +2329,7 @@ local function panelRow(y, title)
 end
 local TrackLabel = panelRow(108, "Nhạc")
 local QuestLabel = panelRow(128, "Nhiệm vụ")
-local NpcLabel = panelRow(148, "NPC")
+local NpcLabel = panelRow(148, "Quái đang kéo")
 local DistLabel = panelRow(168, "Khoảng cách")
 local ToastLabel = make("TextLabel", {
     Position = UDim2.fromOffset(12, 190),
@@ -2361,32 +2361,34 @@ connect(RunService.RenderStepped, function(dt)
     end
 end)
 
--- NPC giao nhiệm vụ: NPC gần điểm spawn của quái nhiệm vụ nhất (chỉ để HIỂN THỊ, không bay tới)
-local function questNpcInfo(quest)
-    local cached = Music.NpcCache[quest.quest]
-    if cached then return cached end
-    local npcs = Workspace:FindFirstChild("NPCs")
-    local anchor = findSpawnPos(quest.mob)
-    if not npcs or not anchor then return nil end
-    local best
-    for _, npc in ipairs(npcs:GetChildren()) do
-        if npc:IsA("Model") then
-            local ok, pivot = pcall(function() return npc:GetPivot().Position end)
-            if ok then
-                local d = (pivot - anchor).Magnitude
-                if not best or d < best.d then
-                    best = { name = npc.Name, pos = pivot, d = d }
+-- Hiển thị quái thật trong Workspace.Enemies đang thuộc nhiệm vụ hiện tại,
+-- không lấy NPC giao nhiệm vụ trong Workspace.NPCs.
+local function bringMobInfo(quest, root)
+    local enemies = Workspace:FindFirstChild("Enemies")
+    if not enemies or not quest or not root then return nil end
+
+    local best, count
+    count = 0
+    local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
+    for _, mob in ipairs(enemies:GetChildren()) do
+        if mob ~= State.TargetMob and nameMatches(mob.Name, quest.mob) then
+            local hum = mob:FindFirstChildOfClass("Humanoid")
+            local part = mob:FindFirstChild("HumanoidRootPart")
+            if hum and part and hum.Health > 0 then
+                local d = (part.Position - root.Position).Magnitude
+                if d <= maxRadius then
+                    count += 1
+                    if not best or d < best.d then
+                        best = { name = mob.Name, pos = part.Position, d = d }
+                    end
                 end
             end
         end
     end
-    if best then
-        Music.NpcCache[quest.quest] = best
-    end
+    if best then best.count = count end
     return best
 end
 
-local NEAR_NPC = 250
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
@@ -2395,30 +2397,26 @@ task.spawn(function()
             local quest = State.Quest or currentQuest()
             QuestLabel.Text = questLabel(quest)
 
-            local info = questNpcInfo(quest)
             local root = getRoot(getCharacter())
-            if info and root then
-                local d = (info.pos - root.Position).Magnitude
-                local near = d <= NEAR_NPC
-                local bd = State.BringDiagnostics or {}
-                local candidates = tonumber(bd.candidates) or 0
-                local moving = tonumber(bd.moving) or 0
-                local stalled = tonumber(bd.stalled) or 0
-                local anchored = tonumber(bd.anchored) or 0
-                local settled = tonumber(bd.settled) or 0
-                -- Hiển thị chẩn đoán kéo ngay trên dòng NPC của bảng nhạc.
-                NpcLabel.Text = string.format("%s | K:%d/%d D:%d A:%d G:%d",
-                    info.name, moving, candidates, stalled, anchored, settled)
+            local info = bringMobInfo(quest, root)
+            local bd = State.BringDiagnostics or {}
+            local candidates = tonumber(bd.candidates) or 0
+            local moving = tonumber(bd.moving) or 0
+            local stalled = tonumber(bd.stalled) or 0
+            local anchored = tonumber(bd.anchored) or 0
+            local settled = tonumber(bd.settled) or 0
+
+            if info then
+                NpcLabel.Text = string.format("%s (%d) | K:%d/%d D:%d A:%d G:%d",
+                    info.name, info.count, moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = (candidates > 0 and stalled == 0 and anchored == 0)
                     and Colors.Green or Colors.Text
-                DistLabel.Text = string.format("%d stud - %s", math.floor(d), near and "GẦN" or "XA")
-                DistLabel.TextColor3 = near and Colors.Green or Colors.Red
+                DistLabel.Text = string.format("%d stud - %s", math.floor(info.d),
+                    info.d <= 250 and "GẦN" or "XA")
+                DistLabel.TextColor3 = info.d <= 250 and Colors.Green or Colors.Red
             else
-                local bd = State.BringDiagnostics or {}
-                NpcLabel.Text = string.format("NPC: -- | K:%d/%d D:%d A:%d G:%d",
-                    tonumber(bd.moving) or 0, tonumber(bd.candidates) or 0,
-                    tonumber(bd.stalled) or 0, tonumber(bd.anchored) or 0,
-                    tonumber(bd.settled) or 0)
+                NpcLabel.Text = string.format("%s: chưa có quái | K:%d/%d D:%d A:%d G:%d",
+                    quest.mob, moving, candidates, stalled, anchored, settled)
                 NpcLabel.TextColor3 = Colors.Text
                 DistLabel.Text = "--"
                 DistLabel.TextColor3 = Colors.Text
