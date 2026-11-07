@@ -1,7 +1,7 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v5.3  -  FUTURE EDITION
+    H-HUB // BLOX FRUITS COMPANION v5.7  -  FUTURE EDITION (OPTIMIZED BRING MOB)
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
-    - Bring Mob V5.3: 3 chế độ (An toàn / Xác minh / Cưỡng bức), kéo mỗi frame, tự phát hiện quái lệch server
+    - Bring Mob V5.7: Kéo mượt bằng Lerp tiệm cận, khóa vật lý/PlatformStand, không bị kéo ngược
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
     - Auto Collect Pumpkin: có click màn hình + Activate + RegisterAttack
     - Aggro Tracker (chỉ quan sát), Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
@@ -65,7 +65,7 @@ local Config = {
     AutoQuest = true,
     BringMob = true,
     BringHitbox = true,
-    BringMode = "Xác minh",
+    BringMode = "Cưỡng bức", -- Mặc định dùng chế độ cưỡng bức + Lerp mượt tối ưu
     HitboxSize = 35,
     AutoEquip = true,
     AutoHaki = true,
@@ -84,7 +84,6 @@ local Config = {
     AutoHop = false,
     HopAfter = 45,
 
-    -- Trước khi học HitKey luôn giữ độ cao 7; sau khi học dùng FarmHeightLate.
     FarmHeightLate = 25,
 
     HitRange = 100,
@@ -124,10 +123,8 @@ local SAVEABLE = {
     "AutoSkill", "SkillDelay", "SkillZ", "SkillX", "SkillC", "SkillV", "SkillF",
     "AutoChest", "AutoFruit", "AutoStore", "FruitESP", "FullBright", "AutoRejoin",
 }
--- Tách file cấu hình theo phiên bản để tránh dữ liệu cũ ghi đè thiết lập mới.
-local CONFIG_PATH = "HHub/BloxFruits_v53_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 
--- Các tính năng có thể gây di chuyển/đổi server luôn tắt khi mới nạp script.
+local CONFIG_PATH = "HHub/BloxFruits_v57_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
 local STARTUP_OFF = { "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea" }
 
 local function loadConfig()
@@ -150,9 +147,6 @@ end
 loadConfig()
 Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
 Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 2800)
-if Config.BringMode ~= "An toàn" and Config.BringMode ~= "Xác minh" and Config.BringMode ~= "Cưỡng bức" and Config.BringMode ~= "Không kéo" then
-    Config.BringMode = "Xác minh"
-end
 if Config.FarmMode ~= "Level Quest" and Config.FarmMode ~= "Quái gần nhất" then
     Config.FarmMode = "Level Quest"
 end
@@ -217,8 +211,6 @@ local FallbackQuests = {
     {2300, "Cocoa Warrior", "ChocQuest1", 1}, {2325, "Chocolate Bar Battler", "ChocQuest1", 2},
     {2350, "Sweet Thief", "ChocQuest2", 1}, {2375, "Candy Rebel", "ChocQuest2", 2},
     {2400, "Candy Pirate", "CandyQuest1", 1}, {2425, "Snow Demon", "CandyQuest1", 2},
-    -- Tiki Outpost (2450+) và Submerged Island (2600-2800). Dữ liệu chính vẫn đọc từ module Quests của game;
-    -- bảng này chỉ là dự phòng khi module không đọc được.
     {2450, "Isle Outlaw", "TikiQuest1", 1}, {2475, "Island Boy", "TikiQuest1", 2},
     {2500, "Sun-kissed Warrior", "TikiQuest2", 1}, {2525, "Isle Champion", "TikiQuest2", 2},
     {2550, "Serpent Hunter", "TikiQuest3", 1}, {2575, "Skull Slayer", "TikiQuest3", 2},
@@ -266,9 +258,9 @@ local State = {
     QuestRetryAt = 0,
     Highlights = {},
     LastEnemyScan = {},
-    FarmStartAt = os.clock(),   -- chỉ dùng hiển thị thời gian farm
+    FarmStartAt = os.clock(),
     LastEngageAt = 0,
-    BringPoint = nil,           -- điểm gom quái
+    BringPoint = nil,
     BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 },
     TargetMob = nil,
     MobHP = setmetatable({}, { __mode = "k" }),
@@ -276,7 +268,6 @@ local State = {
     InAttack = false,
     Rotations = 0,
     SavedRotations = 0,
-    -- Theo dõi quest cục bộ (không phụ thuộc bảng quest của game)
     QuestAccepted = false,
     QuestSeenUI = false,
     UIMissingSince = nil,
@@ -285,9 +276,9 @@ local State = {
     LastQuestInvokeAt = 0,
     QuestPendingSince = nil,
     SeenMobs = setmetatable({}, { __mode = "k" }),
-    ClusterPoint = nil,         -- điểm gom quái (cố định theo mục tiêu)
+    ClusterPoint = nil,
     BroughtCount = 0,
-    Busy = nil,                 -- tác vụ đang chiếm di chuyển (chest / trái)
+    Busy = nil,
     FarmAny = false,
     TotalKills = 0,
     StartLevel = 0,
@@ -297,10 +288,10 @@ local State = {
     FruitCount = 0,
     ChestCount = 0,
     LastSkillAt = 0,
-    Blacklist = setmetatable({}, { __mode = "k" }),   -- quái nghi bị lệch đồng bộ server
+    Blacklist = setmetatable({}, { __mode = "k" }),
     SimAt = 0,
-    BossTarget = nil,           -- boss đang đánh theo chuỗi Auto Sea
-    AvoidFrames = {},           -- khung UI cần tránh khi click màn hình
+    BossTarget = nil,
+    AvoidFrames = {},
 }
 
 local RegAttack, RegHit
@@ -385,7 +376,6 @@ local function getEquippedToolName()
     return tool and tool.Name or "Không cầm gì"
 end
 
--- Chỉ đổi độ cao khi hook thực sự bắt được HitKey hợp lệ.
 local function currentHeight()
     if State.KeyLearned and type(Config.HitKey) == "string" and Config.HitKey ~= "" then
         return Config.FarmHeightLate
@@ -525,12 +515,13 @@ local function stopMovers()
         end
     end
 end
+
 ------------------------------------------------------------------
 -- GIAO DIỆN V5: NỀN ĐEN TRONG SUỐT + VIỀN NEON XANH NƯỚC BIỂN NHẤP NHÁY
 ------------------------------------------------------------------
-local Toggles = {}          -- [key] = { Set = function(value, silent) }
-local NeonList = {}         -- các viền neon cần animate
-local NeonTexts = {}        -- các đối tượng đổi màu theo neon { obj, prop }
+local Toggles = {}
+local NeonList = {}
+local NeonTexts = {}
 
 local function neonBorder(frame, thickness, phase)
     local s = make("UIStroke", {
@@ -550,7 +541,6 @@ end
 
 connect(RunService.RenderStepped, function()
     local t = os.clock()
-    -- Màu neon chung: dao động giữa cyan và xanh nước biển đậm
     local hue = 0.575 + 0.075 * math.sin(t * 1.3)
     local neon = Color3.fromHSV(hue, 0.9, 1)
     for i = #NeonTexts, 1, -1 do
@@ -567,7 +557,7 @@ connect(RunService.RenderStepped, function()
             table.remove(NeonList, i)
         else
             local p = t + n.phase
-            local pulse = 0.5 + 0.5 * math.sin(p * 5)                  -- nhấp nháy
+            local pulse = 0.5 + 0.5 * math.sin(p * 5)
             local c1 = Color3.fromHSV(0.575 + 0.075 * math.sin(p * 1.3), 0.85, 1)
             local c2 = Color3.fromHSV(0.575 + 0.075 * math.sin(p * 1.3 + 2.1), 1, 1)
             n.grad.Color = ColorSequence.new({
@@ -590,7 +580,6 @@ local Gui = make("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, GuiParent)
 
--- Thông báo nổi (toast)
 local ToastHolder = make("Frame", {
     Name = "Toasts",
     AnchorPoint = Vector2.new(1, 1),
@@ -650,7 +639,7 @@ local Main = make("Frame", {
     Size = FullSize,
     Position = UDim2.new(0.5, -330, 0.5, -215),
     BackgroundColor3 = Colors.Background,
-    BackgroundTransparency = 0.38,          -- đế đen trong suốt
+    BackgroundTransparency = 0.38,
     BorderSizePixel = 0,
     ClipsDescendants = true,
 }, Gui)
@@ -675,7 +664,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.6 FUTURE",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.7 FUTURE",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -683,7 +672,6 @@ local TitleLabel = make("TextLabel", {
 }, TopBar)
 trackNeon(TitleLabel)
 
--- Đường quét sáng chạy dưới thanh tiêu đề
 local ScanLine = make("Frame", {
     Position = UDim2.fromOffset(0, 40),
     Size = UDim2.new(1, 0, 0, 2),
@@ -744,7 +732,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v5.6  |  Đang khởi động...",
+    Text = "H-HUB v5.7  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -802,7 +790,6 @@ end
 bindCamera()
 connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
 
--- Kéo thả (dùng cho menu chính và bảng nổi)
 local function makeDraggable(handle, frame)
     local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
     handle.InputBegan:Connect(function(input)
@@ -967,7 +954,6 @@ local function addInfo(page, title, initial)
     }, box)
 end
 
--- Thanh tiến độ (trả về hàm cập nhật)
 local function addProgress(page, title)
     local box = card(page, 58)
     make("TextLabel", {
@@ -1243,7 +1229,6 @@ local function questText()
         return nil
     end
 
-    -- Blox Fruits có thể thay đổi một vài tầng con của Quest UI theo phiên bản.
     local container = quest:FindFirstChild("Container", true) or quest
     local title = container:FindFirstChild("QuestTitle", true)
     local label = title and (title:FindFirstChild("Title", true) or title)
@@ -1251,7 +1236,6 @@ local function questText()
         return label.Text
     end
 
-    -- Fallback: tìm TextLabel có nội dung trong khung Quest đang hiển thị.
     for _, item in ipairs(container:GetDescendants()) do
         if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
             local value = item.Text
@@ -1300,9 +1284,7 @@ local function findSpawnPos(mobName)
     return best or State.SpawnCache[mobName]
 end
 
--- Quest đang làm? Ưu tiên bảng quest của game, nếu bảng không hiện thì dùng bộ đếm cục bộ
 local function questActiveNow()
-    -- Quest UI có thể không render, nhưng remote đã trả về không lỗi thì giữ trạng thái cục bộ.
     return hasQuest() or State.QuestAccepted
 end
 
@@ -1315,8 +1297,6 @@ local function questLabel(quest)
     return text
 end
 
--- Chỉ đánh dấu đã nhận khi game xác nhận bằng Quest UI.
--- Tránh trạng thái giả khiến script spam StartQuest và bộ đếm lệch.
 local function startQuest(quest)
     local commF = getCommF()
     if not commF then
@@ -1325,9 +1305,7 @@ local function startQuest(quest)
     end
 
     local now = os.clock()
-    -- Chống gọi lặp cùng một quest khi UI chưa kịp hiện.
-    if State.QuestKey == (quest.quest .. ":" .. quest.idx)
-        and State.QuestAccepted then
+    if State.QuestKey == (quest.quest .. ":" .. quest.idx) and State.QuestAccepted then
         return true
     end
     if now - State.LastQuestInvokeAt < 30 then
@@ -1346,8 +1324,6 @@ local function startQuest(quest)
         return false
     end
 
-    -- Không đòi hỏi UI phải xuất hiện mới ghi nhận lần gọi thành công.
-    -- UI được theo dõi riêng; nếu UI không render thì không spam remote nữa.
     State.QuestAccepted = true
     State.QuestSeenUI = hasQuest()
     State.QuestKey = quest.quest .. ":" .. quest.idx
@@ -1359,7 +1335,6 @@ local function startQuest(quest)
     return true
 end
 
--- Bay tới vị trí (tốc độ theo Config.TweenSpeed). cond: hàm kiểm tra còn được phép bay không
 local function flyTo(root, targetCFrame, cond)
     local dist = (root.Position - targetCFrame.Position).Magnitude
     if dist < 6 then
@@ -1568,7 +1543,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
--- HÀM ĐÁNH & GỌI REMOTE EVENT (NGUYÊN XI TỪ BẢN CŨ + CLICK MÀN HÌNH)
+-- HÀM ĐÁNH & GỌI REMOTE EVENT
 ------------------------------------------------------------------
 local AttackModes = { "Click + Activate", "Click", "Activate", "Gửi thẳng key", "Hàm game (GC)" }
 
@@ -1589,7 +1564,6 @@ local function activateTool()
     end
 end
 
--- Chọn điểm click trên màn hình, tránh trúng menu H-HUB đang mở
 local function pickScreenPoint()
     local camera = Workspace.CurrentCamera
     if not camera then return nil end
@@ -1620,7 +1594,6 @@ local function pickScreenPoint()
     return candidates[2]
 end
 
--- Đánh thường: click chuột thật vào màn hình
 local function screenClick()
     local point = pickScreenPoint()
     if not point then return end
@@ -1635,13 +1608,11 @@ end
 
 local function directFire()
     pcall(function()
-        -- Gọi RE/RegisterAttack với tham số vung đấm chuẩn của bạn
         if RegAttack then
             local attackArgs = { 1, 4 }
             RegAttack:FireServer(table.unpack(attackArgs, 1, 2))
         end
 
-        -- Gọi RE/RegisterHit kèm phần thân quái (Head/RootPart) và Key học được
         local hits, first = collectHits()
         if first and RegHit and Config.HitKey ~= "" then
             local targetPart = first.Parent:FindFirstChild("Head") or first
@@ -1657,7 +1628,6 @@ local function directFire()
 end
 
 local function shouldScreenClick()
-    -- Tự click trong lúc farm cho tới khi HitKey được học; dừng ngay khi có key.
     return Config.AutoFarm and not (State.KeyLearned and Config.HitKey ~= "")
 end
 
@@ -1753,19 +1723,12 @@ local function ensureHaki()
         end)
     end
 end
+
 ------------------------------------------------------------------
--- TÍNH NĂNG MỚI (PHẦN 1): SEA / SERVER HOP / FULLBRIGHT / THỐNG KÊ
+-- AUTO SEA & SERVER HOP & FULLBRIGHT & THỐNG KÊ
 ------------------------------------------------------------------
 State.StartLevel = getLevel()
 
-------------------------------------------------------------------
--- AUTO SEA THEO CHUỖI NHIỆM VỤ (chạy trong vòng Auto Farm, cần bật cả Auto Farm)
--- Sea 1 -> 2 (Lv 700): Military Detective (remote) -> mở cửa hang Frozen Village bằng Key
---                      -> hạ Ice Admiral -> TravelDressrosa.
--- Sea 2 -> 3 (Lv 1500): ZQuestProgress (Begin) -> hạ rip_indra tới khi có cutscene -> TravelZou.
--- Các bước đòi hỏi quyết định của người chơi (đưa trái >1 triệu Beli cho Trevor để vào phòng
--- Don Swan, bấm 8 nút ở nhà tù Colosseum) KHÔNG tự động hóa - làm tay rồi bật Auto Sea.
-------------------------------------------------------------------
 local seaChainStep
 do
 local SeaChain = {
@@ -1838,7 +1801,6 @@ local function fightBoss(mob, root)
     return true
 end
 
--- Trả về true nếu chuỗi đang điều khiển bước này (farm thường bị bỏ qua)
 function seaChainStep(root)
     local level, sea, now = getLevel(), getSea(), os.clock()
     if SeaChain.sea ~= sea then
@@ -1869,7 +1831,7 @@ function seaChainStep(root)
         State.Status = "Auto Sea 2: tới cửa hang Frozen Village (cầm Key), chờ Ice Admiral"
         flyTo(root, CFrame.new(IceDoorPos), seaAllowed)
         if now - SeaChain.waitSince > 40 then
-            tryTravel("TravelDressrosa")   -- trường hợp đã xong nhiệm vụ từ trước
+            tryTravel("TravelDressrosa")
         end
         return true
     end
@@ -1885,7 +1847,7 @@ function seaChainStep(root)
         local boss = findBossModel("rip_indra")
         if boss then
             SeaChain.bossSeen = true
-            State.Status = "Auto Sea 3: đang đánh rip_indra (đưa máu về 50% để có cutscene)"
+            State.Status = "Auto Sea 3: đang đánh rip_indra"
             fightBoss(boss, root)
             return true
         end
@@ -1897,7 +1859,7 @@ function seaChainStep(root)
         end
         if now - SeaChain.lastNotice > 120 then
             SeaChain.lastNotice = now
-            notify("AUTO SEA 3", "Cần làm tay: Colosseum Quest, hạ Don Swan, bấm 8 nút nhà tù. Farm vẫn tiếp tục.")
+            notify("AUTO SEA 3", "Cần làm tay: Colosseum Quest, hạ Don Swan, bấm 8 nút nhà tù.")
         end
         return false
     end
@@ -1911,8 +1873,7 @@ local function serverHop(reason)
     notify("SERVER HOP", reason or "Đang tìm server mới...")
     task.spawn(function()
         local ok = pcall(function()
-            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
-                .. "/servers/Public?sortOrder=Asc&limit=100"
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
             local body = game:HttpGet(url)
             local data = HttpService:JSONDecode(body)
             local candidates = {}
@@ -1928,7 +1889,6 @@ local function serverHop(reason)
             TeleportService:TeleportToPlaceInstance(game.PlaceId, candidates[math.random(#candidates)], LocalPlayer)
         end)
         if not ok then
-            -- Không đọc được danh sách server -> vào lại ngẫu nhiên
             pcall(function()
                 TeleportService:Teleport(game.PlaceId, LocalPlayer)
             end)
@@ -1985,11 +1945,8 @@ local function sessionSummary()
     return elapsed, gained, perHour, eta
 end
 
-
 ------------------------------------------------------------------
--- AGGRO TRACKER (CHỈ QUAN SÁT, KHÔNG ĐIỀU KHIỂN AI SERVER)
--- Ước lượng NPC đang tiến gần / đứng yên / rời xa bằng biến thiên khoảng cách.
--- Đây KHÔNG phải xác nhận server đã chọn người chơi làm mục tiêu.
+-- AGGRO TRACKER
 ------------------------------------------------------------------
 local AggroTracker = {
     LastScan = 0,
@@ -2051,24 +2008,15 @@ local function aggroTrackerStep()
     AggroTracker.Diagnostics = d
 end
 connect(RunService.Heartbeat, function()
-    local ok, err = pcall(aggroTrackerStep)
-    if not ok then warn("[H-HUB AggroTracker] " .. tostring(err)) end
+    pcall(aggroTrackerStep)
 end)
 end
+
 ------------------------------------------------------------------
--- GOM QUÁI V5 (KÉO LIÊN TỤC MỖI FRAME, CHẠY ĐỒNG THỜI VỚI ĐÁNH)
---   * Mở SimulationRadius vô hạn để máy bạn giữ quyền vật lý của quái gần đó.
---   * Mỗi frame (Stepped + Heartbeat) đặt CFrame của TẤT CẢ quái nhiệm vụ về điểm gom,
---     triệt vận tốc, tắt va chạm, đóng băng AI (WalkSpeed 0) và mở rộng hitbox.
---   * Điểm gom cố định theo mục tiêu hiện tại; nhân vật lơ lửng phía trên điểm đó.
---   * Chẩn đoán: K = đang kéo, D = đứng yên (server không nhường quyền), A = khóa neo, G = đã gom.
--- Nếu server không nhường quyền (D > 0 lâu) farm vẫn chạy vì nhân vật tự bay tới quái.
+-- GOM QUÁI V5.7 OPTIMIZED (LERP TIỆM CẬN MƯỢT + KHÓA VẬT LÝ KHÔNG GIẬT NGƯỢC)
 ------------------------------------------------------------------
 local Bring = {
     list = {}, lastScan = 0, active = false,
-    pulledAt = setmetatable({}, { __mode = "k" }),
-    watch = setmetatable({}, { __mode = "k" }),   -- [mob] = { t, hp, origin, ok }
-    successes = 0, fails = 0, disabledUntil = 0,
     why = "chưa chạy",
 }
 
@@ -2085,192 +2033,95 @@ end
 
 local function resetBringLearning()
     State.Blacklist = setmetatable({}, { __mode = "k" })
-    Bring.successes, Bring.fails, Bring.disabledUntil = 0, 0, 0
     Bring.why = "đã làm mới"
 end
 
-local needVerify, blacklistPulled
 do
--- "An toàn": chỉ kéo quái máy bạn đã sở hữu vật lý (isnetworkowner) -> luôn đồng bộ server.
--- "Xác minh": kéo tất cả, nhưng quái bị kéo ~4s mà không mất máu (trong khi quái khác đang mất máu)
---             sẽ bị trả về vị trí cũ + loại khỏi danh sách (tránh quái "bất tử" do lệch server).
--- "Cưỡng bức": kéo tất cả, không kiểm tra (kiểu script thường, có thể lệch server).
-local function ownsPart(part)
-    if Config.BringMode ~= "An toàn" then return true end
-    if isnetworkowner then
-        local ok, result = pcall(isnetworkowner, part)
-        return ok and result == true
-    end
-    return true
-end
-
-function needVerify()
-    return Config.BringMode == "Xác minh" or (Config.BringMode == "An toàn" and not isnetworkowner)
-end
-
-local function releaseMob(mob, origin)
-    State.Blacklist[mob] = true
-    local part = mob:FindFirstChild("HumanoidRootPart")
-    if part and origin then
-        pcall(function()
-            part.CFrame = CFrame.new(origin)
-            part.AssemblyLinearVelocity = Vector3.zero
-        end)
-    end
-end
-
-local function checkBringGiveUp()
-    if Bring.fails >= 3 and Bring.successes == 0 then
-        Bring.disabledUntil = os.clock() + 120
-        Bring.fails = 0
-        notify("BRING MOB", "Server không nhường quyền quái - tạm tắt kéo 2 phút (farm vẫn chạy)")
-    end
-end
-
-function blacklistPulled(reason)
-    local count = 0
-    for _, entry in ipairs(Bring.list) do
-        local model = entry[3]
-        if model then
-            local w = Bring.watch[model]
-            releaseMob(model, w and w.origin)
-            count += 1
-        end
-    end
-    if State.TargetMob then
-        State.Blacklist[State.TargetMob] = true
-    end
-    State.TargetMob = nil
-    State.ClusterPoint = nil
-    resetBring()
-    Bring.fails += count
-    if count > 0 then
-        notify("BRING MOB", (reason or "Nghi quái lệch đồng bộ") .. " - bỏ qua " .. count .. " con")
-    end
-    checkBringGiveUp()
-end
-
 local function bringStep()
     local now = os.clock()
     if not (State.Running and Config.AutoFarm and Config.BringMob)
         or Config.AutoPumpkin or State.Fleeing or State.Busy or State.BossTarget then
         if Bring.active then resetBring() end
-        Bring.why = "đang tắt (Bring/Farm tắt, đánh boss hoặc tạm dừng)"
+        Bring.why = "đang tắt"
         return
     end
-    if Config.BringMode == "Không kéo" then
+
+    if Config.BringMode == "Dụ quái" or Config.BringMode == "Không kéo" then
         if Bring.active then resetBring() end
-        Bring.why = "Không kéo: đứng ở tâm cụm quái, Multi-Hit đánh cả cụm"
-        return
-    end
-    if now < Bring.disabledUntil then
-        if Bring.active then resetBring() end
-        Bring.why = string.format("tạm tắt %ds (server không nhường quyền)", math.ceil(Bring.disabledUntil - now))
+        Bring.why = Config.BringMode .. " (không can thiệp CFrame)"
         return
     end
 
     local point, quest = State.ClusterPoint, State.Quest
     local folder = Workspace:FindFirstChild("Enemies")
-    if not folder then
-        Bring.why = "không có Workspace.Enemies"
-        return
-    end
-    if not point or not quest then
-        if Bring.active then resetBring() end
-        Bring.why = "chưa có điểm gom / mục tiêu"
+    if not folder or not point or not quest then
+        Bring.why = "thiếu điểm gom / mục tiêu"
         return
     end
     Bring.active = true
 
-    if now - Bring.lastScan >= 0.1 then
-        Bring.lastScan = now
-        local list = {}
-        local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
-        local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
-        local wanted = quest.mob
-        if State.FarmAny then wanted = nil end
-        local size = math.clamp(tonumber(Config.HitboxSize) or 35, 5, 80)
-        local verify = needVerify()
-        for _, mob in ipairs(folder:GetChildren()) do
-            if (not wanted or nameMatches(mob.Name, wanted)) and not State.Blacklist[mob] then
-                local hum = mob:FindFirstChildOfClass("Humanoid")
-                local part = mob:FindFirstChild("HumanoidRootPart")
-                if hum and part and hum.Health > 0
-                    and (part.Position - point).Magnitude <= maxRadius then
+    local list = {}
+    local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
+    local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
+    local wanted = quest.mob
+    if State.FarmAny then wanted = nil end
+    local size = math.clamp(tonumber(Config.HitboxSize) or 35, 5, 80)
+
+    for _, mob in ipairs(folder:GetChildren()) do
+        if (not wanted or nameMatches(mob.Name, wanted)) and not State.Blacklist[mob] then
+            local hum = mob:FindFirstChildOfClass("Humanoid")
+            local part = mob:FindFirstChild("HumanoidRootPart")
+            if hum and part and hum.Health > 0 then
+                local distance = (part.Position - point).Magnitude
+                if distance <= maxRadius then
                     diag.candidates += 1
                     if part.Anchored then
                         diag.anchored += 1
-                    elseif not ownsPart(part) then
-                        diag.stalled += 1      -- chế độ An toàn: chưa sở hữu -> không di chuyển
                     else
-                        local w = Bring.watch[mob]
-                        if not w then
-                            w = { t = now, hp = hum.Health, origin = part.Position, ok = false }
-                            Bring.watch[mob] = w
-                        end
-                        if not w.ok and hum.Health < w.hp - 0.01 then
-                            w.ok = true
-                            Bring.successes += 1
-                        end
-                        local failed = verify and not w.ok and now - w.t >= 4
-                            and now - State.LastEngageAt < 1 and now - State.LastDamageAt < 5
-                        if failed then
-                            releaseMob(mob, w.origin)
-                            Bring.fails += 1
-                            diag.stalled += 1
-                        else
-                            local distance = (part.Position - point).Magnitude
-                            local firstPull = Bring.pulledAt[part]
-                            if distance <= 12 then
-                                diag.settled += 1
-                            elseif firstPull and now - firstPull > 0.6 then
-                                diag.stalled += 1
-                            else
-                                diag.moving += 1
+                        diag.moving += 1
+                        -- Đóng băng trạng thái tự nhiên, vô hiệu hóa AI di chuyển bậy của game
+                        pcall(function()
+                            hum.WalkSpeed = 0
+                            hum.JumpPower = 0
+                            hum.AutoRotate = false
+                            hum.PlatformStand = true
+                            part.CanCollide = false
+                            if Config.BringHitbox and part.Size.X < size then
+                                part.Size = Vector3.new(size, size, size)
                             end
-                            pcall(function()
-                                if hum.WalkSpeed ~= 0 then hum.WalkSpeed = 0 end
-                                if hum.PlatformStand ~= true then hum.PlatformStand = true end
-                                part.CanCollide = false
-                                if Config.BringHitbox and part.Size.X < size then
-                                    part.Size = Vector3.new(size, size, size)
-                                end
-                            end)
-                            list[#list + 1] = { hum, part, mob }
-                        end
+                        end)
+                        table.insert(list, { hum, part, mob })
                     end
                 end
             end
         end
-        Bring.list = list
-        State.BringDiagnostics = diag
-        State.BroughtCount = diag.settled + diag.moving
-        if diag.candidates == 0 then
-            Bring.why = "không có quái trong bán kính gom"
-        else
-            Bring.why = string.format("%s | %d/%d nhận sát thương | hidden:%s owner:%s", Config.BringMode,
-                Bring.successes, Bring.successes + Bring.fails,
-                sethiddenproperty and "ok" or "THIẾU", isnetworkowner and "ok" or "THIẾU")
-        end
-        checkBringGiveUp()
     end
+    Bring.list = list
+    State.BringDiagnostics = diag
+    State.BroughtCount = #list
+    Bring.why = "Bring Mob V5.7 (Lerp tiệm cận mượt)"
 
-    -- Áp dụng vị trí MỖI FRAME (không throttle)
-    for index, entry in ipairs(Bring.list) do
+    -- Áp dụng Lerp mượt mỗi frame tránh bị server kéo ngược
+    for index, entry in ipairs(list) do
         local hum, part = entry[1], entry[2]
         if part.Parent and hum.Health > 0 and not part.Anchored then
             local angle = index * 2.399
             local radius = math.min(index * 0.3, 3.5)
             local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-            part.CFrame = CFrame.new(point + offset)
+            local targetPos = point + offset
+            
+            -- Nội suy tiệm cận mượt (Lerp 25% mỗi frame giúp quái trượt mượt mà, hạn chế desync)
+            local currentCF = part.CFrame
+            local goalCF = CFrame.new(targetPos)
+            part.CFrame = currentCF:Lerp(goalCF, 0.25)
+            
+            -- Triệt tiêu quán tính vật lý
             part.AssemblyLinearVelocity = Vector3.zero
             part.AssemblyAngularVelocity = Vector3.zero
-            if not Bring.pulledAt[part] then
-                Bring.pulledAt[part] = now
-            end
         end
     end
 end
+
 connect(RunService.Stepped, bringStep)
 connect(RunService.Heartbeat, bringStep)
 end
@@ -2310,11 +2161,10 @@ local function farmStep()
         return
     end
 
-    -- Dừng khi đạt level mục tiêu (mặc định 2800)
     local level = getLevel()
     if Config.TargetLevel > 0 and level >= Config.TargetLevel then
         stopFarm("Đã đạt level mục tiêu " .. Config.TargetLevel)
-        notify("HOÀN THÀNH", "Đã đạt level " .. level .. " - tự tắt Auto Farm")
+        notify("HOÀN THÀNH", "Đã đạt level " .. level)
         return
     end
 
@@ -2328,17 +2178,13 @@ local function farmStep()
             pcall(function() sethiddenproperty(LocalPlayer, "MaximumSimulationRadius", math.huge) end)
         end
     end
-    if setsimulationradius and not State.SimRadiusSet then
-        State.SimRadiusSet = true
-        pcall(setsimulationradius, math.huge, math.huge)
-    end
 
     local hpPercent = humanoid.Health / math.max(humanoid.MaxHealth, 1) * 100
     if State.Fleeing then
         if hpPercent >= 80 then
             State.Fleeing = false
         else
-            State.Status = string.format("Máu thấp (%d%%) - đang hồi máu trên cao", math.floor(hpPercent))
+            State.Status = string.format("Máu thấp (%d%%) - hồi máu", math.floor(hpPercent))
             return
         end
     elseif Config.SafeHP > 0 and hpPercent < Config.SafeHP then
@@ -2347,7 +2193,6 @@ local function farmStep()
         return
     end
 
-    -- Auto Sea theo chuỗi nhiệm vụ (chạy trước các bước farm thường)
     State.BossTarget = nil
     if Config.AutoSea and seaChainStep(root) then
         return
@@ -2371,7 +2216,6 @@ local function farmStep()
     local quest = currentQuest()
     State.Quest = quest
 
-    -- Nhận quest chỉ bằng remote, không di chuyển tới NPC
     if Config.AutoQuest and not State.FarmAny then
         local questKey = quest.quest .. ":" .. quest.idx
         local now = os.clock()
@@ -2388,7 +2232,6 @@ local function farmStep()
             State.QuestKey = questKey
             State.QuestPendingSince = nil
         elseif State.QuestSeenUI then
-            -- Chỉ kết luận quest kết thúc nếu UI từng xuất hiện rồi mới biến mất.
             State.UIMissingSince = State.UIMissingSince or now
             if now - State.UIMissingSince >= 3 then
                 State.QuestSeenUI = false
@@ -2401,9 +2244,7 @@ local function farmStep()
             end
         end
 
-        -- Nếu đã hạ đủ số quái theo bộ đếm cục bộ, coi nhiệm vụ hoàn tất.
-        if State.QuestAccepted and State.QuestNeed > 0
-            and State.QuestKills >= State.QuestNeed then
+        if State.QuestAccepted and State.QuestNeed > 0 and State.QuestKills >= State.QuestNeed then
             State.QuestAccepted = false
             State.QuestSeenUI = false
             State.QuestKey = nil
@@ -2413,17 +2254,10 @@ local function farmStep()
             State.QuestRetryAt = now + 2
         end
 
-        -- Nếu remote đã được gọi thành công nhưng Quest UI không hiện,
-        -- giữ trạng thái đã nhận và KHÔNG tự động gọi StartQuest lần nữa.
-        -- Chỉ reset khi UI từng hiện rồi biến mất, đủ số quái, hoặc đổi quest.
-
-        -- Quest cũ không còn hợp cấp -> bỏ quest cũ
         if State.QuestKey and State.QuestKey ~= questKey and questActiveNow() then
             local commF = getCommF()
             if commF then
-                pcall(function()
-                    commF:InvokeServer("AbandonQuest")
-                end)
+                pcall(function() commF:InvokeServer("AbandonQuest") end)
             end
             State.QuestKey = nil
             State.QuestAccepted = false
@@ -2433,12 +2267,9 @@ local function farmStep()
 
         if ui then
             State.QuestKey = questKey
-        elseif not State.QuestAccepted and now >= State.QuestRetryAt
-            and now - State.LastQuestInvokeAt >= 30 then
-            State.Status = "Đang gửi yêu cầu nhiệm vụ " .. quest.quest .. "..."
-            if not startQuest(quest) then
-                State.Status = "Đang chờ xác nhận nhiệm vụ / hết thời gian chờ"
-            end
+        elseif not State.QuestAccepted and now >= State.QuestRetryAt and now - State.LastQuestInvokeAt >= 30 then
+            State.Status = "Đang gửi yêu cầu nhiệm vụ..."
+            startQuest(quest)
         end
     end
 
@@ -2452,7 +2283,6 @@ local function farmStep()
         end
     end
 
-    -- Đếm số quái đã hạ (quái biến mất khi đang ở gần) để biết khi nào xong quest
     do
         local current = {}
         for _, e in ipairs(scanResults) do
@@ -2472,7 +2302,6 @@ local function farmStep()
         end
     end
 
-    -- Giữ mục tiêu hiện tại tới khi nó chết (tránh đổi mục tiêu liên tục làm lệch điểm gom)
     local mob = State.TargetMob
     local keep = false
     if mob and mob.Parent then
@@ -2500,7 +2329,7 @@ local function farmStep()
         end
         if Config.AutoHop and os.clock() - State.NoMobSince >= Config.HopAfter then
             State.NoMobSince = os.clock()
-            serverHop("Không có quái " .. Config.HopAfter .. "s")
+            serverHop("Hết quái")
         end
         return
     end
@@ -2510,36 +2339,14 @@ local function farmStep()
     if not mobRoot then return end
     mobRoot.CanCollide = false
 
-    -- Điểm đứng:
-    --  * Đang kéo quái: khóa cố định, quái được kéo về đây.
-    --  * Không kéo (server không nhường quyền / chế độ "Không kéo"): đứng ở TÂM CỤM quái quanh mục tiêu
-    --    để Multi-Hit (tầm HitRange) trúng nhiều con nhất; quái tự đuổi theo bằng AI của server nên không lệch.
-    local pulling = Config.BringMob and Config.BringMode ~= "Không kéo" and os.clock() >= Bring.disabledUntil
-    if pulling then
-        if not State.ClusterPoint then
-            State.ClusterPoint = mobRoot.Position
-        end
-    else
-        local sum, count = Vector3.zero, 0
-        for _, e in ipairs(scanResults) do
-            if (e.RootPart.Position - mobRoot.Position).Magnitude <= 60 then
-                sum += e.RootPart.Position
-                count += 1
-            end
-        end
-        local centroid = count > 0 and sum / count or mobRoot.Position
-        State.ClusterPoint = State.ClusterPoint and State.ClusterPoint:Lerp(centroid, 0.25) or centroid
+    if not State.ClusterPoint then
+        State.ClusterPoint = mobRoot.Position
     end
     local anchorPos = State.ClusterPoint
-
     local height = currentHeight()
-    local elapsed = math.floor(os.clock() - State.FarmStartAt)
-    local bd = State.BringDiagnostics or {}
-    local label = State.FarmAny and "quái gần nhất" or quest.mob
-    State.Status = string.format("Farm %s (%d con) | cao %d | %ds | kéo: %d/%d | đứng: %d | khóa: %d",
-        label, #scanResults, height, elapsed, bd.moving or 0, bd.candidates or 0, bd.stalled or 0, bd.anchored or 0)
 
-    -- Tới gần quái nếu đang ở xa (dùng tốc độ bay Auto Farm), còn lại bám trên đầu điểm gom
+    State.Status = string.format("Farm %s (%d con) | cao %d", State.FarmAny and "quái" or quest.mob, #scanResults, height)
+
     local above = anchorPos + Vector3.new(0, height, 0)
     if (root.Position - above).Magnitude > 120 then
         flyTo(root, CFrame.lookAt(above, anchorPos))
@@ -2556,12 +2363,7 @@ local function farmStep()
     trackDamage(rawMobsList)
 
     if Config.AutoSwitch and os.clock() - State.LastDamageAt > Config.NoDamageTimeout then
-        if Config.BringMob and #Bring.list > 0 and needVerify() then
-            -- Không đo được quyền sở hữu: quái bị kéo mà không nhận sát thương => nghi lệch server, bỏ chúng
-            blacklistPulled("Quái bị kéo không nhận sát thương")
-        else
-            rotateAttack()
-        end
+        rotateAttack()
         State.LastDamageAt = os.clock()
     end
     attackMobs()
@@ -2572,13 +2374,9 @@ task.spawn(function()
         task.wait(math.max(Config.Delay, 0.02))
         if Config.AutoFarm and not Config.AutoPumpkin then
             State.InAttack = false
-            local ok, err = pcall(farmStep)
+            pcall(farmStep)
             if not State.InAttack then
                 State.LastDamageAt = os.clock()
-            end
-            if not ok then
-                State.Status = "Lỗi: " .. tostring(err)
-                task.wait(1)
             end
         end
     end
@@ -2598,13 +2396,11 @@ task.spawn(function()
     end
 end)
 
-
 ------------------------------------------------------------------
--- TÍNH NĂNG MỚI (PHẦN 2): SKILL / STATS / CHEST / TRÁI / STORE / REJOIN
+-- TÍNH NĂNG PHỤ: SKILL / STATS / CHEST / TRÁI / REJOIN
 ------------------------------------------------------------------
 local clearFruitMarks
 do
--- Auto Stats
 task.spawn(function()
     while State.Running do
         task.wait(3)
@@ -2621,7 +2417,6 @@ task.spawn(function()
     end
 end)
 
--- Auto Skill (Z X C V F) khi đang đánh quái
 local SkillCodes = {
     SkillZ = Enum.KeyCode.Z, SkillX = Enum.KeyCode.X, SkillC = Enum.KeyCode.C,
     SkillV = Enum.KeyCode.V, SkillF = Enum.KeyCode.F,
@@ -2639,8 +2434,7 @@ end
 task.spawn(function()
     while State.Running do
         task.wait(math.max(Config.SkillDelay, 0.3))
-        if Config.AutoSkill and Config.AutoFarm and not State.Busy
-            and os.clock() - State.LastEngageAt < 1.2 then
+        if Config.AutoSkill and Config.AutoFarm and not State.Busy and os.clock() - State.LastEngageAt < 1.2 then
             for _, key in ipairs(SkillOrder) do
                 if Config[key] and State.Running and Config.AutoFarm then
                     pressKey(SkillCodes[key])
@@ -2651,7 +2445,6 @@ task.spawn(function()
     end
 end)
 
--- Tìm trái ác quỷ rơi trên bản đồ
 local function findFruits()
     local out = {}
     local character = getCharacter()
@@ -2675,7 +2468,6 @@ function clearFruitMarks()
     end
 end
 
--- Fruit ESP + Auto Collect Fruit
 task.spawn(function()
     while State.Running do
         task.wait(1)
@@ -2697,7 +2489,7 @@ task.spawn(function()
                         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                         highlight.Parent = Workspace
                         FruitMarks[f.obj] = highlight
-                        notify("TRÁI ÁC QUỶ", f.obj.Name .. " vừa xuất hiện")
+                        notify("TRÁI ÁC QUỶ", f.obj.Name .. " xuất hiện")
                     end
                 end
                 for obj, mark in pairs(FruitMarks) do
@@ -2721,10 +2513,7 @@ task.spawn(function()
                             best, bestDist = f, d
                         end
                     end
-                    local function allowed()
-                        return Config.AutoFruit and State.Running
-                    end
-                    flyTo(root, CFrame.new(best.part.Position + Vector3.new(0, 3, 0)), allowed)
+                    flyTo(root, CFrame.new(best.part.Position + Vector3.new(0, 3, 0)), function() return Config.AutoFruit end)
                     pcall(function()
                         root.CFrame = best.part.CFrame
                         if firetouchinterest then
@@ -2733,7 +2522,6 @@ task.spawn(function()
                         end
                     end)
                     task.wait(0.8)
-                    notify("TRÁI ÁC QUỶ", "Đã chạm: " .. best.obj.Name)
                 end
             end
         end)
@@ -2743,9 +2531,6 @@ task.spawn(function()
     end
 end)
 
--- Auto Chest (CollectionService tag "_ChestTagged")
--- Rương đã chạm được ghi nhớ trong ChestVisited và bị bỏ qua 180 giây, để không bay lại rương cũ
--- (rương vẫn còn tag một lúc sau khi nhặt); nhờ vậy nó luôn sang rương gần nhất CHƯA nhặt.
 local ChestVisited = setmetatable({}, { __mode = "k" })
 task.spawn(function()
     while State.Running do
@@ -2770,10 +2555,7 @@ task.spawn(function()
                 State.ChestCount = total
                 if best then
                     State.Busy = "Nhặt rương"
-                    local function allowed()
-                        return Config.AutoChest and State.Running
-                    end
-                    flyTo(root, CFrame.new(best.Position + Vector3.new(0, 2, 0)), allowed)
+                    flyTo(root, CFrame.new(best.Position + Vector3.new(0, 2, 0)), function() return Config.AutoChest end)
                     pcall(function()
                         root.CFrame = best.CFrame
                         if firetouchinterest then
@@ -2783,8 +2565,6 @@ task.spawn(function()
                     end)
                     ChestVisited[best] = os.clock()
                     task.wait(0.35)
-                else
-                    State.Status = "Đã nhặt hết rương trong server"
                 end
             end)
             if State.Busy == "Nhặt rương" then
@@ -2794,18 +2574,14 @@ task.spawn(function()
     end
 end)
 
--- Noclip khi đang nhặt rương / trái (farm đã có noclip riêng)
 connect(RunService.Stepped, function()
     if State.Busy and LocalPlayer.Character then
         for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
+            if part:IsA("BasePart") then part.CanCollide = false end
         end
     end
 end)
 
--- Auto Store trái ác quỷ vào kho
 task.spawn(function()
     while State.Running do
         task.wait(6)
@@ -2819,9 +2595,7 @@ task.spawn(function()
                         for _, tool in ipairs(container:GetChildren()) do
                             if tool:IsA("Tool") and tool.ToolTip == "Blox Fruit" then
                                 local fruitName = tool:GetAttribute("OriginalName") or tool.Name
-                                pcall(function()
-                                    commF:InvokeServer("StoreFruit", fruitName, tool)
-                                end)
+                                commF:InvokeServer("StoreFruit", fruitName, tool)
                                 task.wait(0.4)
                             end
                         end
@@ -2831,32 +2605,8 @@ task.spawn(function()
         end
     end
 end)
-
--- Auto Rejoin khi bị kick / mất kết nối
-task.spawn(function()
-    pcall(function()
-        local CoreGui = game:GetService("CoreGui")
-        local gui = CoreGui:WaitForChild("RobloxPromptGui", 10)
-        local overlay = gui and gui:WaitForChild("promptOverlay", 10)
-        if overlay then
-            connect(overlay.ChildAdded, function(child)
-                if Config.AutoRejoin and child.Name == "ErrorPrompt" then
-                    task.wait(2)
-                    pcall(function()
-                        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-                    end)
-                end
-            end)
-        end
-    end)
-end)
-
-connect(LocalPlayer.CharacterAdded, function()
-    State.ClusterPoint = nil
-    State.TargetMob = nil
-    State.Busy = nil
-end)
 end
+
 ------------------------------------------------------------------
 -- HALLOWEEN: AUTO THU BÍ NGÔ
 ------------------------------------------------------------------
@@ -2879,30 +2629,19 @@ task.spawn(function()
                 local folder = Workspace:FindFirstChild("PumpkinHunt")
                 local root = getRoot(getCharacter())
 
-                -- Đánh/click chạy chung khi bật Auto Pumpkin (giống Auto Farm)
                 if Config.PumpkinAttack then
                     if Config.AutoEquip then equipWeapon() end
                     if Config.AutoHaki and os.clock() - lastHaki > 3 then
                         lastHaki = os.clock()
                         ensureHaki()
                     end
-                    -- Gọi click chuột và Activate độc lập cho event bí ngô;
-                    -- attackMobs tiếp tục xử lý RegisterAttack/RegisterHit như Auto Farm.
                     clickOnce()
                     screenClick()
                     activateTool()
                     directFire()
                 end
 
-                if not folder then
-                    State.PumpkinStatus = "Không có workspace.PumpkinHunt"
-                    return
-                end
-                if not root then
-                    State.PumpkinStatus = "Chờ nhân vật..."
-                    return
-                end
-
+                if not folder or not root then return end
                 local bv, bg = ensureMovers(root, true)
                 local target, best = nil, math.huge
                 for _, obj in ipairs(folder:GetChildren()) do
@@ -2916,7 +2655,7 @@ task.spawn(function()
                 end
                 if not target then
                     bv.Velocity = Vector3.zero
-                    State.PumpkinStatus = "Hết bí ngô - chờ spawn"
+                    State.PumpkinStatus = "Hết bí ngô"
                     return
                 end
                 local targetPos = objPos(target) + Vector3.new(0, 2, 0)
@@ -2937,9 +2676,7 @@ end)
 connect(RunService.Stepped, function()
     if (Config.AutoFarm or Config.AutoPumpkin) and LocalPlayer.Character then
         for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
+            if part:IsA("BasePart") then part.CanCollide = false end
         end
     end
 end)
@@ -2947,11 +2684,6 @@ end)
 connect(LocalPlayer.Idled, function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
-end)
-
-connect(LocalPlayer.CharacterAdded, function()
-    State.Fleeing = false
-    simulationSet = false
 end)
 
 ------------------------------------------------------------------
@@ -2974,31 +2706,18 @@ local function setLowEffects(on)
         State.EffectsConn = Workspace.DescendantAdded:Connect(function(d)
             pcall(lowFx, d)
         end)
-        task.spawn(function()
-            local n = 0
-            for _, d in ipairs(Workspace:GetDescendants()) do
-                if not State.Running or not Config.LowEffects then break end
-                pcall(lowFx, d)
-                n += 1
-                if n % 300 == 0 then task.wait() end
-            end
-        end)
     else
         if State.EffectsConn then
             State.EffectsConn:Disconnect()
             State.EffectsConn = nil
         end
         for d, enabled in pairs(State.SavedEffects) do
-            pcall(function()
-                d.Enabled = enabled
-            end)
+            pcall(function() d.Enabled = enabled end)
         end
         table.clear(State.SavedEffects)
         pcall(function() Lighting.GlobalShadows = State.OldShadows end)
     end
 end
-
-
 
 ------------------------------------------------------------------
 -- UNLOAD SẠCH
@@ -3040,13 +2759,12 @@ topButton("−", -72, Colors.Panel2, function()
 end)
 
 local SoundService = game:GetService("SoundService")
-
 local MusicDefaultId = "1845922899"
 local MusicPlaylist = {
     { Name = "Quốc ca Việt Nam", Id = "1845922899" },
     { Name = "See Tình", Id = "121242950842428" },
     { Name = "2 Phút Hơn KAIZ Remix", Id = "124166975687737" },
-    { Name = "Trái đất yêu mặt trời & Nắng có mang em đi", Id = "140553267266985", From = 29, To = 77 },
+    { Name = "Trái đất yêu mặt trời", Id = "140553267266985", From = 29, To = 77 },
     { Name = "Cùng Anh Remix", Id = "71716020610625" },
     { Name = "Khuê Mộc Lan", Id = "98361989582185" },
     { Name = "TRẢ CHO ANH GOJO VS SUKUNA", Id = "110396752508363", From = 163, To = 180 },
@@ -3064,7 +2782,6 @@ local Music = {
     CurrentName = "Chưa phát",
     Toast = "",
     ToastUntil = 0,
-    NpcCache = {},
     PlayToken = 0,
 }
 
@@ -3083,39 +2800,23 @@ end
 
 local function playId(id, label, from, to)
     local numeric = tostring(id):match("%d+")
-    if not numeric then
-        musicNotify("Lỗi", "Audio ID không hợp lệ: " .. tostring(id))
-        return false
-    end
+    if not numeric then return false end
     Music.PlayToken += 1
     local token = Music.PlayToken
     MusicSound.SoundId = "rbxassetid://" .. numeric
     Music.CurrentId = numeric
     Music.CurrentName = label or ("ID " .. numeric)
-    if from then
-        MusicSound.TimePosition = from
-    end
-    local ok = pcall(function()
-        MusicSound:Play()
-    end)
-    if not ok then
-        musicNotify("Lỗi", "Không phát được ID " .. numeric)
-        return false
-    end
+    if from then MusicSound.TimePosition = from end
+    pcall(function() MusicSound:Play() end)
     if from or to then
         task.spawn(function()
             for _ = 1, 100 do
-                if MusicSound.IsLoaded then
-                    break
-                end
+                if MusicSound.IsLoaded then break end
                 task.wait(0.1)
             end
             if token ~= Music.PlayToken then return end
-            if from then
-                MusicSound.TimePosition = from
-            end
-            while State.Running and token == Music.PlayToken and MusicSound.Playing
-                and (not to or MusicSound.TimePosition < to) do
+            if from then MusicSound.TimePosition = from end
+            while State.Running and token == Music.PlayToken and MusicSound.Playing and (not to or MusicSound.TimePosition < to) do
                 task.wait(0.1)
             end
             if to and token == Music.PlayToken and MusicSound.Playing then
@@ -3127,8 +2828,9 @@ local function playId(id, label, from, to)
     return true
 end
 
-
--- ===== Bảng nổi tách rời: nhạc + nhiệm vụ + quái đang gom + khoảng cách + visualizer =====
+------------------------------------------------------------------
+-- BẢNG NHẠC NỔI
+------------------------------------------------------------------
 local MusicPanel
 do
 MusicPanel = make("Frame", {
@@ -3232,7 +2934,7 @@ local function panelRow(y, title)
 end
 local TrackLabel = panelRow(108, "Nhạc")
 local QuestLabel = panelRow(128, "Nhiệm vụ")
-local NpcLabel = panelRow(148, "Quái đang kéo")
+local NpcLabel = panelRow(148, "Quái kéo")
 local DistLabel = panelRow(168, "Khoảng cách")
 local ToastLabel = make("TextLabel", {
     Position = UDim2.fromOffset(12, 190),
@@ -3246,7 +2948,6 @@ local ToastLabel = make("TextLabel", {
     TextTruncate = Enum.TextTruncate.AtEnd,
 }, MusicPanel)
 
--- Cột nhảy theo PlaybackLoudness của bài đang phát
 local vizTime = 0
 connect(RunService.RenderStepped, function(dt)
     if not MusicPanel.Visible then return end
@@ -3264,11 +2965,9 @@ connect(RunService.RenderStepped, function(dt)
     end
 end)
 
--- Quái thật trong Workspace.Enemies thuộc nhiệm vụ hiện tại (không lấy NPC giao nhiệm vụ)
 local function bringMobInfo(quest, root)
     local enemies = Workspace:FindFirstChild("Enemies")
     if not enemies or not quest or not root then return nil end
-
     local best, count = nil, 0
     local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
     local wanted = quest.mob
@@ -3296,41 +2995,25 @@ task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
             TrackLabel.Text = (MusicSound.Playing and "▶ " or "⏸ ") .. Music.CurrentName
-
             local quest = State.Quest or currentQuest()
             QuestLabel.Text = questLabel(quest)
-
             local root = getRoot(getCharacter())
             local info = bringMobInfo(quest, root)
             local bd = State.BringDiagnostics or {}
-            local candidates = tonumber(bd.candidates) or 0
-            local moving = tonumber(bd.moving) or 0
-            local stalled = tonumber(bd.stalled) or 0
-            local anchored = tonumber(bd.anchored) or 0
-            local settled = tonumber(bd.settled) or 0
-
             if info then
-                NpcLabel.Text = string.format("%s (%d) | K:%d/%d D:%d A:%d G:%d",
-                    info.name, info.count, moving, candidates, stalled, anchored, settled)
-                NpcLabel.TextColor3 = (candidates > 0 and stalled == 0 and anchored == 0)
-                    and Colors.Green or Colors.Text
-                DistLabel.Text = string.format("%d stud - %s", math.floor(info.d),
-                    info.d <= 250 and "GẦN" or "XA")
-                DistLabel.TextColor3 = info.d <= 250 and Colors.Green or Colors.Red
+                NpcLabel.Text = string.format("%s (%d) | Kéo: %d", info.name, info.count, bd.moving or 0)
+                DistLabel.Text = string.format("%d stud", math.floor(info.d))
             else
-                NpcLabel.Text = string.format("%s: chưa có quái | K:%d/%d D:%d A:%d G:%d",
-                    State.FarmAny and "Quái" or quest.mob, moving, candidates, stalled, anchored, settled)
-                NpcLabel.TextColor3 = Colors.Text
+                NpcLabel.Text = "Chưa có quái"
                 DistLabel.Text = "--"
-                DistLabel.TextColor3 = Colors.Text
             end
-
             ToastLabel.Text = os.clock() < Music.ToastUntil and Music.Toast or ""
         end)
         task.wait(0.4)
     end
 end)
 end
+
 ------------------------------------------------------------------
 -- CÁC TAB GIAO DIỆN
 ------------------------------------------------------------------
@@ -3351,7 +3034,7 @@ local function bind(key)
     end
 end
 
--- ===== TỔNG QUAN =====
+-- TỔNG QUAN
 addSection(OverviewPage, "PLAYER MONITOR")
 local setLevelProgress = addProgress(OverviewPage, "TIẾN ĐỘ LEVEL → MỤC TIÊU")
 Info.Level = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
@@ -3360,12 +3043,12 @@ Info.Tool = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
 Info.Quest = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
 Info.Status = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
 Info.Attack = addInfo(OverviewPage, "ĐÁNH", "--")
-Info.Bring = addInfo(OverviewPage, "BRING MOB (K kéo / D đứng / A khóa / G đã gom)", "--")
-Info.Aggro = addInfo(OverviewPage, "AGGRO TRACKER (ước lượng chuyển động)", "Đang đo...")
+Info.Bring = addInfo(OverviewPage, "BRING MOB (Lerp tiệm cận mượt)", "--")
+Info.Aggro = addInfo(OverviewPage, "AGGRO TRACKER", "Đang đo...")
 Info.Session = addInfo(OverviewPage, "PHIÊN FARM", "--")
 Info.Network = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
 
--- ===== AUTO FARM =====
+-- AUTO FARM
 addSection(FarmPage, "AUTO FARM")
 addToggle(FarmPage, "Auto Farm Level", false, function(v)
     Config.AutoFarm = v
@@ -3375,7 +3058,7 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
         State.NoMobSince = nil
         State.ClusterPoint = nil
         State.TargetMob = nil
-        State.Status = State.KeyLearned and "Đã có HitKey - dùng độ cao sau key" or "Chưa có HitKey - click thường, độ cao 7"
+        State.Status = State.KeyLearned and "Đã có HitKey" or "Chưa có HitKey - click thường"
     else
         State.Status = "Đang tắt"
         State.Fleeing = false
@@ -3383,157 +3066,120 @@ addToggle(FarmPage, "Auto Farm Level", false, function(v)
         State.TargetMob = nil
         State.BossTarget = nil
         clearBringMovers()
-        if not Config.AutoPumpkin then
-            stopMovers()
-        end
+        if not Config.AutoPumpkin then stopMovers() end
     end
 end, "AutoFarm")
 addCycle(FarmPage, "Chế độ farm", { "Level Quest", "Quái gần nhất" }, Config.FarmMode, bind("FarmMode"))
 addStepper(FarmPage, "Level mục tiêu (0 = không dừng)", 0, 2800, 50, Config.TargetLevel, bind("TargetLevel"))
-addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob V5 (kéo mỗi frame)", Config.BringMob, bind("BringMob"))
-addCycle(FarmPage, "Chế độ kéo quái", { "An toàn", "Xác minh", "Cưỡng bức", "Không kéo" }, Config.BringMode, bind("BringMode"))
-addButton(FarmPage, "LÀM MỚI DANH SÁCH QUÁI BỊ BỎ QUA / BẬT LẠI KÉO", resetBringLearning, Colors.Panel)
-addToggle(FarmPage, "Mở rộng hitbox quái khi gom", Config.BringHitbox, bind("BringHitbox"))
-addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
+addToggle(FarmPage, "Auto Quest", Config.AutoQuest, bind("AutoQuest"))
+addToggle(FarmPage, "Bring Mob V5.7 (Lerp mượt)", Config.BringMob, bind("BringMob"))
+addCycle(FarmPage, "Chế độ kéo quái", { "Cưỡng bức", "Dụ quái", "Không kéo" }, Config.BringMode, bind("BringMode"))
+addButton(FarmPage, "LÀM MỚI QUÁI BỊ BỎ QUA", resetBringLearning, Colors.Panel)
+addToggle(FarmPage, "Mở rộng hitbox quái", Config.BringHitbox, bind("BringHitbox"))
+addToggle(FarmPage, "Highlight quái gần", Config.MobHighlight, bind("MobHighlight"))
 addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
-addToggle(FarmPage, "Tự đổi chế độ nếu không gây sát thương", Config.AutoSwitch, bind("AutoSwitch"))
-addToggle(FarmPage, "Multi-Hit (nhân đòn game)", Config.MultiHit, bind("MultiHit"))
+addToggle(FarmPage, "Tự đổi chế độ nếu kẹt", Config.AutoSwitch, bind("AutoSwitch"))
+addToggle(FarmPage, "Multi-Hit", Config.MultiHit, bind("MultiHit"))
 addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
 addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
-addToggle(FarmPage, "Auto Haki (Buso)", Config.AutoHaki, bind("AutoHaki"))
-addToggle(FarmPage, "Auto Ken (Haki quan sát)", Config.AutoKen, bind("AutoKen"))
+addToggle(FarmPage, "Auto Haki", Config.AutoHaki, bind("AutoHaki"))
+addToggle(FarmPage, "Auto Ken", Config.AutoKen, bind("AutoKen"))
 
--- ===== TÍNH NĂNG MỚI =====
+-- TÍNH NĂNG
 addSection(FeaturePage, "AUTO SKILL")
-addToggle(FeaturePage, "Auto Skill khi đang đánh quái", Config.AutoSkill, bind("AutoSkill"))
-addToggle(FeaturePage, "Dùng skill Z", Config.SkillZ, bind("SkillZ"))
-addToggle(FeaturePage, "Dùng skill X", Config.SkillX, bind("SkillX"))
-addToggle(FeaturePage, "Dùng skill C", Config.SkillC, bind("SkillC"))
-addToggle(FeaturePage, "Dùng skill V", Config.SkillV, bind("SkillV"))
-addToggle(FeaturePage, "Dùng skill F", Config.SkillF, bind("SkillF"))
+addToggle(FeaturePage, "Auto Skill", Config.AutoSkill, bind("AutoSkill"))
+addToggle(FeaturePage, "Skill Z", Config.SkillZ, bind("SkillZ"))
+addToggle(FeaturePage, "Skill X", Config.SkillX, bind("SkillX"))
+addToggle(FeaturePage, "Skill C", Config.SkillC, bind("SkillC"))
+addToggle(FeaturePage, "Skill V", Config.SkillV, bind("SkillV"))
+addToggle(FeaturePage, "Skill F", Config.SkillF, bind("SkillF"))
 addStepper(FeaturePage, "Nhịp dùng skill (giây)", 0.3, 6, 0.1, Config.SkillDelay, bind("SkillDelay"))
 
 addSection(FeaturePage, "CHỈ SỐ")
-addToggle(FeaturePage, "Auto cộng điểm chỉ số", Config.AutoStats, bind("AutoStats"))
+addToggle(FeaturePage, "Auto cộng điểm", Config.AutoStats, bind("AutoStats"))
 addCycle(FeaturePage, "Chỉ số cộng", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, bind("StatName"))
 addStepper(FeaturePage, "Điểm cộng mỗi lần", 1, 50, 1, Config.StatAmount, bind("StatAmount"))
 
 addSection(FeaturePage, "SEA / SERVER")
-addToggle(FeaturePage, "Auto qua Sea theo chuỗi nhiệm vụ (cần bật Auto Farm)", false, function(v)
-    Config.AutoSea = v
-end, "AutoSea")
-addToggle(FeaturePage, "Auto Server Hop khi hết quái", false, function(v)
-    Config.AutoHop = v
-    State.NoMobSince = nil
-end, "AutoHop")
-addStepper(FeaturePage, "Hop sau khi không thấy quái (giây)", 15, 300, 5, Config.HopAfter, bind("HopAfter"))
-addButton(FeaturePage, "ĐỔI SERVER NGAY", function()
-    serverHop("Đổi server theo yêu cầu")
-end)
+addToggle(FeaturePage, "Auto qua Sea theo chuỗi nhiệm vụ", false, function(v) Config.AutoSea = v end, "AutoSea")
+addToggle(FeaturePage, "Auto Server Hop khi hết quái", false, function(v) Config.AutoHop = v; State.NoMobSince = nil end, "AutoHop")
+addStepper(FeaturePage, "Hop sau (giây)", 15, 300, 5, Config.HopAfter, bind("HopAfter"))
+addButton(FeaturePage, "ĐỔI SERVER NGAY", function() serverHop("Đổi server theo yêu cầu") end)
 
 addSection(FeaturePage, "TRÁI ÁC QUỶ & RƯƠNG")
-addToggle(FeaturePage, "Auto nhặt trái ác quỷ", false, function(v)
-    Config.AutoFruit = v
-end, "AutoFruit")
+addToggle(FeaturePage, "Auto nhặt trái ác quỷ", false, function(v) Config.AutoFruit = v end, "AutoFruit")
 addToggle(FeaturePage, "Auto cất trái vào kho", Config.AutoStore, bind("AutoStore"))
-addToggle(FeaturePage, "Fruit ESP + thông báo khi có trái", Config.FruitESP, bind("FruitESP"))
-addToggle(FeaturePage, "Auto nhặt rương", false, function(v)
-    Config.AutoChest = v
-end, "AutoChest")
+addToggle(FeaturePage, "Fruit ESP", Config.FruitESP, bind("FruitESP"))
+addToggle(FeaturePage, "Auto nhặt rương", false, function(v) Config.AutoChest = v end, "AutoChest")
 Info.Fruit = addInfo(FeaturePage, "TRÁI / RƯƠNG TRONG SERVER", "--")
 
--- ===== THÔNG SỐ =====
+-- THÔNG SỐ
 addSection(TunePage, "THÔNG SỐ AUTO FARM")
-addInfo(TunePage, "ĐỘ CAO TRƯỚC KHI CÓ HIT KEY", "7 (cố định, tự động giữ đến khi học được key)")
+addInfo(TunePage, "ĐỘ CAO BAN ĐẦU", "7 (Tự động tăng sau khi học HitKey)")
 addStepper(TunePage, "Độ cao sau khi có HitKey", 5, 60, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
-addStepper(TunePage, "Tốc độ bay Auto Farm", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
+addStepper(TunePage, "Tốc độ bay", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
 addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
-addStepper(TunePage, "Bán kính gom quái", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Kích thước hitbox quái", 10, 80, 5, Config.HitboxSize, bind("HitboxSize"))
-addStepper(TunePage, "Nhịp đánh (giây)", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
+addStepper(TunePage, "Bán kính gom", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
+addStepper(TunePage, "Hitbox quái", 10, 80, 5, Config.HitboxSize, bind("HitboxSize"))
+addStepper(TunePage, "Nhịp đánh", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
 addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
 
--- ===== HALLOWEEN =====
+-- HALLOWEEN
 addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
 addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
     Config.AutoPumpkin = v
     if not v then
         State.PumpkinStatus = "Đang tắt"
-        if not Config.AutoFarm then
-            stopMovers()
-        end
+        if not Config.AutoFarm then stopMovers() end
     end
 end, "AutoPumpkin")
 addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
 addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
 Info.Pumpkin = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
 
--- ===== HIỆU NĂNG =====
+-- HIỆU NĂNG
 addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
-addToggle(PerformancePage, "Giảm hiệu ứng hạt / bóng", Config.LowEffects, function(v)
+addToggle(PerformancePage, "Giảm hiệu ứng hạt", Config.LowEffects, function(v)
     Config.LowEffects = v
     setLowEffects(v)
     saveSoon()
 end)
-addToggle(PerformancePage, "Fullbright (sáng toàn map)", Config.FullBright, function(v)
+addToggle(PerformancePage, "Fullbright", Config.FullBright, function(v)
     Config.FullBright = v
     setFullbright(v)
     saveSoon()
 end)
 addSection(PerformancePage, "KẾT NỐI")
-addToggle(PerformancePage, "Auto Rejoin khi bị kick", Config.AutoRejoin, bind("AutoRejoin"))
+addToggle(PerformancePage, "Auto Rejoin", Config.AutoRejoin, bind("AutoRejoin"))
 addButton(PerformancePage, "RESET NHÂN VẬT", function()
-    pcall(function()
-        local humanoid = getHumanoid()
-        if humanoid then humanoid.Health = 0 end
-    end)
+    pcall(function() local h = getHumanoid(); if h then h.Health = 0 end end)
 end)
-addButton(PerformancePage, "VÀO LẠI SERVER (REJOIN)", function()
-    pcall(function()
-        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-    end)
+addButton(PerformancePage, "VÀO LẠI SERVER", function()
+    pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
 end)
 
--- ===== CÀI ĐẶT =====
+-- CÀI ĐẶT
 addSection(SettingsPage, "ĐIỀU KHIỂN")
-addButton(SettingsPage, "ẨN / HIỆN MENU  (RightShift)", function()
-    Main.Visible = not Main.Visible
-end)
-addButton(SettingsPage, "XÓA HIGHLIGHT QUÁI", clearHighlights, Colors.Panel)
-addButton(SettingsPage, "ĐÓNG H-HUB VÀ KHÔI PHỤC", Unload, Color3.fromRGB(130, 40, 60))
+addButton(SettingsPage, "ẨN / HIỆN MENU (RightShift)", function() Main.Visible = not Main.Visible end)
+addButton(SettingsPage, "XÓA HIGHLIGHT", clearHighlights, Colors.Panel)
+addButton(SettingsPage, "ĐÓNG SCRIPT & KHÔI PHỤC", Unload, Color3.fromRGB(130, 40, 60))
 
--- ===== NHẠC =====
+-- NHẠC
 addSection(MusicPage, "TRÌNH ĐIỀU KHIỂN")
 addToggle(MusicPage, "Phát / Tạm dừng", false, function(on)
     if on then
-        if Music.CurrentId then
-            pcall(function()
-                MusicSound:Resume()
-            end)
-        else
-            playId(MusicDefaultId, "Bài mặc định")
-        end
+        if Music.CurrentId then pcall(function() MusicSound:Resume() end)
+        else playId(MusicDefaultId, "Bài mặc định") end
     else
-        pcall(function()
-            MusicSound:Pause()
-        end)
+        pcall(function() MusicSound:Pause() end)
     end
 end)
-addStepper(MusicPage, "Âm lượng", 0, 10, 0.5, 1, function(value)
-    MusicSound.Volume = value
-end)
-addInput(MusicPage, "Audio ID tùy chỉnh", "Dán ID rồi Enter...", function(text)
-    playId(text)
-end)
-addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC & NHIỆM VỤ", function()
-    MusicPanel.Visible = not MusicPanel.Visible
-end, Colors.Panel)
+addStepper(MusicPage, "Âm lượng", 0, 10, 0.5, 1, function(v) MusicSound.Volume = v end)
+addInput(MusicPage, "Audio ID tùy chỉnh", "Dán ID...", function(text) playId(text) end)
+addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC", function() MusicPanel.Visible = not MusicPanel.Visible end, Colors.Panel)
 addSection(MusicPage, "PLAYLIST")
 for _, track in ipairs(MusicPlaylist) do
-    addButton(MusicPage, track.Name, function()
-        playId(track.Id, track.Name, track.From, track.To)
-    end)
+    addButton(MusicPage, track.Name, function() playId(track.Id, track.Name, track.From, track.To) end)
 end
 
 selectTab("Tổng quan")
@@ -3541,7 +3187,7 @@ if Config.FullBright then setFullbright(true) end
 if Config.LowEffects then setLowEffects(true) end
 
 ------------------------------------------------------------------
--- CẬP NHẬT GIAO DIỆN
+-- VÒNG LẶP CẬP NHẬT UI
 ------------------------------------------------------------------
 local frameCount, fpsStart = 0, os.clock()
 connect(RunService.RenderStepped, function()
@@ -3565,34 +3211,23 @@ task.spawn(function()
             Info.Health.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
             Info.Tool.Text = getEquippedToolName()
             local quest = State.Quest or currentQuest()
-            Info.Quest.Text = State.FarmAny and "Chế độ quái gần nhất (không dùng quest)" or questLabel(quest)
+            Info.Quest.Text = State.FarmAny and "Quái gần nhất" or questLabel(quest)
             Info.Status.Text = State.Status
-            Info.Attack.Text = string.format("%s | Click chờ key: %s | Multi-Hit: %s | Key: %s",
-                Config.AttackMode,
-                (Config.AutoFarm and not State.KeyLearned) and "ON" or "OFF",
-                Config.MultiHit and "ON" or "OFF",
-                State.KeyLearned and "đã học" or "chưa có")
+            Info.Attack.Text = string.format("%s | Key: %s", Config.AttackMode, State.KeyLearned and "Đã học" or "Chưa")
             local bd = State.BringDiagnostics or {}
-            Info.Bring.Text = string.format("K:%d  D:%d  A:%d  G:%d  /  %d quái  |  %s",
-                bd.moving or 0, bd.stalled or 0, bd.anchored or 0, bd.settled or 0, bd.candidates or 0, Bring.why)
+            Info.Bring.Text = string.format("Đang kéo: %d/%d con | Lerp mượt", bd.moving or 0, bd.candidates or 0)
             local ad = AggroTracker.Diagnostics or {}
-            Info.Aggro.Text = string.format("Tiến gần:%d | Đứng:%d | Rời xa:%d | Chưa rõ:%d | Tổng:%d | Gần nhất: %s",
-                ad.approaching or 0, ad.stationary or 0, ad.departing or 0, ad.unknown or 0, ad.total or 0, ad.closest or "--")
+            Info.Aggro.Text = string.format("Tiến gần:%d | Đứng:%d | Tổng:%d", ad.approaching or 0, ad.stationary or 0, ad.total or 0)
             local elapsed, gained, perHour, eta = sessionSummary()
-            Info.Session.Text = string.format("%s | hạ %d quái | +%d level (%.1f/giờ) | ETA: %s",
-                formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
-            local ping = ""
-            pcall(function()
-                ping = string.format("%d ms  |  ", math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()))
-            end)
-            Info.Network.Text = ping .. State.FPS .. " FPS"
+            Info.Session.Text = string.format("%s | hạ %d con | +%d level (%.1f/h) | ETA: %s", formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
+            Info.Network.Text = State.FPS .. " FPS"
             Info.Pumpkin.Text = State.PumpkinStatus
-            Info.Fruit.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.6  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
+            Info.Fruit.Text = string.format("%d trái  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
+            Footer.Text = string.format("H-HUB v5.7  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-notify("H-HUB v5.6", "Đã khởi động - RightShift để ẩn/hiện menu")
-print("[H-HUB] Companion v5.6 FUTURE đã khởi động thành công!")
+notify("H-HUB v5.7", "Đã cập nhật Bring Mob Lerp mượt không giật ngược!")
+print("[H-HUB] Companion v5.7 FUTURE (Optimized) đã khởi động thành công!")
