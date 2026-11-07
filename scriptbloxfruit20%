@@ -150,7 +150,7 @@ end
 loadConfig()
 Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
 Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 2800)
-if Config.BringMode ~= "An toàn" and Config.BringMode ~= "Xác minh" and Config.BringMode ~= "Cưỡng bức" then
+if Config.BringMode ~= "An toàn" and Config.BringMode ~= "Xác minh" and Config.BringMode ~= "Cưỡng bức" and Config.BringMode ~= "Không kéo" then
     Config.BringMode = "Xác minh"
 end
 if Config.FarmMode ~= "Level Quest" and Config.FarmMode ~= "Quái gần nhất" then
@@ -675,7 +675,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.5 FUTURE",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.6 FUTURE",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -744,7 +744,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v5.5  |  Đang khởi động...",
+    Text = "H-HUB v5.6  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -2158,6 +2158,11 @@ local function bringStep()
         Bring.why = "đang tắt (Bring/Farm tắt, đánh boss hoặc tạm dừng)"
         return
     end
+    if Config.BringMode == "Không kéo" then
+        if Bring.active then resetBring() end
+        Bring.why = "Không kéo: đứng ở tâm cụm quái, Multi-Hit đánh cả cụm"
+        return
+    end
     if now < Bring.disabledUntil then
         if Bring.active then resetBring() end
         Bring.why = string.format("tạm tắt %ds (server không nhường quyền)", math.ceil(Bring.disabledUntil - now))
@@ -2243,7 +2248,9 @@ local function bringStep()
         if diag.candidates == 0 then
             Bring.why = "không có quái trong bán kính gom"
         else
-            Bring.why = string.format("%s | %d/%d quái nhận sát thương khi bị kéo", Config.BringMode, Bring.successes, Bring.successes + Bring.fails)
+            Bring.why = string.format("%s | %d/%d nhận sát thương | hidden:%s owner:%s", Config.BringMode,
+                Bring.successes, Bring.successes + Bring.fails,
+                sethiddenproperty and "ok" or "THIẾU", isnetworkowner and "ok" or "THIẾU")
         end
         checkBringGiveUp()
     end
@@ -2503,13 +2510,25 @@ local function farmStep()
     if not mobRoot then return end
     mobRoot.CanCollide = false
 
-    -- Điểm gom: có Bring Mob thì khóa cố định (quái được kéo về đây); không có thì bám theo quái
-    if Config.BringMob then
+    -- Điểm đứng:
+    --  * Đang kéo quái: khóa cố định, quái được kéo về đây.
+    --  * Không kéo (server không nhường quyền / chế độ "Không kéo"): đứng ở TÂM CỤM quái quanh mục tiêu
+    --    để Multi-Hit (tầm HitRange) trúng nhiều con nhất; quái tự đuổi theo bằng AI của server nên không lệch.
+    local pulling = Config.BringMob and Config.BringMode ~= "Không kéo" and os.clock() >= Bring.disabledUntil
+    if pulling then
         if not State.ClusterPoint then
             State.ClusterPoint = mobRoot.Position
         end
     else
-        State.ClusterPoint = mobRoot.Position
+        local sum, count = Vector3.zero, 0
+        for _, e in ipairs(scanResults) do
+            if (e.RootPart.Position - mobRoot.Position).Magnitude <= 60 then
+                sum += e.RootPart.Position
+                count += 1
+            end
+        end
+        local centroid = count > 0 and sum / count or mobRoot.Position
+        State.ClusterPoint = State.ClusterPoint and State.ClusterPoint:Lerp(centroid, 0.25) or centroid
     end
     local anchorPos = State.ClusterPoint
 
@@ -3373,7 +3392,7 @@ addCycle(FarmPage, "Chế độ farm", { "Level Quest", "Quái gần nhất" }, 
 addStepper(FarmPage, "Level mục tiêu (0 = không dừng)", 0, 2800, 50, Config.TargetLevel, bind("TargetLevel"))
 addToggle(FarmPage, "Auto Quest (nhận bằng remote)", Config.AutoQuest, bind("AutoQuest"))
 addToggle(FarmPage, "Bring Mob V5 (kéo mỗi frame)", Config.BringMob, bind("BringMob"))
-addCycle(FarmPage, "Chế độ kéo quái", { "An toàn", "Xác minh", "Cưỡng bức" }, Config.BringMode, bind("BringMode"))
+addCycle(FarmPage, "Chế độ kéo quái", { "An toàn", "Xác minh", "Cưỡng bức", "Không kéo" }, Config.BringMode, bind("BringMode"))
 addButton(FarmPage, "LÀM MỚI DANH SÁCH QUÁI BỊ BỎ QUA / BẬT LẠI KÉO", resetBringLearning, Colors.Panel)
 addToggle(FarmPage, "Mở rộng hitbox quái khi gom", Config.BringHitbox, bind("BringHitbox"))
 addToggle(FarmPage, "Highlight quái gần (Radar v2)", Config.MobHighlight, bind("MobHighlight"))
@@ -3569,11 +3588,11 @@ task.spawn(function()
             Info.Network.Text = ping .. State.FPS .. " FPS"
             Info.Pumpkin.Text = State.PumpkinStatus
             Info.Fruit.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.5  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
+            Footer.Text = string.format("H-HUB v5.6  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-notify("H-HUB v5.5", "Đã khởi động - RightShift để ẩn/hiện menu")
-print("[H-HUB] Companion v5.5 FUTURE đã khởi động thành công!")
+notify("H-HUB v5.6", "Đã khởi động - RightShift để ẩn/hiện menu")
+print("[H-HUB] Companion v5.6 FUTURE đã khởi động thành công!")
