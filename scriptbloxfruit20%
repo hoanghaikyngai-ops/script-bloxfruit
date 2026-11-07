@@ -1,5 +1,5 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v5.7  -  FUTURE EDITION (OPTIMIZED BRING MOB)
+    H-HUB // GAME COMPANION v5.8 - BRING MOB STATE FIX
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob V5.7: Kéo mượt bằng Lerp tiệm cận, khóa vật lý/PlatformStand, không bị kéo ngược
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -2013,15 +2013,51 @@ end)
 end
 
 ------------------------------------------------------------------
--- GOM QUÁI V5.7 OPTIMIZED (LERP TIỆM CẬN MƯỢT + KHÓA VẬT LÝ KHÔNG GIẬT NGƯỢC)
+-- GOM QUÁI V5.8 (KÉO THEO ĐOẠN + TẠM NHẢ + SETTLED)
 ------------------------------------------------------------------
 local Bring = {
-    list = {}, lastScan = 0, active = false,
+    list = {},
+    records = setmetatable({}, { __mode = "k" }),
+    lastScan = 0,
+    lastCandidateCount = 0,
+    lastAnchoredCount = 0,
+    active = false,
     why = "chưa chạy",
+    scanInterval = 0.25,
+    segmentDistance = 6,       -- Mỗi nhịp chỉ di chuyển một đoạn ngắn
+    pauseDuration = 0.14,      -- Nhả CFrame giữa các nhịp kéo
+    settleRadius = 4.5,        -- Đến đủ gần điểm gom thì ngừng can thiệp
 }
 
+local function restoreBringRecord(record)
+    if not record then return end
+    local hum, part = record.hum, record.part
+    if hum and hum.Parent then
+        pcall(function()
+            if record.originalWalkSpeed ~= nil then hum.WalkSpeed = record.originalWalkSpeed end
+            if record.originalJumpPower ~= nil then hum.JumpPower = record.originalJumpPower end
+            if record.originalAutoRotate ~= nil then hum.AutoRotate = record.originalAutoRotate end
+            if record.originalPlatformStand ~= nil then hum.PlatformStand = record.originalPlatformStand end
+        end)
+    end
+    if part and part.Parent then
+        pcall(function()
+            if record.originalCanCollide ~= nil then part.CanCollide = record.originalCanCollide end
+            if record.originalSize then part.Size = record.originalSize end
+        end)
+    end
+end
+
 local function resetBring()
+    -- Khôi phục trạng thái gốc của mọi NPC đã được Bring quản lý.
+    for _, record in pairs(Bring.records) do
+        restoreBringRecord(record)
+    end
+    Bring.records = setmetatable({}, { __mode = "k" })
     Bring.list = {}
+    Bring.lastScan = 0
+    Bring.lastCandidateCount = 0
+    Bring.lastAnchoredCount = 0
     Bring.active = false
     State.BroughtCount = 0
     State.BringDiagnostics = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
@@ -2036,18 +2072,54 @@ local function resetBringLearning()
     Bring.why = "đã làm mới"
 end
 
-do
-local function bringStep()
+local function captureBringRecord(mob, hum, part, targetPos, now)
+    local record = {
+        mob = mob,
+        hum = hum,
+        part = part,
+        phase = "pulling",
+        pauseUntil = 0,
+        targetPos = targetPos,
+        originalWalkSpeed = hum.WalkSpeed,
+        originalJumpPower = hum.JumpPower,
+        originalAutoRotate = hum.AutoRotate,
+        originalPlatformStand = hum.PlatformStand,
+        originalCanCollide = part.CanCollide,
+        originalSize = part.Size,
+        lastProgressAt = now,
+        lastDistance = (part.Position - targetPos).Magnitude,
+    }
+    return record
+end
+
+local function applyBringHold(record)
+    local hum, part = record.hum, record.part
+    pcall(function()
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum.AutoRotate = false
+        hum.PlatformStand = true
+        part.CanCollide = false
+        if Config.BringHitbox then
+            local size = math.clamp(tonumber(Config.HitboxSize) or 35, 5, 80)
+            if part.Size.X < size then
+                part.Size = Vector3.new(size, size, size)
+            end
+        end
+    end)
+end
+
+local function bringStep(dt)
     local now = os.clock()
     if not (State.Running and Config.AutoFarm and Config.BringMob)
         or Config.AutoPumpkin or State.Fleeing or State.Busy or State.BossTarget then
-        if Bring.active then resetBring() end
+        if Bring.active or next(Bring.records) ~= nil then resetBring() end
         Bring.why = "đang tắt"
         return
     end
 
     if Config.BringMode == "Dụ quái" or Config.BringMode == "Không kéo" then
-        if Bring.active then resetBring() end
+        if Bring.active or next(Bring.records) ~= nil then resetBring() end
         Bring.why = Config.BringMode .. " (không can thiệp CFrame)"
         return
     end
@@ -2055,76 +2127,128 @@ local function bringStep()
     local point, quest = State.ClusterPoint, State.Quest
     local folder = Workspace:FindFirstChild("Enemies")
     if not folder or not point or not quest then
+        if Bring.active or next(Bring.records) ~= nil then resetBring() end
         Bring.why = "thiếu điểm gom / mục tiêu"
         return
     end
-    Bring.active = true
 
-    local list = {}
+    Bring.active = true
     local diag = { candidates = 0, moving = 0, stalled = 0, anchored = 0, settled = 0 }
     local maxRadius = math.max(tonumber(Config.BringRadius) or 300, 25)
     local wanted = quest.mob
     if State.FarmAny then wanted = nil end
-    local size = math.clamp(tonumber(Config.HitboxSize) or 35, 5, 80)
 
-    for _, mob in ipairs(folder:GetChildren()) do
-        if (not wanted or nameMatches(mob.Name, wanted)) and not State.Blacklist[mob] then
-            local hum = mob:FindFirstChildOfClass("Humanoid")
-            local part = mob:FindFirstChild("HumanoidRootPart")
-            if hum and part and hum.Health > 0 then
-                local distance = (part.Position - point).Magnitude
-                if distance <= maxRadius then
-                    diag.candidates += 1
-                    if part.Anchored then
-                        diag.anchored += 1
-                    else
-                        diag.moving += 1
-                        -- Đóng băng trạng thái tự nhiên, vô hiệu hóa AI di chuyển bậy của game
-                        pcall(function()
-                            hum.WalkSpeed = 0
-                            hum.JumpPower = 0
-                            hum.AutoRotate = false
-                            hum.PlatformStand = true
-                            part.CanCollide = false
-                            if Config.BringHitbox and part.Size.X < size then
-                                part.Size = Vector3.new(size, size, size)
+    -- Quét định kỳ, không quét lại hai lần mỗi frame.
+    if now - Bring.lastScan >= Bring.scanInterval then
+        Bring.lastScan = now
+        local seen = {}
+        local index = 0
+        for _, mob in ipairs(folder:GetChildren()) do
+            if (not wanted or nameMatches(mob.Name, wanted)) and not State.Blacklist[mob] then
+                local hum = mob:FindFirstChildOfClass("Humanoid")
+                local part = mob:FindFirstChild("HumanoidRootPart")
+                if hum and part and hum.Health > 0 and part:IsA("BasePart") then
+                    local distance = (part.Position - point).Magnitude
+                    if distance <= maxRadius then
+                        diag.candidates += 1
+                        seen[mob] = true
+                        if part.Anchored then
+                            diag.anchored += 1
+                        else
+                            index += 1
+                            local angle = index * 2.399
+                            local radius = math.min(index * 0.3, 3.5)
+                            local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+                            local targetPos = point + offset
+                            local record = Bring.records[mob]
+                            if not record or record.part ~= part or record.hum ~= hum then
+                                if record then restoreBringRecord(record) end
+                                record = captureBringRecord(mob, hum, part, targetPos, now)
+                                Bring.records[mob] = record
+                                applyBringHold(record)
+                            else
+                                record.targetPos = targetPos
+                                -- NPC đã được thả hoàn toàn thì không đụng lại khi vẫn ở điểm gom.
+                                if record.phase == "settled" and distance > Bring.settleRadius + 2 then
+                                    record.phase = "pulling"
+                                    record.pauseUntil = 0
+                                    applyBringHold(record)
+                                end
                             end
-                        end)
-                        table.insert(list, { hum, part, mob })
+                        end
                     end
                 end
             end
         end
-    end
-    Bring.list = list
-    State.BringDiagnostics = diag
-    State.BroughtCount = #list
-    Bring.why = "Bring Mob V5.7 (Lerp tiệm cận mượt)"
 
-    -- Áp dụng Lerp mượt mỗi frame tránh bị server kéo ngược
-    for index, entry in ipairs(list) do
-        local hum, part = entry[1], entry[2]
-        if part.Parent and hum.Health > 0 and not part.Anchored then
-            local angle = index * 2.399
-            local radius = math.min(index * 0.3, 3.5)
-            local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-            local targetPos = point + offset
-            
-            -- Nội suy tiệm cận mượt (Lerp 25% mỗi frame giúp quái trượt mượt mà, hạn chế desync)
-            local currentCF = part.CFrame
-            local goalCF = CFrame.new(targetPos)
-            part.CFrame = currentCF:Lerp(goalCF, 0.25)
-            
-            -- Triệt tiêu quán tính vật lý
-            part.AssemblyLinearVelocity = Vector3.zero
-            part.AssemblyAngularVelocity = Vector3.zero
+        Bring.lastCandidateCount = diag.candidates
+        Bring.lastAnchoredCount = diag.anchored
+
+        -- NPC chết, bị xóa hoặc rời vùng quét: khôi phục và bỏ quản lý.
+        for mob, record in pairs(Bring.records) do
+            if not seen[mob] then
+                restoreBringRecord(record)
+                Bring.records[mob] = nil
+            end
         end
     end
+
+    local activeList = {}
+    for mob, record in pairs(Bring.records) do
+        local hum, part = record.hum, record.part
+        if not mob.Parent or not hum.Parent or not part.Parent or hum.Health <= 0 or part.Anchored then
+            restoreBringRecord(record)
+            Bring.records[mob] = nil
+        else
+            local distance = (part.Position - record.targetPos).Magnitude
+            if record.phase ~= "settled" and distance <= Bring.settleRadius then
+                record.phase = "settled"
+                restoreBringRecord(record)
+                diag.settled += 1
+            elseif record.phase == "settled" then
+                diag.settled += 1
+            elseif record.phase == "pause" then
+                diag.stalled += 1
+                if now >= record.pauseUntil then
+                    record.phase = "pulling"
+                end
+            elseif record.phase == "pulling" then
+                diag.moving += 1
+                -- Mỗi chu kỳ chỉ tiến một đoạn ngắn; trong thời gian pause không ghi CFrame.
+                local delta = record.targetPos - part.Position
+                local length = delta.Magnitude
+                if length > Bring.settleRadius then
+                    local stepLength = math.min(Bring.segmentDistance, length)
+                    local nextPosition = part.Position + delta.Unit * stepLength
+                    pcall(function()
+                        part.CFrame = CFrame.new(nextPosition) * (part.CFrame - part.Position)
+                        part.AssemblyLinearVelocity = Vector3.zero
+                        part.AssemblyAngularVelocity = Vector3.zero
+                    end)
+                    record.phase = "pause"
+                    record.pauseUntil = now + Bring.pauseDuration
+                else
+                    record.phase = "settled"
+                    restoreBringRecord(record)
+                    diag.settled += 1
+                end
+            end
+            table.insert(activeList, { hum, part, mob })
+        end
+    end
+
+    Bring.list = activeList
+    diag.candidates = Bring.lastCandidateCount
+    diag.anchored = Bring.lastAnchoredCount
+    State.BroughtCount = #activeList
+    State.BringDiagnostics = diag
+    Bring.why = "Bring Mob V5.8 (kéo từng đoạn / tạm nhả / settled)"
 end
 
-connect(RunService.Stepped, bringStep)
-connect(RunService.Heartbeat, bringStep)
-end
+-- Chỉ dùng một vòng Heartbeat để tránh gọi bringStep hai lần mỗi frame.
+connect(RunService.Heartbeat, function(dt)
+    pcall(bringStep, dt)
+end)
 
 ------------------------------------------------------------------
 -- VÒNG LẶP AUTO FARM
