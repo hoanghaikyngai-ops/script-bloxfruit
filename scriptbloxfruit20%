@@ -3144,10 +3144,9 @@ end
 ------------------------------------------------------------------
 ; (function()
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-local AI_MODEL = "claude-sonnet-5-5"
-local AIKey = "" -- chỉ giữ trong RAM, không lưu file
+local AI_MODEL = "gemini-1.5-flash"
+local AIKey = "AQ.Ab8RN6KCW-AQ8vX5vZh7wmMWiLjx3l_1v-peelX_b1uH9TkUZA" -- API key mặc định được giấu trong RAM
 local Agent = { Running = false, Goal = "", Plan = "", History = {}, Steps = 0, MaxSteps = 60 }
-
 local AllowedRemote = {
     StartQuest = true, AbandonQuest = true, Buso = true,
     ZQuestProgress = true, DressrosaQuestProgress = true,
@@ -3293,24 +3292,53 @@ end
 ---------------- GỌI API ----------------
 local function sendClaude(body)
     if not httpRequest then return nil, "executor không có request()" end
+    
+    local promptText = ""
+    if body.system then
+        promptText = body.system .. "\n\n"
+    end
+    if body.messages and body.messages[1] then
+        promptText = promptText .. body.messages[1].content
+    end
+
+    local geminiBody = {
+        contents = {
+            {
+                parts = {
+                    { text = promptText }
+                }
+            }
+        }
+    }
+
     local ok, res = pcall(function()
         return httpRequest({
-            Url = "https://api.anthropic.com/v1/messages",
+            Url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" .. AIKey,
             Method = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
-                ["x-api-key"] = AIKey,
-                ["anthropic-version"] = "2023-06-01",
             },
-            Body = HttpService:JSONEncode(body),
+            Body = HttpService:JSONEncode(geminiBody),
         })
     end)
+    
     if not ok or not res then return nil, tostring(res) end
     if res.StatusCode ~= 200 then
         return nil, tostring(res.StatusCode) .. " " .. tostring(res.Body):sub(1, 140)
     end
+    
     local okJson, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
     if not okJson then return nil, "JSON lỗi" end
+    
+    if data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts[1] then
+        local textContent = data.candidates[1].content.parts[1].text
+        return {
+            content = {
+                { type = "text", text = textContent }
+            }
+        }
+    end
+    
     return data
 end
 
