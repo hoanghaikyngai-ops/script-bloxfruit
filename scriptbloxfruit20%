@@ -675,7 +675,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.4 FUTURE",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.5 FUTURE",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -744,7 +744,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v5.4  |  Đang khởi động...",
+    Text = "H-HUB v5.5  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -1766,6 +1766,8 @@ State.StartLevel = getLevel()
 -- Các bước đòi hỏi quyết định của người chơi (đưa trái >1 triệu Beli cho Trevor để vào phòng
 -- Don Swan, bấm 8 nút ở nhà tù Colosseum) KHÔNG tự động hóa - làm tay rồi bật Auto Sea.
 ------------------------------------------------------------------
+local seaChainStep
+do
 local SeaChain = {
     sea = 0, lastTalk = 0, lastTravel = 0, bossSeen = false, bossDone = false,
     waitSince = nil, lastNotice = 0,
@@ -1837,7 +1839,7 @@ local function fightBoss(mob, root)
 end
 
 -- Trả về true nếu chuỗi đang điều khiển bước này (farm thường bị bỏ qua)
-local function seaChainStep(root)
+function seaChainStep(root)
     local level, sea, now = getLevel(), getSea(), os.clock()
     if SeaChain.sea ~= sea then
         SeaChain.sea = sea
@@ -1900,6 +1902,7 @@ local function seaChainStep(root)
         return false
     end
     return false
+end
 end
 
 local function serverHop(reason)
@@ -1998,6 +2001,7 @@ local AggroTracker = {
     Diagnostics = { total = 0, approaching = 0, stationary = 0, departing = 0, unknown = 0, closest = "--" },
 }
 
+do
 local function aggroTrackerStep()
     if not State.Running then return end
     local now = os.clock()
@@ -2050,7 +2054,7 @@ connect(RunService.Heartbeat, function()
     local ok, err = pcall(aggroTrackerStep)
     if not ok then warn("[H-HUB AggroTracker] " .. tostring(err)) end
 end)
-
+end
 ------------------------------------------------------------------
 -- GOM QUÁI V5 (KÉO LIÊN TỤC MỖI FRAME, CHẠY ĐỒNG THỜI VỚI ĐÁNH)
 --   * Mở SimulationRadius vô hạn để máy bạn giữ quyền vật lý của quái gần đó.
@@ -2085,6 +2089,8 @@ local function resetBringLearning()
     Bring.why = "đã làm mới"
 end
 
+local needVerify, blacklistPulled
+do
 -- "An toàn": chỉ kéo quái máy bạn đã sở hữu vật lý (isnetworkowner) -> luôn đồng bộ server.
 -- "Xác minh": kéo tất cả, nhưng quái bị kéo ~4s mà không mất máu (trong khi quái khác đang mất máu)
 --             sẽ bị trả về vị trí cũ + loại khỏi danh sách (tránh quái "bất tử" do lệch server).
@@ -2098,7 +2104,7 @@ local function ownsPart(part)
     return true
 end
 
-local function needVerify()
+function needVerify()
     return Config.BringMode == "Xác minh" or (Config.BringMode == "An toàn" and not isnetworkowner)
 end
 
@@ -2121,7 +2127,7 @@ local function checkBringGiveUp()
     end
 end
 
-local function blacklistPulled(reason)
+function blacklistPulled(reason)
     local count = 0
     for _, entry in ipairs(Bring.list) do
         local model = entry[3]
@@ -2260,6 +2266,7 @@ local function bringStep()
 end
 connect(RunService.Stepped, bringStep)
 connect(RunService.Heartbeat, bringStep)
+end
 
 ------------------------------------------------------------------
 -- VÒNG LẶP AUTO FARM
@@ -2576,6 +2583,8 @@ end)
 ------------------------------------------------------------------
 -- TÍNH NĂNG MỚI (PHẦN 2): SKILL / STATS / CHEST / TRÁI / STORE / REJOIN
 ------------------------------------------------------------------
+local clearFruitMarks
+do
 -- Auto Stats
 task.spawn(function()
     while State.Running do
@@ -2640,7 +2649,7 @@ local function findFruits()
 end
 
 local FruitMarks = {}
-local function clearFruitMarks()
+function clearFruitMarks()
     for obj, mark in pairs(FruitMarks) do
         pcall(function() mark:Destroy() end)
         FruitMarks[obj] = nil
@@ -2828,7 +2837,7 @@ connect(LocalPlayer.CharacterAdded, function()
     State.TargetMob = nil
     State.Busy = nil
 end)
-
+end
 ------------------------------------------------------------------
 -- HALLOWEEN: AUTO THU BÍ NGÔ
 ------------------------------------------------------------------
@@ -3101,7 +3110,9 @@ end
 
 
 -- ===== Bảng nổi tách rời: nhạc + nhiệm vụ + quái đang gom + khoảng cách + visualizer =====
-local MusicPanel = make("Frame", {
+local MusicPanel
+do
+MusicPanel = make("Frame", {
     Name = "MusicPanel",
     Size = UDim2.fromOffset(350, 214),
     Position = UDim2.new(1, -366, 0, 60),
@@ -3300,10 +3311,11 @@ task.spawn(function()
         task.wait(0.4)
     end
 end)
-
+end
 ------------------------------------------------------------------
 -- CÁC TAB GIAO DIỆN
 ------------------------------------------------------------------
+local Info = {}
 local OverviewPage = addTab("Tổng quan", "◈")
 local FarmPage = addTab("Auto Farm", "⚔")
 local FeaturePage = addTab("Tính năng", "✦")
@@ -3323,16 +3335,16 @@ end
 -- ===== TỔNG QUAN =====
 addSection(OverviewPage, "PLAYER MONITOR")
 local setLevelProgress = addProgress(OverviewPage, "TIẾN ĐỘ LEVEL → MỤC TIÊU")
-local LevelInfo = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
-local HealthInfo = addInfo(OverviewPage, "MÁU", "Đang đọc...")
-local ToolInfo = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
-local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
-local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
-local AttackInfo = addInfo(OverviewPage, "ĐÁNH", "--")
-local BringInfo = addInfo(OverviewPage, "BRING MOB (K kéo / D đứng / A khóa / G đã gom)", "--")
-local AggroInfo = addInfo(OverviewPage, "AGGRO TRACKER (ước lượng chuyển động)", "Đang đo...")
-local SessionInfo = addInfo(OverviewPage, "PHIÊN FARM", "--")
-local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
+Info.Level = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
+Info.Health = addInfo(OverviewPage, "MÁU", "Đang đọc...")
+Info.Tool = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
+Info.Quest = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
+Info.Status = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
+Info.Attack = addInfo(OverviewPage, "ĐÁNH", "--")
+Info.Bring = addInfo(OverviewPage, "BRING MOB (K kéo / D đứng / A khóa / G đã gom)", "--")
+Info.Aggro = addInfo(OverviewPage, "AGGRO TRACKER (ước lượng chuyển động)", "Đang đo...")
+Info.Session = addInfo(OverviewPage, "PHIÊN FARM", "--")
+Info.Network = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
 
 -- ===== AUTO FARM =====
 addSection(FarmPage, "AUTO FARM")
@@ -3410,7 +3422,7 @@ addToggle(FeaturePage, "Fruit ESP + thông báo khi có trái", Config.FruitESP,
 addToggle(FeaturePage, "Auto nhặt rương", false, function(v)
     Config.AutoChest = v
 end, "AutoChest")
-local FruitInfo = addInfo(FeaturePage, "TRÁI / RƯƠNG TRONG SERVER", "--")
+Info.Fruit = addInfo(FeaturePage, "TRÁI / RƯƠNG TRONG SERVER", "--")
 
 -- ===== THÔNG SỐ =====
 addSection(TunePage, "THÔNG SỐ AUTO FARM")
@@ -3436,7 +3448,7 @@ addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
 end, "AutoPumpkin")
 addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
 addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
-local PumpkinInfo = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
+Info.Pumpkin = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
 
 -- ===== HIỆU NĂNG =====
 addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
@@ -3529,39 +3541,39 @@ task.spawn(function()
             local level = getLevel()
             local target = Config.TargetLevel > 0 and Config.TargetLevel or 2800
             setLevelProgress(level / target, string.format("%d / %d  (%.1f%%)", level, target, math.min(level / target, 1) * 100))
-            LevelInfo.Text = string.format("Level %d  |  Sea %d", level, getSea())
+            Info.Level.Text = string.format("Level %d  |  Sea %d", level, getSea())
             local humanoid = getHumanoid()
-            HealthInfo.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
-            ToolInfo.Text = getEquippedToolName()
+            Info.Health.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
+            Info.Tool.Text = getEquippedToolName()
             local quest = State.Quest or currentQuest()
-            QuestInfo.Text = State.FarmAny and "Chế độ quái gần nhất (không dùng quest)" or questLabel(quest)
-            StatusInfo.Text = State.Status
-            AttackInfo.Text = string.format("%s | Click chờ key: %s | Multi-Hit: %s | Key: %s",
+            Info.Quest.Text = State.FarmAny and "Chế độ quái gần nhất (không dùng quest)" or questLabel(quest)
+            Info.Status.Text = State.Status
+            Info.Attack.Text = string.format("%s | Click chờ key: %s | Multi-Hit: %s | Key: %s",
                 Config.AttackMode,
                 (Config.AutoFarm and not State.KeyLearned) and "ON" or "OFF",
                 Config.MultiHit and "ON" or "OFF",
                 State.KeyLearned and "đã học" or "chưa có")
             local bd = State.BringDiagnostics or {}
-            BringInfo.Text = string.format("K:%d  D:%d  A:%d  G:%d  /  %d quái  |  %s",
+            Info.Bring.Text = string.format("K:%d  D:%d  A:%d  G:%d  /  %d quái  |  %s",
                 bd.moving or 0, bd.stalled or 0, bd.anchored or 0, bd.settled or 0, bd.candidates or 0, Bring.why)
             local ad = AggroTracker.Diagnostics or {}
-            AggroInfo.Text = string.format("Tiến gần:%d | Đứng:%d | Rời xa:%d | Chưa rõ:%d | Tổng:%d | Gần nhất: %s",
+            Info.Aggro.Text = string.format("Tiến gần:%d | Đứng:%d | Rời xa:%d | Chưa rõ:%d | Tổng:%d | Gần nhất: %s",
                 ad.approaching or 0, ad.stationary or 0, ad.departing or 0, ad.unknown or 0, ad.total or 0, ad.closest or "--")
             local elapsed, gained, perHour, eta = sessionSummary()
-            SessionInfo.Text = string.format("%s | hạ %d quái | +%d level (%.1f/giờ) | ETA: %s",
+            Info.Session.Text = string.format("%s | hạ %d quái | +%d level (%.1f/giờ) | ETA: %s",
                 formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
             local ping = ""
             pcall(function()
                 ping = string.format("%d ms  |  ", math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()))
             end)
-            NetworkInfo.Text = ping .. State.FPS .. " FPS"
-            PumpkinInfo.Text = State.PumpkinStatus
-            FruitInfo.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.4  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
+            Info.Network.Text = ping .. State.FPS .. " FPS"
+            Info.Pumpkin.Text = State.PumpkinStatus
+            Info.Fruit.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
+            Footer.Text = string.format("H-HUB v5.5  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-notify("H-HUB v5.4", "Đã khởi động - RightShift để ẩn/hiện menu")
-print("[H-HUB] Companion v5.4 FUTURE đã khởi động thành công!")
+notify("H-HUB v5.5", "Đã khởi động - RightShift để ẩn/hiện menu")
+print("[H-HUB] Companion v5.5 FUTURE đã khởi động thành công!")
