@@ -1,7 +1,7 @@
 --[[
-    H-HUB // BLOX FRUITS COMPANION v5.1  -  FUTURE EDITION
+    H-HUB // BLOX FRUITS COMPANION v5.2  -  FUTURE EDITION
     - Giao diện mới: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
-    - Bring Mob V5: kéo quái liên tục MỖI FRAME, đồng thời với đánh (Multi-Hit), có chẩn đoán
+    - Bring Mob V5 giữ nguyên; thêm Aggro Tracker chỉ quan sát chuyển động NPC
     - Farm Level tới 2800 (có quest Tiki Outpost + Submerged Island), tự dừng khi đạt level mục tiêu
     - Tính năng mới: Auto Skill, Auto Sea, Auto Stats, Server Hop, Auto Chest, Auto Fruit,
       Auto Store, Fruit ESP, Auto Ken, Fullbright, Auto Rejoin, thống kê phiên + ETA
@@ -1977,6 +1977,80 @@ connect(RunService.Stepped, bringStep)
 connect(RunService.Heartbeat, bringStep)
 
 ------------------------------------------------------------------
+-- AGGRO TRACKER v5.2 (CHỈ QUAN SÁT, KHÔNG ĐIỀU KHIỂN AI SERVER)
+-- Ước lượng NPC đang tiến gần / đứng yên / rời xa bằng biến thiên khoảng cách.
+-- Đây KHÔNG phải xác nhận server đã chọn người chơi làm mục tiêu.
+------------------------------------------------------------------
+local AggroTracker = {
+    LastScan = 0,
+    Interval = 0.5,
+    MaxDistance = 2500,
+    ApproachDelta = 1.5,
+    StillDelta = 0.75,
+    History = setmetatable({}, { __mode = "k" }),
+    Diagnostics = { total = 0, approaching = 0, stationary = 0, departing = 0, unknown = 0, closest = "--" },
+}
+
+local function aggroTrackerStep()
+    if not State.Running then return end
+    local now = os.clock()
+    if now - AggroTracker.LastScan < AggroTracker.Interval then return end
+    AggroTracker.LastScan = now
+
+    local character = LocalPlayer.Character
+    local playerRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local folder = Workspace:FindFirstChild("Enemies")
+    if not playerRoot or not folder then
+        AggroTracker.Diagnostics = { total = 0, approaching = 0, stationary = 0, departing = 0, unknown = 0, closest = "Chưa có dữ liệu" }
+        return
+    end
+
+    local d = { total = 0, approaching = 0, stationary = 0, departing = 0, unknown = 0, closest = "--" }
+    local closestDistance = math.huge
+    local rows = {}
+    for _, npc in ipairs(folder:GetChildren()) do
+        local hum = npc:FindFirstChildOfClass("Humanoid")
+        local root = npc:FindFirstChild("HumanoidRootPart")
+        if hum and hum.Health > 0 and root and root:IsA("BasePart") then
+            local distance = (root.Position - playerRoot.Position).Magnitude
+            if distance <= AggroTracker.MaxDistance then
+                d.total += 1
+                local old = AggroTracker.History[npc]
+                local state = "unknown"
+                if old then
+                    local delta = old.distance - distance
+                    if delta >= AggroTracker.ApproachDelta then
+                        state = "approaching"
+                        d.approaching += 1
+                    elseif delta <= -AggroTracker.ApproachDelta then
+                        state = "departing"
+                        d.departing += 1
+                    elseif math.abs(delta) <= AggroTracker.StillDelta then
+                        state = "stationary"
+                        d.stationary += 1
+                    else
+                        d.unknown += 1
+                    end
+                else
+                    d.unknown += 1
+                end
+                AggroTracker.History[npc] = { distance = distance, at = now }
+                if distance < closestDistance then
+                    closestDistance = distance
+                    d.closest = string.format("%s: %.0f studs", npc.Name, distance)
+                end
+                rows[#rows + 1] = { name = npc.Name, distance = distance, state = state }
+            end
+        end
+    end
+    AggroTracker.Diagnostics = d
+end
+connect(RunService.Heartbeat, function()
+    local ok, err = pcall(aggroTrackerStep)
+    if not ok then warn("[H-HUB AggroTracker] " .. tostring(err)) end
+end)
+
+------------------------------------------------------------------
 -- VÒNG LẶP AUTO FARM
 ------------------------------------------------------------------
 local lastHaki = 0
@@ -3033,6 +3107,7 @@ local QuestInfo = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
 local StatusInfo = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
 local AttackInfo = addInfo(OverviewPage, "ĐÁNH", "--")
 local BringInfo = addInfo(OverviewPage, "BRING MOB (K kéo / D đứng / A khóa / G đã gom)", "--")
+local AggroInfo = addInfo(OverviewPage, "AGGRO TRACKER (ước lượng chuyển động)", "Đang đo...")
 local SessionInfo = addInfo(OverviewPage, "PHIÊN FARM", "--")
 local NetworkInfo = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
 
@@ -3244,6 +3319,9 @@ task.spawn(function()
             local bd = State.BringDiagnostics or {}
             BringInfo.Text = string.format("K:%d  D:%d  A:%d  G:%d  /  %d quái",
                 bd.moving or 0, bd.stalled or 0, bd.anchored or 0, bd.settled or 0, bd.candidates or 0)
+            local ad = AggroTracker.Diagnostics or {}
+            AggroInfo.Text = string.format("Tiến gần:%d | Đứng:%d | Rời xa:%d | Chưa rõ:%d | Tổng:%d\nGần nhất: %s",
+                ad.approaching or 0, ad.stationary or 0, ad.departing or 0, ad.unknown or 0, ad.total or 0, ad.closest or "--")
             local elapsed, gained, perHour, eta = sessionSummary()
             SessionInfo.Text = string.format("%s | hạ %d quái | +%d level (%.1f/giờ) | ETA: %s",
                 formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
@@ -3254,11 +3332,11 @@ task.spawn(function()
             NetworkInfo.Text = ping .. State.FPS .. " FPS"
             PumpkinInfo.Text = State.PumpkinStatus
             FruitInfo.Text = string.format("%d trái ác quỷ  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.1  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
+            Footer.Text = string.format("H-HUB v5.2  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-notify("H-HUB v5.1", "Đã khởi động - RightShift để ẩn/hiện menu")
-print("[H-HUB] Companion v5.1 FUTURE đã khởi động thành công!")
+notify("H-HUB v5.2", "Đã khởi động - RightShift để ẩn/hiện menu")
+print("[H-HUB] Companion v5.2 FUTURE đã khởi động thành công!")
