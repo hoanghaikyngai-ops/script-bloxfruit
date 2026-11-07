@@ -1,10 +1,11 @@
 --[[
-    H-HUB // GAME COMPANION v5.8 - BRING MOB STATE FIX
+    H-HUB // GAME COMPANION v5.11 - AI AGENT
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
-    - Bring Mob V5.7: Kéo mượt bằng Lerp tiệm cận, khóa vật lý/PlatformStand, không bị kéo ngược
+    - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
     - Auto Collect Pumpkin: có click màn hình + Activate + RegisterAttack
     - Aggro Tracker (chỉ quan sát), Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
+    - AI Agent (Claude API): quan sát -> quyết định -> hành động (whitelist), bảng AI luân phiên với bảng nhạc
 ]]
 
 if not game:IsLoaded() then
@@ -664,7 +665,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.7 FUTURE",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.11 AI",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -732,7 +733,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v5.7  |  Đang khởi động...",
+    Text = "H-HUB v5.11  |  Đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -2024,8 +2025,8 @@ local Bring = {
     active = false,
     why = "chưa chạy",
     scanInterval = 0.25,
-    segmentDistance = 6,       -- Mỗi nhịp chỉ di chuyển một đoạn ngắn
-    pauseDuration = 0.14,      -- Nhả CFrame giữa các nhịp kéo
+    segmentDistance = 0.12,    -- Mỗi lần chỉ nhích 0,12 studs để chuyển động rất nhỏ
+    pauseDuration = 0.02,      -- Tạm nhả ngắn giữa các lần nhích
     settleRadius = 4.5,        -- Đến đủ gần điểm gom thì ngừng can thiệp
 }
 
@@ -2242,7 +2243,7 @@ local function bringStep(dt)
     diag.anchored = Bring.lastAnchoredCount
     State.BroughtCount = #activeList
     State.BringDiagnostics = diag
-    Bring.why = "Bring Mob V5.8 (kéo từng đoạn / tạm nhả / settled)"
+    Bring.why = "Bring Mob V5.10 (micro-step 0.12 studs / tạm nhả / settled)"
 end
 
 -- Chỉ dùng một vòng Heartbeat để tránh gọi bringStep hai lần mỗi frame.
@@ -2955,7 +2956,7 @@ end
 ------------------------------------------------------------------
 -- BẢNG NHẠC NỔI
 ------------------------------------------------------------------
-local MusicPanel
+local MusicPanel, AIPanel, setPanel, togglePanel
 do
 MusicPanel = make("Frame", {
     Name = "MusicPanel",
@@ -3139,6 +3140,553 @@ end)
 end
 
 ------------------------------------------------------------------
+-- BẢNG AI AGENT + DOCK (AI luân phiên với bảng nhạc)
+------------------------------------------------------------------
+; (function()
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+local AI_MODEL = "claude-sonnet-5-5"
+local AIKey = "" -- chỉ giữ trong RAM, không lưu file
+local Agent = { Running = false, Goal = "", Plan = "", History = {}, Steps = 0, MaxSteps = 60 }
+
+local AllowedRemote = {
+    StartQuest = true, AbandonQuest = true, Buso = true,
+    ZQuestProgress = true, DressrosaQuestProgress = true,
+    TravelDressrosa = true, TravelZou = true, TravelMain = true,
+}
+
+---------------- GIAO DIỆN BẢNG AI ----------------
+AIPanel = make("Frame", {
+    Name = "AIPanel",
+    Size = MusicPanel.Size,
+    Position = MusicPanel.Position,
+    BackgroundColor3 = Colors.Background,
+    BackgroundTransparency = 0.38,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    Visible = false,
+}, Gui)
+round(AIPanel, 12)
+table.insert(State.AvoidFrames, AIPanel)
+neonBorder(AIPanel, 2, 4.2)
+make("UIGradient", {
+    Color = ColorSequence.new(Color3.fromRGB(2, 5, 12), Color3.fromRGB(5, 22, 52)),
+    Rotation = 90,
+}, AIPanel)
+
+local AITop = make("Frame", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundColor3 = Colors.Panel,
+    BackgroundTransparency = 0.55,
+    BorderSizePixel = 0,
+}, AIPanel)
+local AITitle = make("TextLabel", {
+    Position = UDim2.fromOffset(12, 0),
+    Size = UDim2.new(1, -80, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "✧  H-HUB AI AGENT  ·  kéo để di chuyển",
+    TextColor3 = Colors.Accent,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, AITop)
+trackNeon(AITitle)
+
+local AISwap = make("TextButton", {
+    Text = "♪",
+    Size = UDim2.fromOffset(26, 20),
+    Position = UDim2.new(1, -58, 0, 4),
+    BackgroundColor3 = Colors.Blue,
+    BackgroundTransparency = 0.35,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    BorderSizePixel = 0,
+}, AITop)
+round(AISwap, 5)
+local AIClose = make("TextButton", {
+    Text = "X",
+    Size = UDim2.fromOffset(22, 20),
+    Position = UDim2.new(1, -28, 0, 4),
+    BackgroundColor3 = Color3.fromRGB(190, 50, 70),
+    BackgroundTransparency = 0.35,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    BorderSizePixel = 0,
+}, AITop)
+round(AIClose, 5)
+makeDraggable(AITop, AIPanel)
+
+local AnswerBox = make("ScrollingFrame", {
+    Position = UDim2.fromOffset(10, 34),
+    Size = UDim2.new(1, -20, 0, 86),
+    BackgroundColor3 = Colors.Panel,
+    BackgroundTransparency = 0.55,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Colors.Accent,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, AIPanel)
+round(AnswerBox, 8)
+local AnswerLabel = make("TextLabel", {
+    Position = UDim2.fromOffset(6, 4),
+    Size = UDim2.new(1, -12, 0, 0),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    Text = "Dán API key, rồi nhập mục tiêu (VD: lấy Sea 2).",
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+}, AnswerBox)
+
+local StatusLabel = make("TextLabel", {
+    Position = UDim2.fromOffset(12, 188),
+    Size = UDim2.new(1, -24, 0, 16),
+    BackgroundTransparency = 1,
+    Text = "AI: chờ lệnh",
+    TextColor3 = Colors.Muted,
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+}, AIPanel)
+
+local function setAnswer(text)
+    AnswerLabel.Text = tostring(text)
+    AnswerBox.CanvasPosition = Vector2.new(0, 0)
+end
+local function setStatus(text)
+    StatusLabel.Text = tostring(text)
+end
+
+local function panelBox(y, placeholder, widthOffset, onEnter)
+    local box = make("TextBox", {
+        Position = UDim2.fromOffset(10, y),
+        Size = UDim2.new(1, widthOffset, 0, 24),
+        BackgroundColor3 = Colors.Background,
+        BackgroundTransparency = 0.3,
+        Text = "",
+        PlaceholderText = placeholder,
+        PlaceholderColor3 = Colors.Muted,
+        TextColor3 = Colors.Text,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        BorderSizePixel = 0,
+    }, AIPanel)
+    round(box, 6)
+    stroke(box, Colors.Accent, 1, 0.55)
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed and box.Text ~= "" then
+            onEnter(box)
+        end
+    end)
+    return box
+end
+
+---------------- GỌI API ----------------
+local function sendClaude(body)
+    if not httpRequest then return nil, "executor không có request()" end
+    local ok, res = pcall(function()
+        return httpRequest({
+            Url = "https://api.anthropic.com/v1/messages",
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["x-api-key"] = AIKey,
+                ["anthropic-version"] = "2023-06-01",
+            },
+            Body = HttpService:JSONEncode(body),
+        })
+    end)
+    if not ok or not res then return nil, tostring(res) end
+    if res.StatusCode ~= 200 then
+        return nil, tostring(res.StatusCode) .. " " .. tostring(res.Body):sub(1, 140)
+    end
+    local okJson, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
+    if not okJson then return nil, "JSON lỗi" end
+    return data
+end
+
+---------------- QUAN SÁT ----------------
+local function findNearest(name)
+    local root = getRoot(getCharacter())
+    local character = getCharacter()
+    if not root then return nil end
+    local wanted, best, bestD = name:lower(), nil, math.huge
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if (obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Tool"))
+            and obj.Name:lower():find(wanted, 1, true)
+            and not (character and obj:IsDescendantOf(character)) then
+            local pos = objPos(obj)
+            if not pos and obj:IsA("Tool") then
+                local h = obj:FindFirstChild("Handle")
+                pos = h and h.Position
+            end
+            if pos then
+                local d = (pos - root.Position).Magnitude
+                if d < bestD then best, bestD = { obj = obj, pos = pos }, d end
+            end
+        end
+    end
+    return best
+end
+
+local function perceive()
+    local root = getRoot(getCharacter())
+    local hum = getHumanoid()
+    if not root or not hum then return "Nhân vật chưa spawn." end
+    local o = {
+        pos = string.format("%.0f, %.0f, %.0f", root.Position.X, root.Position.Y, root.Position.Z),
+        hp = math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth),
+        level = getLevel(), sea = getSea(), tool = getEquippedToolName(),
+        questUI = questText() or "không có",
+        enemies = {}, npcs = {}, prompts = {},
+    }
+    local list = scanEnemies(nil)
+    for i = 1, math.min(8, #list) do
+        o.enemies[#o.enemies + 1] = string.format("%s (%d studs, hp %d)", list[i].Name, math.floor(list[i].Distance), math.floor(list[i].Health))
+    end
+    local npcFolder = Workspace:FindFirstChild("NPCs")
+    if npcFolder then
+        for _, n in ipairs(npcFolder:GetChildren()) do
+            local p = objPos(n)
+            if p and #o.npcs < 8 then
+                local d = (p - root.Position).Magnitude
+                if d < 600 then
+                    o.npcs[#o.npcs + 1] = string.format("%s (%d studs)", n.Name, math.floor(d))
+                end
+            end
+        end
+    end
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if #o.prompts >= 6 then break end
+        if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
+            and (d.Parent.Position - root.Position).Magnitude < 120 then
+            o.prompts[#o.prompts + 1] = d.Parent.Name .. " / " .. d.ActionText
+        end
+    end
+    return HttpService:JSONEncode(o)
+end
+
+---------------- HÀNH ĐỘNG (WHITELIST) ----------------
+local Actions = {}
+local function agentCond() return Agent.Running end
+
+function Actions.fly_to(a)
+    local root = getRoot(getCharacter())
+    if not root then return "chưa spawn" end
+    flyTo(root, CFrame.new(a.x, a.y, a.z), agentCond)
+    return "đã bay tới"
+end
+function Actions.fly_to_object(a)
+    local root = getRoot(getCharacter())
+    local f = findNearest(tostring(a.name))
+    if not root or not f then return "không tìm thấy " .. tostring(a.name) end
+    flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+    return "đã tới " .. tostring(a.name)
+end
+function Actions.pickup(a)
+    local root = getRoot(getCharacter())
+    local f = findNearest(tostring(a.name))
+    if not root or not f then return "không thấy " .. tostring(a.name) end
+    flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+    local part = f.obj:IsA("BasePart") and f.obj or f.obj:FindFirstChildWhichIsA("BasePart", true)
+    if part and firetouchinterest then
+        firetouchinterest(root, part, 0)
+        firetouchinterest(root, part, 1)
+    end
+    return "đã thử nhặt " .. tostring(a.name)
+end
+function Actions.use_prompt(a)
+    local root = getRoot(getCharacter())
+    if not root then return "chưa spawn" end
+    local wanted = tostring(a.name):lower()
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
+            and d.Parent.Name:lower():find(wanted, 1, true) then
+            flyTo(root, d.Parent.CFrame + Vector3.new(0, 3, 0), agentCond)
+            if fireproximityprompt then
+                fireproximityprompt(d)
+                return "đã kích hoạt prompt"
+            end
+            return "executor không có fireproximityprompt"
+        end
+    end
+    return "không thấy prompt " .. tostring(a.name)
+end
+function Actions.kill_mob(a)
+    local need, kills, target = tonumber(a.count) or 1, 0, nil
+    local deadline = os.clock() + (tonumber(a.timeout) or 40)
+    while Agent.Running and State.Running and os.clock() < deadline and kills < need do
+        local root = getRoot(getCharacter())
+        if not root then break end
+        local hum = target and target:FindFirstChildOfClass("Humanoid")
+        if not target or not target.Parent or not hum or hum.Health <= 0 then
+            if target then kills += 1 end
+            if kills >= need then break end
+            local list = scanEnemies(tostring(a.name))
+            target = list[1] and list[1].Model
+            if not target then break end
+        end
+        local part = target:FindFirstChild("HumanoidRootPart")
+        if part then
+            State.BossTarget = target
+            if Config.AutoEquip then equipWeapon() end
+            if Config.AutoHaki then ensureHaki() end
+            local above = part.Position + Vector3.new(0, currentHeight(), 0)
+            if (root.Position - above).Magnitude > 120 then
+                flyTo(root, CFrame.lookAt(above, part.Position), agentCond)
+            end
+            root.CFrame = CFrame.lookAt(above, part.Position)
+            root.AssemblyLinearVelocity = Vector3.zero
+            if not (State.KeyLearned and Config.HitKey ~= "") then
+                clickOnce()
+                screenClick()
+            end
+            attackMobs()
+        end
+        task.wait(0.1)
+    end
+    State.BossTarget = nil
+    return string.format("hạ %d/%d con %s", kills, need, tostring(a.name))
+end
+function Actions.call_remote(a)
+    local args = {}
+    for i, v in ipairs(a.args or {}) do
+        args[i] = tonumber(v) or v
+    end
+    local cmd = args[1]
+    if type(cmd) ~= "string" or not AllowedRemote[cmd] then
+        return "BỊ CHẶN: remote không nằm trong whitelist (" .. tostring(cmd) .. ")"
+    end
+    local commF = getCommF()
+    if not commF then return "không có CommF_" end
+    local ok, res = pcall(function() return commF:InvokeServer(table.unpack(args)) end)
+    return ok and ("kết quả: " .. tostring(res)) or ("lỗi: " .. tostring(res))
+end
+function Actions.wait(a)
+    task.wait(math.clamp(tonumber(a.seconds) or 1, 0.2, 10))
+    return "đã chờ"
+end
+
+local function schema(props, required)
+    return { type = "object", properties = props, required = required }
+end
+local ToolDefs = {
+    { name = "fly_to", description = "Bay tới tọa độ", input_schema = schema({ x = { type = "number" }, y = { type = "number" }, z = { type = "number" } }, { "x", "y", "z" }) },
+    { name = "fly_to_object", description = "Bay tới vật/NPC gần nhất theo tên", input_schema = schema({ name = { type = "string" } }, { "name" }) },
+    { name = "pickup", description = "Bay tới và nhặt vật theo tên", input_schema = schema({ name = { type = "string" } }, { "name" }) },
+    { name = "use_prompt", description = "Bay tới và kích hoạt ProximityPrompt theo tên vật chứa", input_schema = schema({ name = { type = "string" } }, { "name" }) },
+    { name = "kill_mob", description = "Đánh quái theo tên", input_schema = schema({ name = { type = "string" }, count = { type = "integer" }, timeout = { type = "number" } }, { "name" }) },
+    { name = "call_remote", description = "Gọi CommF_ (chỉ whitelist: StartQuest, AbandonQuest, Buso, ZQuestProgress, DressrosaQuestProgress, TravelDressrosa, TravelZou, TravelMain). args[1] là tên lệnh, các phần tử là chuỗi (số viết dạng chuỗi)", input_schema = schema({ args = { type = "array", items = { type = "string" } } }, { "args" }) },
+    { name = "wait", description = "Chờ vài giây", input_schema = schema({ seconds = { type = "number" } }, { "seconds" }) },
+    { name = "done", description = "Kết thúc: mục tiêu xong hoặc không thể tiếp tục", input_schema = schema({ summary = { type = "string" } }, { "summary" }) },
+}
+
+---------------- ĐIỀU KHIỂN AGENT ----------------
+local function stopAgent(msg)
+    Agent.Running = false
+    State.BossTarget = nil
+    State.ClusterPoint = nil
+    State.TargetMob = nil
+    if State.Busy == "AI Agent" then State.Busy = nil end
+    pcall(resetBring)
+    pcall(stopMovers)
+    setAnswer(msg or "AI đã dừng.")
+    setStatus("AI: chờ lệnh")
+end
+
+local function makePlan(goal)
+    local data, err = sendClaude({
+        model = AI_MODEL, max_tokens = 1500,
+        system = "Bạn lập kế hoạch cho một agent tự động trong Blox Fruits. Tìm trên web các bước chính xác của mục tiêu. Trả về danh sách bước ngắn, ghi rõ tên NPC, tên quái, tên vật phẩm, tên remote CommF_ nếu chắc chắn. Chỗ nào không chắc phải ghi 'KHÔNG CHẮC'.",
+        messages = { { role = "user", content = "Mục tiêu: " .. goal .. ". Sea hiện tại: " .. getSea() .. ", level " .. getLevel() } },
+        tools = { { type = "web_search_20250305", name = "web_search", max_uses = 4 } },
+    })
+    if not data then return nil, err end
+    local text = {}
+    for _, b in ipairs(data.content or {}) do
+        if b.type == "text" then text[#text + 1] = b.text end
+    end
+    return table.concat(text, "\n")
+end
+
+local function agentLoop()
+    while Agent.Running and State.Running and Agent.Steps < Agent.MaxSteps do
+        local hum = getHumanoid()
+        if not hum or hum.Health <= 0 then
+            setStatus("AI: chờ hồi sinh...")
+            task.wait(3)
+        end
+        Agent.Steps += 1
+        setStatus(string.format("AI: bước %d/%d - đang suy nghĩ...", Agent.Steps, Agent.MaxSteps))
+        local data, err = sendClaude({
+            model = AI_MODEL, max_tokens = 500,
+            system = "Bạn là agent điều khiển nhân vật Blox Fruits. Mỗi lượt gọi ĐÚNG MỘT tool. Mục tiêu: " .. Agent.Goal
+                .. "\nKế hoạch tham khảo (có thể sai):\n" .. Agent.Plan
+                .. "\nQuy tắc: không đoán tên remote ngoài whitelist; nếu kẹt 3 lượt liền hoặc máu dưới 30% thì gọi done.",
+            messages = { { role = "user", content = "Lịch sử:\n" .. table.concat(Agent.History, "\n") .. "\n\nQuan sát hiện tại:\n" .. perceive() } },
+            tools = ToolDefs,
+            tool_choice = { type = "any" },
+        })
+        if not Agent.Running then return end
+        if not data then stopAgent("Lỗi API: " .. tostring(err)) return end
+
+        local call
+        for _, b in ipairs(data.content or {}) do
+            if b.type == "tool_use" then call = b break end
+        end
+        if not call then stopAgent("AI không đưa ra hành động.") return end
+        if call.name == "done" then stopAgent("Xong: " .. tostring(call.input and call.input.summary)) return end
+
+        local fn = Actions[call.name]
+        local result = "tool không tồn tại"
+        local inputText = HttpService:JSONEncode(call.input or {})
+        if fn then
+            setAnswer(string.format("Bước %d: %s %s", Agent.Steps, call.name, inputText))
+            setStatus(string.format("AI: bước %d/%d - %s", Agent.Steps, Agent.MaxSteps, call.name))
+            local ok, r = pcall(fn, call.input or {})
+            result = ok and tostring(r) or ("lỗi: " .. tostring(r))
+        end
+        table.insert(Agent.History, string.format("#%d %s %s -> %s", Agent.Steps, call.name, inputText, result))
+        if #Agent.History > 8 then table.remove(Agent.History, 1) end
+        task.wait(0.3)
+    end
+    if Agent.Running then
+        stopAgent(Agent.Steps >= Agent.MaxSteps and "Đã hết giới hạn số bước." or "AI đã dừng.")
+    end
+end
+
+local function startAgent(goal)
+    if Agent.Running then return end
+    if AIKey == "" then setAnswer("Chưa nhập API key.") return end
+    if not httpRequest then setAnswer("Executor không hỗ trợ request().") return end
+    Agent.Running, Agent.Goal, Agent.Steps, Agent.History = true, goal, 0, {}
+    -- Tắt farm/pumpkin bằng công tắc để UI đồng bộ, rồi tạm dừng mọi vòng lặp khác
+    Config.AutoFarm, Config.AutoPumpkin = false, false
+    if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
+    if Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false, true) end
+    pcall(resetBring)
+    State.Busy = "AI Agent"
+    task.spawn(function()
+        setAnswer("Đang tìm kế hoạch trên web...")
+        setStatus("AI: lập kế hoạch...")
+        local plan, err = makePlan(goal)
+        if not Agent.Running then return end
+        if not plan then stopAgent("Không lập được kế hoạch: " .. tostring(err)) return end
+        Agent.Plan = plan
+        setAnswer("Kế hoạch:\n" .. plan:sub(1, 700))
+        task.wait(2)
+        agentLoop()
+    end)
+end
+
+---------------- Ô NHẬP + NÚT ----------------
+local KeyBox = panelBox(126, "API key (chỉ lưu RAM) + Enter", -20, function(box)
+    AIKey = (box.Text:gsub("%s", ""))
+    box.Text = ""
+    box.PlaceholderText = "Đã nhận key ••••" .. AIKey:sub(-4)
+    setAnswer("Đã nhận key. Nhập mục tiêu rồi Enter.")
+end)
+local GoalBox = panelBox(154, "Mục tiêu cho AI + Enter", -94, function(box)
+    local goal = box.Text
+    box.Text = ""
+    startAgent(goal)
+end)
+local StopBtn = make("TextButton", {
+    Text = "DỪNG",
+    Position = UDim2.new(1, -80, 0, 154),
+    Size = UDim2.fromOffset(70, 24),
+    BackgroundColor3 = Color3.fromRGB(130, 40, 60),
+    BackgroundTransparency = 0.3,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    BorderSizePixel = 0,
+}, AIPanel)
+round(StopBtn, 6)
+stroke(StopBtn, Colors.Accent, 1, 0.5)
+StopBtn.Activated:Connect(function()
+    if Agent.Running then stopAgent("Đã dừng bởi người dùng.") end
+end)
+
+---------------- DOCK + CHUYỂN BẢNG ----------------
+local PanelPos = MusicPanel.Position
+local LastPanel = "music"
+local DockButtons = {}
+
+local function paintDock()
+    if MusicPanel.Visible then LastPanel = "music" elseif AIPanel.Visible then LastPanel = "ai" end
+    for which, button in pairs(DockButtons) do
+        local active = (which == "music" and MusicPanel.Visible) or (which == "ai" and AIPanel.Visible)
+        button.TextColor3 = active and Colors.Accent or Colors.Muted
+        button.BackgroundTransparency = active and 0.05 or 0.45
+    end
+end
+
+function setPanel(which)
+    for _, p in ipairs({ MusicPanel, AIPanel }) do
+        if p.Visible then PanelPos = p.Position end
+    end
+    MusicPanel.Position, AIPanel.Position = PanelPos, PanelPos
+    MusicPanel.Visible = (which == "music")
+    AIPanel.Visible = (which == "ai")
+    paintDock()
+end
+
+function togglePanel(which)
+    local visible = (which == "music" and MusicPanel.Visible) or (which == "ai" and AIPanel.Visible)
+    setPanel(visible and nil or which)
+end
+
+local function dockButton(glyph, yOffset, which)
+    local button = make("TextButton", {
+        Size = UDim2.fromOffset(36, 36),
+        Position = UDim2.new(0, 17, 0.5, yOffset),
+        BackgroundColor3 = Colors.Background,
+        BackgroundTransparency = 0.45,
+        Text = glyph,
+        TextColor3 = Colors.Muted,
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        BorderSizePixel = 0,
+    }, Gui)
+    round(button, 18)
+    table.insert(State.AvoidFrames, button)
+    neonBorder(button, 1.5, yOffset * 0.05)
+    button.Activated:Connect(function() togglePanel(which) end)
+    DockButtons[which] = button
+end
+dockButton("♪", 30, "music")
+dockButton("✧", 72, "ai")
+
+AISwap.Activated:Connect(function() setPanel("music") end)
+AIClose.Activated:Connect(function() setPanel(nil) end)
+connect(MusicPanel:GetPropertyChangedSignal("Visible"), paintDock)
+connect(AIPanel:GetPropertyChangedSignal("Visible"), paintDock)
+
+connect(UserInputService.InputBegan, function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        if MusicPanel.Visible or AIPanel.Visible then
+            setPanel(nil)
+        else
+            setPanel(LastPanel)
+        end
+    end
+end)
+
+paintDock()
+end)()
+
+------------------------------------------------------------------
 -- CÁC TAB GIAO DIỆN
 ------------------------------------------------------------------
 local Info = {}
@@ -3167,7 +3715,7 @@ Info.Tool = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
 Info.Quest = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
 Info.Status = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
 Info.Attack = addInfo(OverviewPage, "ĐÁNH", "--")
-Info.Bring = addInfo(OverviewPage, "BRING MOB (Lerp tiệm cận mượt)", "--")
+Info.Bring = addInfo(OverviewPage, "BRING MOB (micro-step)", "--")
 Info.Aggro = addInfo(OverviewPage, "AGGRO TRACKER", "Đang đo...")
 Info.Session = addInfo(OverviewPage, "PHIÊN FARM", "--")
 Info.Network = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
@@ -3196,7 +3744,7 @@ end, "AutoFarm")
 addCycle(FarmPage, "Chế độ farm", { "Level Quest", "Quái gần nhất" }, Config.FarmMode, bind("FarmMode"))
 addStepper(FarmPage, "Level mục tiêu (0 = không dừng)", 0, 2800, 50, Config.TargetLevel, bind("TargetLevel"))
 addToggle(FarmPage, "Auto Quest", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob V5.7 (Lerp mượt)", Config.BringMob, bind("BringMob"))
+addToggle(FarmPage, "Bring Mob (micro-step)", Config.BringMob, bind("BringMob"))
 addCycle(FarmPage, "Chế độ kéo quái", { "Cưỡng bức", "Dụ quái", "Không kéo" }, Config.BringMode, bind("BringMode"))
 addButton(FarmPage, "LÀM MỚI QUÁI BỊ BỎ QUA", resetBringLearning, Colors.Panel)
 addToggle(FarmPage, "Mở rộng hitbox quái", Config.BringHitbox, bind("BringHitbox"))
@@ -3300,11 +3848,18 @@ addToggle(MusicPage, "Phát / Tạm dừng", false, function(on)
 end)
 addStepper(MusicPage, "Âm lượng", 0, 10, 0.5, 1, function(v) MusicSound.Volume = v end)
 addInput(MusicPage, "Audio ID tùy chỉnh", "Dán ID...", function(text) playId(text) end)
-addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC", function() MusicPanel.Visible = not MusicPanel.Visible end, Colors.Panel)
+addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC", function() togglePanel("music") end, Colors.Panel)
 addSection(MusicPage, "PLAYLIST")
 for _, track in ipairs(MusicPlaylist) do
     addButton(MusicPage, track.Name, function() playId(track.Id, track.Name, track.From, track.To) end)
 end
+
+-- AI
+local AIMenuPage = addTab("AI", "✧")
+addSection(AIMenuPage, "BẢNG NỔI (AI / NHẠC)")
+addButton(AIMenuPage, "MỞ / ĐÓNG BẢNG AI", function() togglePanel("ai") end)
+addButton(AIMenuPage, "MỞ / ĐÓNG BẢNG NHẠC", function() togglePanel("music") end, Colors.Panel)
+addButton(AIMenuPage, "ẨN CẢ 2 BẢNG (RightControl)", function() setPanel(nil) end, Colors.Panel)
 
 selectTab("Tổng quan")
 if Config.FullBright then setFullbright(true) end
@@ -3339,7 +3894,7 @@ task.spawn(function()
             Info.Status.Text = State.Status
             Info.Attack.Text = string.format("%s | Key: %s", Config.AttackMode, State.KeyLearned and "Đã học" or "Chưa")
             local bd = State.BringDiagnostics or {}
-            Info.Bring.Text = string.format("Đang kéo: %d/%d con | Lerp mượt", bd.moving or 0, bd.candidates or 0)
+            Info.Bring.Text = string.format("Đang kéo: %d/%d con | micro-step", bd.moving or 0, bd.candidates or 0)
             local ad = AggroTracker.Diagnostics or {}
             Info.Aggro.Text = string.format("Tiến gần:%d | Đứng:%d | Tổng:%d", ad.approaching or 0, ad.stationary or 0, ad.total or 0)
             local elapsed, gained, perHour, eta = sessionSummary()
@@ -3347,11 +3902,11 @@ task.spawn(function()
             Info.Network.Text = State.FPS .. " FPS"
             Info.Pumpkin.Text = State.PumpkinStatus
             Info.Fruit.Text = string.format("%d trái  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.7  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
+            Footer.Text = string.format("H-HUB v5.11  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
         end)
         task.wait(0.5)
     end
 end)
 
-notify("H-HUB v5.7", "Đã cập nhật Bring Mob Lerp mượt không giật ngược!")
-print("[H-HUB] Companion v5.7 FUTURE (Optimized) đã khởi động thành công!")
+notify("H-HUB v5.11", "Đã thêm AI Agent! Bấm nút ✧ bên trái để mở bảng AI.")
+print("[H-HUB] Companion v5.11 AI đã khởi động thành công!")
