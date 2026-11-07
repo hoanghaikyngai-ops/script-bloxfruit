@@ -3617,20 +3617,16 @@ local function startAgent(goal)
 end
 
 ---------------- Ô NHẬP + NÚT ----------------
-local KeyBox = panelBox(126, "API key (chỉ lưu RAM) + Enter", -20, function(box)
-    AIKey = (box.Text:gsub("%s", ""))
-    box.Text = ""
-    box.PlaceholderText = "Đã nhận key ••••" .. AIKey:sub(-4)
-    setAnswer("Đã nhận key. Nhập mục tiêu rồi Enter.")
-end)
-local GoalBox = panelBox(154, "Mục tiêu cho AI + Enter", -94, function(box)
+-- Đã ẩn ô nhập API key vì đã được gắn sẵn mặc định ngầm trong RAM
+local GoalBox = panelBox(126, "Mục tiêu cho AI + Enter", -94, function(box)
     local goal = box.Text
     box.Text = ""
     startAgent(goal)
 end)
+
 local StopBtn = make("TextButton", {
     Text = "DỪNG",
-    Position = UDim2.new(1, -80, 0, 154),
+    Position = UDim2.new(1, -80, 0, 126), -- Dời nút dừng lên cùng hàng với ô mục tiêu
     Size = UDim2.fromOffset(70, 24),
     BackgroundColor3 = Color3.fromRGB(130, 40, 60),
     BackgroundTransparency = 0.3,
