@@ -3465,7 +3465,7 @@ MusicPanel = make("Frame", {
     BackgroundTransparency = 0.38,
     BorderSizePixel = 0,
     ClipsDescendants = true,
-    Visible = true,
+    Visible = false,
 }, Gui)
 round(MusicPanel, 12)
 table.insert(State.AvoidFrames, MusicPanel)
@@ -5004,6 +5004,7 @@ local pTele = newMainTab("Teleport", "➤")
 local pVisual = newMainTab("Hiển thị", "◉")
 local pSettings = newMainTab("Cài đặt", "⚙")
 local pAI = newMainTab("AI", "✧")
+local pMusic = newMainTab("Music", "♪")
 
 local tabFor = {
     AutoFarm=pFarm, AutoQuest=pFarm, AutoPumpkin=pFarm, AutoElite=pFarm, AutoBossList=pFarm,
@@ -5048,8 +5049,110 @@ for _, d in ipairs(FeatureDefs) do
         end)
     end
 end
+
+-- MUSIC TAB: playlist controls are placed directly in the main tab list.
+-- Custom track inputs (session-only playlist additions).
+local customMusicId = ""
+local customMusicName = ""
+local customIdBox = make("TextBox", {
+    Size = UDim2.new(1, -8, 0, 36),
+    BackgroundColor3 = Colors.Panel2,
+    BackgroundTransparency = 0.2,
+    Text = "",
+    PlaceholderText = "Nhập Sound ID (chỉ số, ví dụ 1234567890)",
+    PlaceholderColor3 = Colors.Muted,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    ClearTextOnFocus = false,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BorderSizePixel = 0,
+}, pMusic)
+customIdBox.FocusLost:Connect(function()
+    customMusicId = customIdBox.Text
+end)
+round(customIdBox, 8)
+local customNameBox = make("TextBox", {
+    Size = UDim2.new(1, -8, 0, 36),
+    BackgroundColor3 = Colors.Panel2,
+    BackgroundTransparency = 0.2,
+    Text = "",
+    PlaceholderText = "Tên bài hát (không bắt buộc)",
+    PlaceholderColor3 = Colors.Muted,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    ClearTextOnFocus = false,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BorderSizePixel = 0,
+}, pMusic)
+customNameBox.FocusLost:Connect(function()
+    customMusicName = customNameBox.Text
+end)
+round(customNameBox, 8)
+addButton(pMusic, "▶ PHÁT ID TỰ NHẬP", function()
+    local id = customIdBox.Text:match("%d+")
+    if not id then
+        notify("MUSIC", "Hãy nhập Sound ID dạng số")
+        return
+    end
+    customMusicId = id
+    customMusicName = customNameBox.Text
+    if not playId(id, customMusicName ~= "" and customMusicName or ("ID " .. id)) then
+        notify("MUSIC", "Không thể phát ID này")
+    end
+end, Colors.Blue)
+addButton(pMusic, "+ THÊM ID VÀO PLAYLIST", function()
+    local id = customIdBox.Text:match("^%s*(%d+)%s*$")
+    if not id then
+        notify("MUSIC", "Hãy nhập Sound ID chỉ gồm chữ số")
+        return
+    end
+    local name = customNameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then name = "ID " .. id end
+    for _, existing in ipairs(MusicPlaylist) do
+        if tostring(existing.Id) == id then
+            notify("MUSIC", "ID này đã có trong playlist")
+            return
+        end
+    end
+    table.insert(MusicPlaylist, { Name = name, Id = id })
+    addButton(pMusic, string.format("%02d  ♪  %s", #MusicPlaylist, name), function()
+        playId(id, name)
+    end, Colors.Panel2)
+    notify("MUSIC", "Đã thêm " .. name .. " vào playlist phiên này")
+    customIdBox.Text = ""
+    customNameBox.Text = ""
+end, Colors.Panel2)
+addInfo(pMusic, "H-HUB MUSIC", "Chọn bài để phát trực tiếp qua SoundService. Một số ID có thể không phát nếu Roblox giới hạn quyền audio.")
+addButton(pMusic, "▶ PHÁT / TIẾP TỤC", function()
+    if MusicSound.SoundId == "" then
+        playId(MusicDefaultId, "Quốc ca Việt Nam")
+    else
+        pcall(function() MusicSound:Resume() end)
+    end
+end, Colors.Blue)
+addButton(pMusic, "⏸ TẠM DỪNG", function()
+    pcall(function() MusicSound:Pause() end)
+end)
+addButton(pMusic, "■ DỪNG NHẠC", function()
+    Music.PlayToken += 1
+    pcall(function() MusicSound:Stop() end)
+    Music.CurrentName = "Đã dừng"
+end, Colors.Panel2)
+for index, track in ipairs(MusicPlaylist) do
+    local trackIndex = index
+    local item = track
+    addButton(pMusic, string.format("%02d  ♪  %s", trackIndex, item.Name), function()
+        if not playId(item.Id, item.Name, item.From, item.To) then
+            notify("MUSIC", "ID bài hát không hợp lệ")
+        end
+    end, Colors.Panel2)
+end
+addInfo(pMusic, "Trạng thái", "Bảng nổi ♪ vẫn có thể mở/đóng bằng nút dock. Tab Music này luôn nằm trong danh sách tab chính.")
+
 selectTab("Farm")
-Footer.Text = "H-HUB v6.2.4 | Island Spawn + Combat + Stats | RightShift: ẩn/hiện"
+Footer.Text = "H-HUB v6.2.7 | Custom Music ID + Tele Lock + AI | RightShift: ẩn/hiện"
 
 ---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
 local KnownMobs = {}
