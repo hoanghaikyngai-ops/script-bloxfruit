@@ -3145,7 +3145,7 @@ end
 ; (function()
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
 local AI_MODEL = "gemini-2.5-flash"
-local AIKey = "AQ.Ab8RN6KB29QlZ529G2QAYCJMVOU7hFGh0rZ3KjawzrPlyRRQ1A" -- Khóa cố định; không chia sẻ script công khai
+local AIKey = "AQ.Ab8RN6LB9EflQylTq0UUllw-nrTlXlxy3MRVG9GMi8roP6I9ig" -- Khóa cố định; không chia sẻ script công khai
 local Agent = { Running = false, Goal = "", Plan = "", History = {}, Steps = 0, MaxSteps = 60 }
 local AllowedRemote = {
     StartQuest = true, AbandonQuest = true, Buso = true,
@@ -3310,8 +3310,9 @@ local function sendGemini(promptText, toolList, functionMode)
         }
     end
 
+    -- Gemini REST: truyền API key qua header, không gắn key vào URL.
     local url = "https://generativelanguage.googleapis.com/v1beta/models/"
-        .. AI_MODEL .. ":generateContent?key=" .. HttpService:UrlEncode(AIKey)
+        .. AI_MODEL .. ":generateContent"
 
     local okRequest, response = pcall(function()
         return httpRequest({
@@ -3319,7 +3320,8 @@ local function sendGemini(promptText, toolList, functionMode)
             Method = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
-                ["Accept"] = "application/json"
+                ["Accept"] = "application/json",
+                ["x-goog-api-key"] = AIKey
             },
             Body = HttpService:JSONEncode(requestBody)
         })
