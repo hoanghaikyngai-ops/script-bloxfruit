@@ -1,5 +1,5 @@
 --[[
-    H-HUB // GAME COMPANION v6.2.4 - ISLAND SPAWN + COMBAT + STATS
+    H-HUB // GAME COMPANION v6.3.0 - ISLAND SPAWN + COMBAT + STATS
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -320,6 +320,7 @@ local State = {
     BossTarget = nil,
     AvoidFrames = {},
     TeleQuestChecked = nil,
+    SpecialRoute = {},
 }
 
 local RegAttack, RegHit
@@ -696,7 +697,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.2.4 FARM + SPAWN + STATS",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.3.0 AI STABILITY + SPECIAL ENTRANCES + FARM",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -764,7 +765,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v6.2.4  |  Native AI đang khởi động...",
+    Text = "H-HUB v6.3.0  |  AI ổn định + Special Entrance",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -2634,6 +2635,166 @@ local function stopFarm(reason)
     releaseFarmControl()
 end
 
+-- ĐIỀU HƯỚNG ĐẢO CÓ LỐI VÀO ĐẶC BIỆT
+-- Chỉ di chuyển tới cửa vào/NPC trung chuyển; không bay xuyên tường hay bỏ qua điều kiện mở khóa.
+local SpecialRouteCooldown = {}
+local SpecialRouteNoticeAt = {}
+
+local function specialObjectPosition(obj)
+    if not obj then return nil end
+    if obj:IsA("BasePart") then return obj.Position end
+    if obj:IsA("Model") then
+        local part = obj:FindFirstChild("HumanoidRootPart")
+            or obj:FindFirstChild("PrimaryPart")
+            or obj:FindFirstChildWhichIsA("BasePart", true)
+        if part and part:IsA("BasePart") then return part.Position end
+        local ok, cf = pcall(function() return obj:GetPivot() end)
+        if ok and cf then return cf.Position end
+    end
+    return nil
+end
+
+local function findNamedWorldObject(nameFragments, preferredFolder)
+    local roots = {}
+    if preferredFolder and preferredFolder.Parent then roots[#roots + 1] = preferredFolder end
+    roots[#roots + 1] = Workspace
+    local seen = {}
+    for _, container in ipairs(roots) do
+        if not seen[container] then
+            seen[container] = true
+            for _, obj in ipairs(container:GetDescendants()) do
+                local lower = obj.Name:lower()
+                for _, fragment in ipairs(nameFragments) do
+                    if lower:find(fragment, 1, true) then
+                        local pos = specialObjectPosition(obj)
+                        if pos then return obj, pos end
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function specialRouteNotice(key, message, interval)
+    local now = os.clock()
+    if now - (SpecialRouteNoticeAt[key] or 0) >= (interval or 20) then
+        SpecialRouteNoticeAt[key] = now
+        notify("AUTO FARM – LỐI VÀO ĐẶC BIỆT", message)
+    end
+end
+
+local function handleSpecialFarmEntrance(quest, root)
+    if not quest or not root then return false end
+    local mobName = tostring(quest.mob or ""):lower()
+    local now = os.clock()
+
+    -- Sea 1: Fishman Warrior/Commando chỉ vào Underwater City qua Whirlpool.
+    if getSea() == 1 and (mobName:find("fishman warrior", 1, true)
+        or mobName:find("fishman commando", 1, true)) then
+        local spawnPos = findSpawnPos(quest.mob)
+        if spawnPos and (spawnPos - root.Position).Magnitude <= 1900 then
+            return false -- đã vào khu vực farm, tiếp tục vòng farm bình thường
+        end
+
+        local key = "Sea1Whirlpool"
+        local entrance, entrancePos = findNamedWorldObject(
+            { "whirlpool", "underwaterwhirlpool", "waterwhirl", "vortex" },
+            Workspace:FindFirstChild("Map")
+        )
+        if not entrancePos then
+            specialRouteNotice(key,
+                "Đang tìm Whirlpool giữa Frozen Village và Prison. Nếu bản đồ chưa stream cửa vào, hãy đi thuyền tới xoáy nước để script nhận diện.",
+                25)
+            State.Status = "Chờ phát hiện Whirlpool – Underwater City"
+            return true
+        end
+
+        local distance = (root.Position - entrancePos).Magnitude
+        if distance > 55 then
+            State.Status = string.format("Đi tới Whirlpool vào Underwater City (%.0f stud)", distance)
+            if now - (SpecialRouteCooldown[key] or 0) > 3 then
+                SpecialRouteCooldown[key] = now
+                Tele.travel(CFrame.new(entrancePos),
+                    function() return State.Running and Config.AutoFarm end)
+            end
+            return true
+        end
+
+        State.Status = "Đã tới Whirlpool – chờ game chuyển vào Underwater City"
+        specialRouteNotice(key, "Đã tới cửa Whirlpool. Chờ vùng chạm kích hoạt; không bay thẳng tới spawn dưới biển.", 15)
+        return true
+    end
+
+    -- Sea 3: Submerged Island chỉ vào qua Submarine Worker tại Tiki Outpost.
+    local submergedMob = mobName:find("reef bandit", 1, true)
+        or mobName:find("coral pirate", 1, true)
+        or mobName:find("sea chanter", 1, true)
+        or mobName:find("ocean prophet", 1, true)
+        or mobName:find("high disciple", 1, true)
+        or mobName:find("grand devotee", 1, true)
+    if getSea() == 3 and submergedMob then
+        local spawnPos = findSpawnPos(quest.mob)
+        if spawnPos and (spawnPos - root.Position).Magnitude <= 2200 then
+            return false -- đã vào Submerged Island
+        end
+
+        local key = "Sea3SubmarineWorker"
+        local npcFolder = Workspace:FindFirstChild("NPCs")
+        local worker, workerPos = findNamedWorldObject({ "submarine worker" }, npcFolder)
+        if not workerPos then
+            local port, portPos = findNamedWorldObject({ "sub port 01", "subport01" }, Workspace:FindFirstChild("Map"))
+            if portPos then worker, workerPos = port, portPos end
+        end
+        if not workerPos then
+            State.Status = "Chờ tìm Submarine Worker tại Tiki Outpost"
+            specialRouteNotice(key,
+                "Quest Submerged cần nói chuyện với Submarine Worker trong Sub Port 01 ở Tiki Outpost. Điều kiện Tyrant of the Skies vẫn do game kiểm tra.",
+                30)
+            return true
+        end
+
+        local distance = (root.Position - workerPos).Magnitude
+        if distance > 18 then
+            State.Status = string.format("Đi tới Submarine Worker (%.0f stud)", distance)
+            if now - (SpecialRouteCooldown[key] or 0) > 3 then
+                SpecialRouteCooldown[key] = now
+                Tele.travel(CFrame.new(workerPos + Vector3.new(0, 3, 0)),
+                    function() return State.Running and Config.AutoFarm end)
+            end
+            return true
+        end
+
+        if now - (SpecialRouteCooldown[key] or 0) >= 12 then
+            SpecialRouteCooldown[key] = now
+            local activated = false
+            for _, descendant in ipairs(worker:GetDescendants()) do
+                if descendant:IsA("ProximityPrompt") and fireproximityprompt then
+                    local ok = pcall(fireproximityprompt, descendant)
+                    activated = activated or ok
+                elseif descendant:IsA("ClickDetector") and fireclickdetector then
+                    local ok = pcall(fireclickdetector, descendant)
+                    activated = activated or ok
+                end
+            end
+            if activated then
+                State.Status = "Đã kích hoạt tương tác Submarine Worker; chờ chuyển đảo"
+                specialRouteNotice(key, "Đã gửi tương tác tới Submarine Worker. Đang chờ game xác nhận quyền vào Submerged Island.", 15)
+            else
+                State.Status = "Đã tới Submarine Worker – cần tương tác NPC"
+                specialRouteNotice(key,
+                    "Đã tới Submarine Worker. Nếu NPC mở hội thoại thay vì prompt, hãy tương tác thủ công và hoàn tất điều kiện Tyrant of the Skies.",
+                    20)
+            end
+        else
+            State.Status = "Chờ Submarine Worker xử lý lối vào Submerged Island"
+        end
+        return true
+    end
+
+    return false
+end
+
 local function farmStep()
     FarmControlReleased = false
     if State.Busy then
@@ -2703,6 +2864,11 @@ local function farmStep()
     State.FarmAny = (Config.FarmMode == "Quái gần nhất")
     local quest = currentQuest()
     State.Quest = quest
+
+    -- Xử lý cửa vào đặc biệt trước khi tìm spawn/quái để tránh bay thẳng tới tọa độ dưới biển.
+    if not State.FarmAny and handleSpecialFarmEntrance(quest, root) then
+        return
+    end
 
     if Config.AutoQuest and not State.FarmAny then
         local questKey = quest.quest .. ":" .. quest.idx
@@ -4754,7 +4920,10 @@ end
 
 return Brain
 end)()
-local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false, Continue = false }
+local Agent = {
+    Running = false, Goal = "", Steps = 0, Log = {}, Resume = false, Continue = false,
+    CommandBusy = false, PilotBusy = false, CommandStartedAt = 0,
+}
 local AllowedRemote = {
 	StartQuest = true, AbandonQuest = true, Buso = true,
 	ZQuestProgress = true, DressrosaQuestProgress = true,
@@ -5927,26 +6096,64 @@ local function handleCommand(text)
 end
 
 local function startAgent(goal)
-	task.spawn(handleCommand, goal)
+    goal = tostring(goal or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if goal == "" then
+        setAnswer("Nhập yêu cầu trước khi chạy AI.")
+        return false
+    end
+    if Agent.CommandBusy or Agent.Running or Agent.PilotBusy then
+        setAnswer("AI đang xử lý tác vụ khác. Chờ hoàn tất hoặc bấm DỪNG trước khi gửi lệnh mới.")
+        return false
+    end
+
+    Agent.CommandBusy = true
+    Agent.CommandStartedAt = os.clock()
+    task.spawn(function()
+        local ok, err = xpcall(function()
+            handleCommand(goal)
+        end, function(e)
+            return debug and debug.traceback and debug.traceback(tostring(e), 2) or tostring(e)
+        end)
+        Agent.CommandBusy = false
+        Agent.CommandStartedAt = 0
+        if not ok and State.Running then
+            setAnswer("AI gặp lỗi khi xử lý lệnh:\\n" .. tostring(err))
+            setStatus("AI: đã giải phóng khóa, có thể thử lại")
+        end
+    end)
+    return true
 end
 
--- AutoPilot: mỗi 12 giây AI tự quan sát và xử lý việc vặt (không can thiệp khi đang chạy kế hoạch)
+-- AutoPilot có khóa riêng: không chạy chồng quan sát, không chen vào lệnh tay/kế hoạch.
 task.spawn(function()
-	while State.Running do
-		task.wait(12)
-		if Config.AIAutoPilot and Brain and not Agent.Running then
-			pcall(function()
-				local env = observe()
-				local acts, notes = Brain:Autopilot(env)
-				if #acts > 0 or #notes > 0 then
-					for _, a in ipairs(acts) do pcall(runAction, a, { reply = "" }, true) end
-					local msg = "🧠 AutoPilot: " .. table.concat(notes, "; ")
-					setAnswer(msg)
-					notify("AI AUTOPILOT", notes[1] or "đã xử lý")
-				end
-			end)
-		end
-	end
+    while State.Running do
+        task.wait(12)
+        if Config.AIAutoPilot and Brain and not Agent.Running
+            and not Agent.CommandBusy and not Agent.PilotBusy then
+            Agent.PilotBusy = true
+            local ok, err = xpcall(function()
+                local env = observe()
+                local acts, notes = Brain:Autopilot(env)
+                if #acts > 0 or #notes > 0 then
+                    for _, action in ipairs(acts) do
+                        if not State.Running or Agent.Running then break end
+                        local actionOk, actionErr = pcall(runAction, action, { reply = "" }, true)
+                        if not actionOk then
+                            table.insert(notes, "bỏ qua hành động lỗi: " .. tostring(actionErr))
+                        end
+                    end
+                    setAnswer("🧠 AutoPilot: " .. table.concat(notes, "; "))
+                    notify("AI AUTOPILOT", notes[1] or "đã xử lý")
+                end
+            end, function(e)
+                return debug and debug.traceback and debug.traceback(tostring(e), 2) or tostring(e)
+            end)
+            Agent.PilotBusy = false
+            if not ok and State.Running then
+                setAnswer("AutoPilot tạm dừng một chu kỳ do lỗi: " .. tostring(err))
+            end
+        end
+    end
 end)
 
 ---------------- Ô NHẬP + NÚT ----------------
