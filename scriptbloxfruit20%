@@ -5152,7 +5152,7 @@ end
 addInfo(pMusic, "Trạng thái", "Bảng nổi ♪ vẫn có thể mở/đóng bằng nút dock. Tab Music này luôn nằm trong danh sách tab chính.")
 
 selectTab("Farm")
-Footer.Text = "H-HUB v6.2.7 | Custom Music ID + Tele Lock + AI | RightShift: ẩn/hiện"
+Footer.Text = "H-HUB v6.2.9 | Pre-Death Tele Remote + Random Fruit + Music | RightShift: ẩn/hiện"
 
 ---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
 local KnownMobs = {}
@@ -5225,6 +5225,50 @@ addToggle(pUtility, "Bỏ qua Fruit1 khi nhặt", Config.SkipFruit1, function(va
     saveSoon()
 end, "SkipFruit1")
 
+-- Random Fruit Gacha (Cousin): dùng CommF_ RemoteFunction của game.
+local AutoRandomFruitEnabled = false
+local RandomFruitBusy = false
+local RandomFruitNextAt = 0
+local RANDOM_FRUIT_COOLDOWN = 2 * 60 * 60
+local function randomFruitOnce()
+    if RandomFruitBusy then return false, "Đang gửi yêu cầu random trái" end
+    if os.clock() < RandomFruitNextAt then
+        return false, "Đang hồi chiêu random trái; còn " .. math.ceil(RandomFruitNextAt - os.clock()) .. " giây"
+    end
+    local commF = getCommF()
+    if not commF then return false, "Không tìm thấy CommF_" end
+    RandomFruitBusy = true
+    local ok, result = pcall(function()
+        return commF:InvokeServer("Cousin", "Buy")
+    end)
+    RandomFruitBusy = false
+    if not ok then return false, "Remote Cousin/Buy lỗi: " .. tostring(result) end
+    RandomFruitNextAt = os.clock() + RANDOM_FRUIT_COOLDOWN
+    return true, "Đã gửi yêu cầu random trái. Phản hồi: " .. tostring(result)
+end
+addSection(pUtility, "RANDOM TRÁI ÁC QUỶ")
+addButton(pUtility, "RANDOM TRÁI NGAY (COUSIN)", function()
+    task.spawn(function()
+        local ok, message = randomFruitOnce()
+        notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
+    end)
+end, Colors.Blue)
+addToggle(pUtility, "Tự random khi hết hồi chiêu 2 giờ", false, function(value)
+    AutoRandomFruitEnabled = value
+    if value then
+        task.spawn(function()
+            while AutoRandomFruitEnabled and State.Running do
+                if os.clock() >= RandomFruitNextAt and not RandomFruitBusy then
+                    local ok, message = randomFruitOnce()
+                    notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
+                end
+                task.wait(5)
+            end
+        end)
+    end
+end)
+addInfo(pUtility, "Lưu ý random trái", "Dùng CommF_:InvokeServer('Cousin','Buy'); cần đủ điều kiện/tiền trong game. Tự động thử lại theo hồi chiêu 2 giờ.")
+
 addSection(pAI, "H-HUB AI BRAIN")
 addInfo(pAI, "Chế độ AI", "AI AutoPilot điều khiển các tính năng đã bật/được phép")
 addInfo(pAI, "Phạm vi", "Quest • Farm • Boss • Elite • Sea • Fruit • Stats • Server Hop")
@@ -5274,9 +5318,20 @@ function Tele.dieThenSetLastSpawnPoint(islandName)
         end
     end)
 
-    Tele.Status = "Đang chết trước khi đặt đảo: " .. island.name
+    Tele.Status = "Khóa vị trí và gửi remote sát thời điểm chết: " .. island.name
     stopMovers()
     if resetBring then pcall(resetBring) end
+    -- Ghim root trong khoảnh khắc chuẩn bị chết, gửi last-spawn trước khi đặt Health=0.
+    -- 0.01 giây là khoảng chờ yêu cầu; Roblox/server không bảo đảm độ chính xác tuyệt đối.
+    local preDeathRoot = getRoot(oldCharacter)
+    local preDeathAnchored = preDeathRoot and preDeathRoot.Anchored or false
+    if preDeathRoot then pcall(function() preDeathRoot.Anchored = true end) end
+    local preDeathSent = Tele.setLastSpawnPoint(island.name)
+    task.wait(0.01)
+    if preDeathRoot and preDeathRoot.Parent then
+        pcall(function() preDeathRoot.Anchored = preDeathAnchored end)
+    end
+    Tele.Status = preDeathSent and "Đã gửi remote trước khi chết; đang xác nhận Died" or "Remote trước khi chết chưa được xác nhận; tiếp tục quy trình"
     pcall(function() humanoid.Health = 0 end)
 
     local deathStart = os.clock()
@@ -5392,7 +5447,7 @@ addButton(pTele, "CHẾT TRƯỚC → ĐẶT ĐẢO ĐÃ CHỌN", function()
         notify(ok and "TELE HỒI SINH" or "TELE HỒI SINH LỖI", tostring(message or Tele.Status))
     end)
 end, Colors.Blue)
-addInfo(pTele, "Cách hoạt động", "Chọn đảo → chết → gửi SetLastSpawnPoint ngay sau khi chết và lặp mỗi 1 giây; khi hồi sinh ghim tọa độ đảo 1 giây, sau đó chỉ dừng khi vị trí vẫn được giữ trên đảo. Trong lúc chờ sẽ khóa các lệnh Tele khác.")
+addInfo(pTele, "Cách hoạt động", "Chọn đảo → ghim vị trí và gửi SetLastSpawnPoint ngay trước khi tự chết (chờ 0,01 giây) → xác nhận Died → tiếp tục gửi remote mỗi 1 giây. Khi hồi sinh, ghim tọa độ đảo tối đa 1 giây rồi kiểm tra vị trí thực tế; chỉ dừng khi đứng ổn định trên đảo. Server vẫn có quyền quyết định vị trí spawn.")
 
 local function findNearest(name)
 	local root = getRoot(getCharacter())
