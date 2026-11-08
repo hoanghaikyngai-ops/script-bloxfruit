@@ -3146,7 +3146,7 @@ end
 --=====================================================================
 -- KHỐI A  (thay đoạn header cũ: httpRequest / AI_MODEL / AIKey / Agent / AllowedRemote)
 --=====================================================================
-local BRAIN_URL = "https://raw.githubusercontent.com/TEN_BAN/REPO/main/HHubBrain.lua" -- << raw bộ não của bạn
+local BRAIN_URL = "https://raw.githubusercontent.com/hoanghaikyngai-ops/n-o-ai-h-hub-blox-fruit/refs/heads/main/b%E1%BB%99%20n%C3%A3o%20ai%20blox%20fruit" -- << raw bộ não của bạn
 local BRAIN_CACHE = "HHubBrain.cache.lua"
 local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false }
 local AllowedRemote = {
