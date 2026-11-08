@@ -4427,23 +4427,25 @@ end
 ---------------- XỬ LÝ LỆNH: observe -> não -> thực thi ----------------
 local function onOff(v) return v and "bật" or "tắt" end
  
-local function dispatch(res)
-	local a = res.action
-	if not a then return end
+local function runAction(a, res, quiet)
 	local def = a.feature and Brain.features[a.feature]
 	local label = def and def.label or tostring(a.feature)
  
-	if a.type == "toggle" then
+	if a.type == "batch" then
+		for _, sub in ipairs(a.list or {}) do
+			pcall(runAction, sub, res, true)
+		end
+	elseif a.type == "toggle" then
 		local cur = Config[a.feature] and true or false
 		if cur == a.state then
-			setAnswer(label .. " đang " .. onOff(a.state) .. " sẵn rồi.")
+			if not quiet then setAnswer(label .. " đang " .. onOff(a.state) .. " sẵn rồi.") end
 		else
 			setFeature(a.feature, a.state)
 		end
 	elseif a.type == "flip" then
 		local new = not Config[a.feature]
 		setFeature(a.feature, new)
-		setAnswer("Đã " .. onOff(new) .. " " .. label .. ".")
+		if not quiet then setAnswer("Đã " .. onOff(new) .. " " .. label .. ".") end
 	elseif a.type == "set" then
 		setFeature(a.feature, a.value)
 	elseif a.type == "run" then
@@ -4459,8 +4461,7 @@ local function dispatch(res)
 			if d[2] == "toggle" and Config[d[1]] then on[#on + 1] = d[3] end
 		end
 		setAnswer((res.reply ~= "" and res.reply .. " " or "")
-			.. (#on > 0 and ("Đang bật: " .. table.concat(on, ", ")) or "Không có tính năng nào đang bật.")
-			.. string.format(" | AI: %s", Agent.Running and "đang chạy tác vụ" or "rảnh"))
+			.. (#on > 0 and ("Đang bật: " .. table.concat(on, ", ")) or "Không có tính năng nào đang bật."))
 	elseif a.type == "agent_plan" then
 		if Agent.Running then
 			setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
@@ -4476,28 +4477,8 @@ local function dispatch(res)
 	end
 end
  
-local function handleCommand(text)
-	if not Brain then
-		setAnswer("Não chưa nạp được: " .. tostring(BrainErr) .. ". Kiểm tra BRAIN_URL (raw HHubBrain.lua).")
-		return
-	end
-	setStatus("AI: đang quan sát...")
-	local okEnv, env = pcall(observe)
-	setStatus("AI: đang xử lý...")
-	local okRes, res = pcall(function() return Brain:Process(text, okEnv and env or nil) end)
-	if not okRes then
-		setAnswer("Não lỗi: " .. tostring(res))
-		setStatus("AI: chờ lệnh")
-		return
-	end
-	Agent.Goal = text
-	setAnswer(res.reply)
-	pcall(dispatch, res)
-	if not Agent.Running then setStatus("AI: chờ lệnh") end
-end
- 
-local function startAgent(goal)
-	task.spawn(handleCommand, goal)
+local function dispatch(res)
+	if res.action then runAction(res.action, res, false) end
 end
 ---------------- Ô NHẬP + NÚT ----------------
 -- API key được cấu hình cố định trong script; giao diện không còn ô nhập key.
