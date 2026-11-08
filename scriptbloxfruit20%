@@ -1,5 +1,5 @@
 --[[
-    H-HUB // GAME COMPANION v6.2.2 - FEATURES + STABLE MOVEMENT
+    H-HUB // GAME COMPANION v6.2.4 - ISLAND SPAWN + COMBAT + STATS
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -110,6 +110,7 @@ local Config = {
 
     AutoChest = false,
     AutoFruit = false,
+    SkipFruit1 = true,
     AutoStore = false,
     FruitESP = false,
     FullBright = false,
@@ -143,7 +144,7 @@ local SAVEABLE = {
     "HopAfter", "MultiHit", "AttackMode", "AutoSwitch", "NoDamageTimeout", "HitFormat", "FarmHeightLate",
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
     "AutoSkill", "SkillDelay", "SkillZ", "SkillX", "SkillC", "SkillV", "SkillF",
-    "AutoChest", "AutoFruit", "AutoStore", "FruitESP", "FullBright", "AutoRejoin",
+    "AutoChest", "AutoFruit", "SkipFruit1", "AutoStore", "FruitESP", "FullBright", "AutoRejoin",
     "TeleSmart", "TeleThreshold", "TeleRespawn", "TeleEntrance", "TeleAutoSpawn",
     "TeleOnQuestChange", "BossPick", "TeleSafeY",
 }
@@ -695,7 +696,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.2 NATIVE AI + TELE",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.2.4 FARM + SPAWN + STATS",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -763,7 +764,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v6.2.2  |  Native AI đang khởi động...",
+    Text = "H-HUB v6.2.4  |  Native AI đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -2600,6 +2601,34 @@ local lastHaki = 0
 local lastKen = 0
 local simulationSet = false
 
+local FarmControlReleased = false
+
+local function releaseFarmControl()
+    -- Dọn mover do hub tạo và triệt tiêu vận tốc còn sót sau tween/farm.
+    if FarmControlReleased then return end
+    FarmControlReleased = true
+    stopMovers()
+    local character = getCharacter()
+    local root = getRoot(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if root then
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+    if humanoid then
+        pcall(function()
+            humanoid.PlatformStand = false
+            humanoid.Sit = false
+            humanoid.AutoRotate = true
+            if humanoid.Health > 0 then
+                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end)
+    end
+end
+
 local function stopFarm(reason)
     Config.AutoFarm = false
     State.Status = reason or "Đang tắt"
@@ -2607,14 +2636,16 @@ local function stopFarm(reason)
     State.ClusterPoint = nil
     State.TargetMob = nil
     State.BossTarget = nil
+    State.FarmAny = false
+    State.InAttack = false
+    State.LastEngageAt = 0
     resetBring()
     if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
-    if not Config.AutoPumpkin then
-        stopMovers()
-    end
+    releaseFarmControl()
 end
 
 local function farmStep()
+    FarmControlReleased = false
     if State.Busy then
         State.Status = "Tạm dừng farm: " .. tostring(State.Busy)
         return
@@ -2845,6 +2876,14 @@ task.spawn(function()
             if not State.InAttack then
                 State.LastDamageAt = os.clock()
             end
+        elseif not Config.AutoFarm and not Config.AutoPumpkin then
+            if State.TargetMob or State.ClusterPoint or State.BroughtCount > 0 then
+                State.TargetMob = nil
+                State.ClusterPoint = nil
+                State.FarmAny = false
+                pcall(resetBring)
+            end
+            if not FarmControlReleased then pcall(releaseFarmControl) end
         end
     end
 end)
@@ -2917,7 +2956,9 @@ local function findFruits()
     local out = {}
     local character = getCharacter()
     for _, obj in ipairs(Workspace:GetChildren()) do
+        local isFruit1 = string.lower(obj.Name) == "fruit1"
         if (obj:IsA("Tool") or obj:IsA("Model")) and obj.Name:find("Fruit")
+            and not (Config.SkipFruit1 and isFruit1)
             and not (character and obj:IsDescendantOf(character)) then
             local part = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart", true)
             if part then
@@ -3330,6 +3371,7 @@ local function Unload()
     clearHighlights()
     pcall(clearFruitMarks)
     pcall(clearBringMovers)
+    pcall(releaseFarmControl)
     pcall(stopMovers)
     pcall(setLowEffects, false)
     pcall(setFullbright, false)
@@ -4971,6 +5013,7 @@ local pUtility = newMainTab("Tiện ích", "⌘")
 local pTele = newMainTab("Teleport", "➤")
 local pVisual = newMainTab("Hiển thị", "◉")
 local pSettings = newMainTab("Cài đặt", "⚙")
+local pAI = newMainTab("AI", "✧")
 
 local tabFor = {
     AutoFarm=pFarm, AutoQuest=pFarm, AutoPumpkin=pFarm, AutoElite=pFarm, AutoBossList=pFarm,
@@ -4979,7 +5022,7 @@ local tabFor = {
     AutoSea=pTele, AutoHop=pTele, TeleSmart=pTele, TeleRespawn=pTele, TeleEntrance=pTele,
     TeleAutoSpawn=pTele, TeleOnQuestChange=pTele,
     FruitESP=pVisual, FullBright=pVisual, LowEffects=pVisual, MobHighlight=pVisual,
-    AutoRejoin=pSettings, AIAutoPilot=pSettings,
+    AutoRejoin=pSettings, AIAutoPilot=pAI,
 }
 local labelsAdded = {}
 for _, d in ipairs(FeatureDefs) do
@@ -4987,7 +5030,17 @@ for _, d in ipairs(FeatureDefs) do
     local page = tabFor[key] or pSettings
     if kind == "toggle" then
         addToggle(page, label, Config[key] == true, function(value)
-            Config[key] = value
+            if key == "AutoFarm" then
+                if value then
+                    Config.AutoFarm = true
+                    FarmControlReleased = false
+                    State.Status = "Đang khởi động Auto Farm..."
+                else
+                    stopFarm("Auto Farm đã tắt")
+                end
+            else
+                Config[key] = value
+            end
             if ToggleSpecial[key] then pcall(ToggleSpecial[key], value) end
             saveSoon()
         end, key)
@@ -5005,10 +5058,8 @@ for _, d in ipairs(FeatureDefs) do
         end)
     end
 end
-addButton(pFarm, "Bật Auto Farm", function() setFeature("AutoFarm", true) end, Colors.Blue)
-addButton(pFarm, "Tắt Auto Farm", function() setFeature("AutoFarm", false) end, Colors.Off)
 selectTab("Farm")
-Footer.Text = "H-HUB v6.2.2.2 | Native AI | Stable Farm Movement | RightShift: ẩn/hiện"
+Footer.Text = "H-HUB v6.2.4 | Island Spawn + Combat + Stats | RightShift: ẩn/hiện"
 
 ---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
 local KnownMobs = {}
@@ -5044,6 +5095,116 @@ local function allIslandNames()
 	end
 	return out
 end
+
+-- Chọn chế độ farm độc lập: nhiệm vụ theo level hoặc quái gần nhất.
+addSection(pFarm, "CHẾ ĐỘ FARM")
+addCycle(pFarm, "Mục tiêu Auto Farm", { "Level Quest", "Quái gần nhất" }, Config.FarmMode, function(value)
+    Config.FarmMode = value
+    if value == "Quái gần nhất" then
+        Config.AutoQuest = false
+        if Toggles.AutoQuest then Toggles.AutoQuest.Set(false, true) end
+        State.QuestAccepted = false
+        State.QuestSeenUI = false
+        State.QuestKey = nil
+    end
+    State.TargetMob = nil
+    State.ClusterPoint = nil
+    saveSoon()
+end)
+
+-- Cấu hình vũ khí và cộng điểm được đưa trực tiếp lên menu chính.
+addSection(pCombat, "VŨ KHÍ ƯU TIÊN")
+addCycle(pCombat, "Loại vũ khí Auto Equip", { "Melee", "Blox Fruit", "Sword", "Gun" }, Config.Weapon, function(value)
+    Config.Weapon = value
+    saveSoon()
+end)
+addSection(pUtility, "TỰ CỘNG CHỈ SỐ")
+addCycle(pUtility, "Chỉ số nhận điểm", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, function(value)
+    Config.StatName = value
+    saveSoon()
+end)
+addStepper(pUtility, "Số điểm mỗi lượt", 1, 100, 1, math.clamp(tonumber(Config.StatAmount) or 10, 1, 100), function(value)
+    Config.StatAmount = value
+    saveSoon()
+end)
+addToggle(pUtility, "Bỏ qua Fruit1 khi nhặt", Config.SkipFruit1, function(value)
+    Config.SkipFruit1 = value
+    saveSoon()
+end, "SkipFruit1")
+
+addSection(pAI, "H-HUB AI BRAIN")
+addInfo(pAI, "Chế độ AI", "AI AutoPilot điều khiển các tính năng đã bật/được phép")
+addInfo(pAI, "Phạm vi", "Quest • Farm • Boss • Elite • Sea • Fruit • Stats • Server Hop")
+
+-- Quy trình theo yêu cầu: chết trước, đợi sự kiện Died, rồi mới gửi đảo đã chọn
+-- qua SetLastSpawnPoint để áp dụng cho lần hồi sinh kế tiếp.
+function Tele.dieThenSetLastSpawnPoint(islandName)
+    local character = getCharacter()
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not character or not humanoid or humanoid.Health <= 0 then
+        Tele.Status = "Nhân vật chưa sẵn sàng để bắt đầu quy trình chết -> đặt đảo"
+        return false, Tele.Status
+    end
+
+    local targetName = tostring(islandName or "")
+    local island = findIsland(targetName, getSea())
+    if not island then
+        Tele.Status = "Đảo không hợp lệ trong Sea hiện tại: " .. targetName
+        return false, Tele.Status
+    end
+
+    local died = false
+    local diedConnection
+    diedConnection = humanoid.Died:Connect(function()
+        died = true
+        if diedConnection then diedConnection:Disconnect(); diedConnection = nil end
+    end)
+
+    Tele.Status = "Đang tự chết trước khi đặt đảo: " .. island.name
+    stopMovers()
+    if resetBring then pcall(resetBring) end
+    pcall(function()
+        humanoid.Health = 0
+    end)
+
+    local started = os.clock()
+    while State.Running and not died and os.clock() - started < 12 do
+        task.wait(0.05)
+        if humanoid.Health <= 0 then died = true end
+    end
+    if diedConnection then diedConnection:Disconnect() end
+    if not died then
+        Tele.Status = "Không nhận được sự kiện chết; chưa gửi lệnh đặt đảo"
+        return false, Tele.Status
+    end
+
+    -- Chỉ gửi remote SAU khi nhân vật đã chết; không gọi trước khi tự chết.
+    task.wait(0.15)
+    local ok, err = Tele.setLastSpawnPoint(island.name)
+    if not ok then
+        Tele.Status = "Đã chết nhưng đặt đảo thất bại: " .. tostring(err or Tele.Status)
+        return false, Tele.Status
+    end
+    Tele.Status = "Đã chết và gửi điểm hồi sinh mới: " .. island.name
+    return true, Tele.Status
+end
+
+addSection(pTele, "ĐIỂM HỒI SINH THEO ĐẢO")
+addInfo(pTele, "Điểm hồi sinh đã lưu", Tele.SpawnName or "Chưa đặt")
+local TeleIslandOptions = islandNames(getSea())
+local TeleIslandSelection = TeleIslandOptions[1] or "Starter Island"
+addCycle(pTele, "Chọn đảo hồi sinh", TeleIslandOptions, TeleIslandSelection, function(value)
+    TeleIslandSelection = value
+end)
+addButton(pTele, "CHẾT TRƯỚC → ĐẶT ĐẢO ĐÃ CHỌN", function()
+    local selected = TeleIslandSelection
+    notify("TELE HỒI SINH", "Đang tự chết, sau đó mới đặt: " .. selected)
+    task.spawn(function()
+        local ok, message = Tele.dieThenSetLastSpawnPoint(selected)
+        notify(ok and "TELE HỒI SINH" or "TELE HỒI SINH LỖI", tostring(message or Tele.Status))
+    end)
+end, Colors.Blue)
+addInfo(pTele, "Cách hoạt động", "Chọn đảo → nhân vật chết → mới gửi SetLastSpawnPoint cho đảo đã chọn. Điểm này áp dụng cho lần hồi sinh kế tiếp.")
 
 local function findNearest(name)
 	local root = getRoot(getCharacter())
