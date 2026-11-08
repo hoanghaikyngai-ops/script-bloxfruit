@@ -1,11 +1,15 @@
 --[[
-    H-HUB // GAME COMPANION v5.12 - NATIVE AI MEMORY
+    H-HUB // GAME COMPANION v6.2.2 - FEATURES + STABLE MOVEMENT
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
-    - Auto Collect Pumpkin: có click màn hình + Activate + RegisterAttack
-    - Aggro Tracker (chỉ quan sát), Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
-    - AI Agent offline nhúng trực tiếp: hiểu lệnh gần đúng + nhớ ngữ cảnh, quan sát -> quyết định -> hành động (whitelist)
+    - Auto Collect Pumpkin, Aggro Tracker, Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
+    - v6.0: TAB TELE (chết -> hồi sinh ở điểm đã đặt / requestEntrance / bay), tự dùng khi đổi đảo
+    - v6.0: AI Brain v3 (từ vựng lớn, AutoPilot, chuỗi nhiệm vụ Race V2/V3, Dragon Talon, Dojo, Draco, Sea Event...)
+    - v6.2.2: giữ bộ tính năng v6.2, khôi phục flyTo/farmStep/seaChainStep từ nền ổn định v5.12.
+    - v6.1: Tele học đảo (lưu file), bay cao băng biển, tele khi đổi quest sang đảo xa,
+            Auto Elite Hunter, Auto săn Boss, thêm chuỗi Tushita/Saber/Pole/Dough King/Elite,
+            AutoPilot thông minh hơn, sửa lỗi forward-declare resetBring.
 ]]
 
 if not game:IsLoaded() then
@@ -66,7 +70,7 @@ local Config = {
     AutoQuest = true,
     BringMob = true,
     BringHitbox = true,
-    BringMode = "Cưỡng bức", -- Mặc định dùng chế độ cưỡng bức + Lerp mượt tối ưu
+    BringMode = "Cưỡng bức",
     HitboxSize = 35,
     AutoEquip = true,
     AutoHaki = true,
@@ -114,6 +118,23 @@ local Config = {
     AutoPumpkin = false,
     PumpkinSpeed = 300,
     PumpkinAttack = true,
+
+    -- v6.0: TELE
+    TeleSmart = true,        -- bật tele thông minh khi đổi đảo xa
+    TeleThreshold = 700,     -- xa hơn ngưỡng này (stud) mới dùng tele, gần hơn thì bay như cũ
+    TeleRespawn = true,      -- dùng "tự chết -> hồi sinh ở điểm đã đặt"
+    TeleEntrance = true,     -- thử requestEntrance (cổng dịch chuyển của game)
+    TeleAutoSpawn = true,    -- tới đảo mới thì tự đặt điểm hồi sinh
+
+    -- v6.0: AI
+    AIAutoPilot = false,
+
+    -- v6.1
+    TeleOnQuestChange = true, -- đổi quest sang đảo xa thì tự tele
+    AutoElite = false,        -- Elite Hunter (Sea 3)
+    AutoBossList = false,     -- săn boss trong danh sách
+    BossPick = "Tất cả",
+    TeleSafeY = 350,          -- độ cao bay khi băng qua biển
 }
 
 local SAVEABLE = {
@@ -123,10 +144,12 @@ local SAVEABLE = {
     "HitRange", "BringRadius", "SafeHP", "TweenSpeed", "Delay", "PumpkinSpeed", "PumpkinAttack",
     "AutoSkill", "SkillDelay", "SkillZ", "SkillX", "SkillC", "SkillV", "SkillF",
     "AutoChest", "AutoFruit", "AutoStore", "FruitESP", "FullBright", "AutoRejoin",
+    "TeleSmart", "TeleThreshold", "TeleRespawn", "TeleEntrance", "TeleAutoSpawn",
+    "TeleOnQuestChange", "BossPick", "TeleSafeY",
 }
 
 local CONFIG_PATH = "HHub/BloxFruits_v57_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
-local STARTUP_OFF = { "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea" }
+local STARTUP_OFF = { "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea", "AIAutoPilot", "AutoElite", "AutoBossList" }
 
 local function loadConfig()
     pcall(function()
@@ -148,6 +171,8 @@ end
 loadConfig()
 Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
 Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 2800)
+Config.TeleThreshold = math.clamp(tonumber(Config.TeleThreshold) or 700, 300, 5000)
+Config.TeleSafeY = math.clamp(tonumber(Config.TeleSafeY) or 350, 150, 1500)
 if Config.FarmMode ~= "Level Quest" and Config.FarmMode ~= "Quái gần nhất" then
     Config.FarmMode = "Level Quest"
 end
@@ -293,6 +318,7 @@ local State = {
     SimAt = 0,
     BossTarget = nil,
     AvoidFrames = {},
+    TeleQuestChecked = nil,
 }
 
 local RegAttack, RegHit
@@ -369,6 +395,10 @@ end
 local function nameMatches(actual, wanted)
     if actual == wanted then return true end
     return actual:sub(1, #wanted + 2) == wanted .. " ["
+end
+
+local function cleanBossName(n)
+    return (tostring(n):gsub("%s*%[.-%]", ""))
 end
 
 local function getEquippedToolName()
@@ -665,7 +695,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v5.12 NATIVE AI",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.2 NATIVE AI + TELE",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -733,7 +763,7 @@ local Footer = make("TextLabel", {
     Position = UDim2.new(0, 14, 1, -30),
     Size = UDim2.new(1, -28, 0, 22),
     BackgroundTransparency = 1,
-    Text = "H-HUB v5.11  |  Đang khởi động...",
+    Text = "H-HUB v6.2.2  |  Native AI đang khởi động...",
     TextColor3 = Colors.Muted,
     Font = Enum.Font.Gotham,
     TextSize = 10,
@@ -1367,6 +1397,322 @@ local function flyTo(root, targetCFrame, cond)
 end
 
 ------------------------------------------------------------------
+-- TELE V6.1: HỌC ĐẢO + CHẾT -> HỒI SINH / requestEntrance / BAY CAO BĂNG BIỂN
+-- Lưu ý: SetSpawnPoint chỉ ghi vị trí bạn đang đứng (trong vùng an toàn của đảo),
+-- nên script "học" dần: tới đảo nào thì đặt hồi sinh ở đó và lưu vào file.
+------------------------------------------------------------------
+-- Toạ độ ƯỚC LƯỢNG (game có thể đã đổi). Tele vẫn tự bay nốt phần còn lại tới đích thật.
+local Islands = {
+    [1] = {
+        { name = "Starter Island", pos = Vector3.new(1071, 16, 1426) },
+        { name = "Jungle", pos = Vector3.new(-1618, 36, 146) },
+        { name = "Pirate Village", pos = Vector3.new(-1181, 5, 3803) },
+        { name = "Desert", pos = Vector3.new(944, 20, 4373) },
+        { name = "Frozen Village", pos = Vector3.new(1347, 104, -1319) },
+        { name = "Marine Fortress", pos = Vector3.new(-4914, 51, 4281) },
+        { name = "Skylands", pos = Vector3.new(-4607, 872, -1667) },
+        { name = "Prison", pos = Vector3.new(4875, 6, 735) },
+        { name = "Colosseum", pos = Vector3.new(-1428, 7, -2792) },
+        { name = "Magma Village", pos = Vector3.new(-5231, 8, 8467) },
+        { name = "Fountain City", pos = Vector3.new(5127, 59, 4105) },
+        { name = "Middle Town", pos = Vector3.new(-655, 7, 1573) },
+    },
+    [2] = {
+        { name = "Kingdom of Rose", pos = Vector3.new(-394, 118, 298) },
+        { name = "Green Zone", pos = Vector3.new(-2448, 73, -3210) },
+        { name = "Graveyard", pos = Vector3.new(-5622, 492, -778) },
+        { name = "Snow Mountain", pos = Vector3.new(753, 408, -5274) },
+        { name = "Hot and Cold", pos = Vector3.new(-6127, 16, -5040) },
+        { name = "Cursed Ship", pos = Vector3.new(923, 125, 32853) },
+        { name = "Ice Castle", pos = Vector3.new(6148, 294, -6741) },
+        { name = "Forgotten Island", pos = Vector3.new(-3043, 238, -10191) },
+        { name = "Usoap Island", pos = Vector3.new(4748, 8, 2849) },
+        { name = "Dark Arena", pos = Vector3.new(3464, 13, -3208) },
+    },
+    [3] = {
+        { name = "Port Town", pos = Vector3.new(-290, 6, 5343) },
+        { name = "Hydra Island", pos = Vector3.new(5228, 604, 345) },
+        { name = "Great Tree", pos = Vector3.new(2681, 1682, -7190) },
+        { name = "Floating Turtle", pos = Vector3.new(-13274, 531, -7579) },
+        { name = "Haunted Castle", pos = Vector3.new(-9515, 142, 5528) },
+        { name = "Sea of Treats", pos = Vector3.new(-2077, 252, -12373) },
+        { name = "Castle on the Sea", pos = Vector3.new(-5074, 315, -3153) },
+        { name = "Tiki Outpost", pos = Vector3.new(-16542, 55, -173) },
+        { name = "Mansion", pos = Vector3.new(-12471, 374, -7551) },
+    },
+}
+
+local TELE_FILE = "HHub/Tele_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json"
+
+local Tele = {
+    SpawnPos = nil,
+    SpawnName = "chưa đặt",
+    Status = "Chưa dùng",
+    LastSetAt = 0,
+    Count = 0,
+    Respawns = 0,
+    Known = {},        -- [tên đảo] = true: các đảo đã từng đặt hồi sinh
+    LastIsland = nil,
+}
+
+-- Khai báo trước: hàm này được định nghĩa ở phần Bring Mob (bên dưới), Tele.respawn cần gọi nó.
+local resetBring
+
+local function islandNames(sea)
+    local out = {}
+    for _, island in ipairs(Islands[sea or getSea()] or {}) do
+        out[#out + 1] = island.name
+    end
+    return out
+end
+
+local function findIsland(name, sea)
+    local wanted = tostring(name):lower()
+    for pass = 1, 2 do
+        for s = 1, 3 do
+            if not sea or s == sea then
+                for _, island in ipairs(Islands[s]) do
+                    local n = island.name:lower()
+                    if (pass == 1 and n == wanted) or (pass == 2 and n:find(wanted, 1, true)) then
+                        return island, s
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function nearestIsland(pos)
+    local best, bestD
+    for _, island in ipairs(Islands[getSea()] or {}) do
+        local d = (island.pos - pos).Magnitude
+        if not bestD or d < bestD then
+            best, bestD = island, d
+        end
+    end
+    return best, bestD
+end
+
+local function teleSaveFile()
+    pcall(function()
+        if not writefile then return end
+        if makefolder and isfolder and not isfolder("HHub") then makefolder("HHub") end
+        local out = { known = Tele.Known, spawnName = Tele.SpawnName }
+        if Tele.SpawnPos then
+            out.spawn = { Tele.SpawnPos.X, Tele.SpawnPos.Y, Tele.SpawnPos.Z }
+            out.place = game.PlaceId
+        end
+        writefile(TELE_FILE, HttpService:JSONEncode(out))
+    end)
+end
+
+pcall(function()
+    if readfile and isfile and isfile(TELE_FILE) then
+        local d = HttpService:JSONDecode(readfile(TELE_FILE))
+        if type(d) == "table" then
+            if type(d.known) == "table" then Tele.Known = d.known end
+            -- spawn chỉ có nghĩa trong đúng Sea (PlaceId) đã đặt
+            if d.place == game.PlaceId and type(d.spawn) == "table" and #d.spawn == 3 then
+                Tele.SpawnPos = Vector3.new(d.spawn[1], d.spawn[2], d.spawn[3])
+                Tele.SpawnName = tostring(d.spawnName or "đã lưu")
+            end
+        end
+    end
+end)
+
+function Tele.setSpawn()
+    local commF = getCommF()
+    local root = getRoot(getCharacter())
+    if not commF or not root then return false end
+    if os.clock() - Tele.LastSetAt < 8 then return false end
+    local ok = pcall(function()
+        return commF:InvokeServer("SetSpawnPoint")
+    end)
+    if ok then
+        Tele.LastSetAt = os.clock()
+        Tele.SpawnPos = root.Position
+        local island = nearestIsland(root.Position)
+        Tele.SpawnName = island and island.name or "vị trí hiện tại"
+        if island then Tele.Known[island.name] = true end
+        Tele.Status = "Đã đặt hồi sinh tại: " .. Tele.SpawnName
+        teleSaveFile()
+    else
+        Tele.Status = "Đặt hồi sinh thất bại (remote lỗi)"
+    end
+    return ok
+end
+
+function Tele.respawn()
+    local hum = getHumanoid()
+    local oldChar = getCharacter()
+    if not hum or not oldChar then return false end
+    Tele.Status = "Tự chết để hồi sinh tại: " .. Tele.SpawnName
+    stopMovers()
+    if resetBring then pcall(resetBring) end
+    hum.Health = 0
+    local t0 = os.clock()
+    while State.Running and os.clock() - t0 < 20 do
+        task.wait(0.25)
+        local c = getCharacter()
+        local r = getRoot(c)
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if c and c ~= oldChar and r and h and h.Health > 0 then
+            task.wait(1.2)
+            Tele.Respawns += 1
+            return true
+        end
+    end
+    return false
+end
+
+function Tele.entrance(targetPos)
+    local commF = getCommF()
+    local root = getRoot(getCharacter())
+    if not commF or not root then return false end
+    local before = (root.Position - targetPos).Magnitude
+    pcall(function()
+        commF:InvokeServer("requestEntrance", targetPos)
+    end)
+    task.wait(1.5)
+    local r2 = getRoot(getCharacter())
+    if not r2 then return false end
+    return (r2.Position - targetPos).Magnitude < before - 500
+end
+
+-- Bay băng biển: lên độ cao an toàn -> bay ngang -> hạ xuống đích
+function Tele.highFly(root, targetCF, cond)
+    local up = Vector3.new(root.Position.X, math.max(root.Position.Y, Config.TeleSafeY), root.Position.Z)
+    flyTo(root, CFrame.new(up), cond)
+    root = getRoot(getCharacter()) or root
+    local over = Vector3.new(targetCF.Position.X, math.max(targetCF.Position.Y, Config.TeleSafeY), targetCF.Position.Z)
+    flyTo(root, CFrame.new(over), cond)
+    root = getRoot(getCharacter()) or root
+    flyTo(root, targetCF, cond)
+end
+
+function Tele.travel(targetCF, cond)
+    cond = cond or function() return Config.AutoFarm end
+    local root = getRoot(getCharacter())
+    if not root then return end
+    local target = targetCF.Position
+    local dist = (root.Position - target).Magnitude
+
+    if not Config.TeleSmart or dist < Config.TeleThreshold then
+        flyTo(root, targetCF, cond)
+        return
+    end
+
+    Tele.Count += 1
+
+    -- 1) Hồi sinh nếu điểm spawn đã đặt GẦN ĐÍCH HƠN vị trí hiện tại ít nhất 60%
+    if Config.TeleRespawn and Tele.SpawnPos and cond() then
+        local spawnToTarget = (Tele.SpawnPos - target).Magnitude
+        if spawnToTarget < 1200 and spawnToTarget < dist * 0.4 then
+            if Tele.respawn() then
+                root = getRoot(getCharacter()) or root
+            end
+        end
+    end
+
+    -- 2) cổng của game
+    root = getRoot(getCharacter()) or root
+    if Config.TeleEntrance and (root.Position - target).Magnitude > Config.TeleThreshold and cond() then
+        Tele.Status = "Thử requestEntrance..."
+        if Tele.entrance(target) then
+            root = getRoot(getCharacter()) or root
+        end
+    end
+
+    -- 3) bay cao băng biển rồi hạ xuống
+    root = getRoot(getCharacter()) or root
+    if cond() then
+        if (root.Position - target).Magnitude > Config.TeleThreshold then
+            Tele.Status = "Bay cao băng biển..."
+            Tele.highFly(root, targetCF, cond)
+        else
+            Tele.Status = "Bay tới đích..."
+            flyTo(root, targetCF, cond)
+        end
+    end
+
+    -- 4) tới nơi: đặt hồi sinh để lần sau chết là về đây
+    root = getRoot(getCharacter()) or root
+    if Config.TeleAutoSpawn and (root.Position - target).Magnitude < 500 then
+        task.wait(0.5)
+        Tele.setSpawn()
+    end
+end
+
+-- Tele đảo trực tiếp bằng last-spawn remote:
+-- CommF_:InvokeServer("SetLastSpawnPoint", islandName)
+-- Cả hai tham số đều là string theo giao thức remote mà người dùng cung cấp.
+function Tele.setLastSpawnPoint(islandName)
+    local commF = getCommF()
+    if not commF then
+        Tele.Status = "Không tìm thấy RemoteFunction CommF_"
+        return false
+    end
+    local targetName = tostring(islandName)
+    if targetName == "" then return false end
+    local ok, result = pcall(function()
+        return commF:InvokeServer("SetLastSpawnPoint", targetName)
+    end)
+    if not ok or result == false then
+        Tele.Status = "SetLastSpawnPoint thất bại: " .. targetName
+        return false
+    end
+    local island = findIsland(targetName, getSea())
+    Tele.SpawnName = island and island.name or targetName
+    Tele.SpawnPos = island and island.pos or nil
+    Tele.LastIsland = Tele.SpawnName
+    Tele.Known[Tele.SpawnName] = true
+    Tele.LastSetAt = os.clock()
+    Tele.Status = "Đã đặt last spawn tại: " .. Tele.SpawnName
+    teleSaveFile()
+    return true
+end
+
+function Tele.goIsland(name)
+    local island, sea = findIsland(name, getSea())
+    if not island then
+        Tele.Status = "Không biết đảo: " .. tostring(name)
+        return false
+    end
+
+    Tele.Status = "Gọi last-spawn remote: " .. island.name
+    -- Thử đặt last spawn theo tên đảo, sau đó tự chết để server hồi sinh tại đảo đó.
+    if Tele.setLastSpawnPoint(island.name) then
+        if Tele.respawn() then
+            Tele.Status = "Đã hồi sinh trực tiếp tại: " .. island.name
+            return true
+        end
+        Tele.Status = "Remote đã nhận đảo nhưng hồi sinh không hoàn tất; chuyển sang đường bay dự phòng."
+    end
+
+    -- Dự phòng nếu server không hỗ trợ SetLastSpawnPoint cho đảo này.
+    Tele.travel(CFrame.new(island.pos + Vector3.new(0, 30, 0)), function() return State.Running end)
+    Tele.Status = "Đã tới " .. island.name .. " (dự phòng)"
+    return true
+end
+
+-- Gọi trước khi farm quest mới: nếu quái ở đảo khác thì tele luôn, không đợi "hết quái"
+function Tele.prepareForQuest(quest, cond)
+    if not Config.TeleOnQuestChange or not quest then return false end
+    local root = getRoot(getCharacter())
+    if not root then return false end
+    local sp = findSpawnPos(quest.mob)
+    if not sp then return false end
+    local near = scanEnemies(quest.mob)
+    if near[1] and near[1].Distance < Config.TeleThreshold then return false end
+    if (sp - root.Position).Magnitude < Config.TeleThreshold then return false end
+    State.Status = "Tele tới đảo quest: " .. quest.mob
+    Tele.travel(CFrame.new(sp + Vector3.new(0, currentHeight(), 0)), cond)
+    return true
+end
+
+
+------------------------------------------------------------------
 -- REMOTE & HOOK HỌC KEY
 ------------------------------------------------------------------
 local function scanRemotes()
@@ -1629,7 +1975,7 @@ local function directFire()
 end
 
 local function shouldScreenClick()
-    return Config.AutoFarm and not (State.KeyLearned and Config.HitKey ~= "")
+    return (Config.AutoFarm or State.BossTarget ~= nil) and not (State.KeyLearned and Config.HitKey ~= "")
 end
 
 local function attackMobs()
@@ -1791,7 +2137,8 @@ local function fightBoss(mob, root)
     local height = currentHeight()
     local above = part.Position + Vector3.new(0, height, 0)
     if (root.Position - above).Magnitude > 120 then
-        flyTo(root, CFrame.lookAt(above, part.Position), seaAllowed)
+        Tele.travel(CFrame.lookAt(above, part.Position), seaAllowed)
+        root = getRoot(getCharacter()) or root
     end
     root.CFrame = CFrame.lookAt(above, part.Position)
     root.AssemblyLinearVelocity = Vector3.zero
@@ -2025,9 +2372,9 @@ local Bring = {
     active = false,
     why = "chưa chạy",
     scanInterval = 0.25,
-    segmentDistance = 0.12,    -- Mỗi lần chỉ nhích 0,12 studs để chuyển động rất nhỏ
-    pauseDuration = 0.02,      -- Tạm nhả ngắn giữa các lần nhích
-    settleRadius = 4.5,        -- Đến đủ gần điểm gom thì ngừng can thiệp
+    segmentDistance = 0.12,
+    pauseDuration = 0.02,
+    settleRadius = 4.5,
 }
 
 local function restoreBringRecord(record)
@@ -2049,8 +2396,8 @@ local function restoreBringRecord(record)
     end
 end
 
-local function resetBring()
-    -- Khôi phục trạng thái gốc của mọi NPC đã được Bring quản lý.
+-- gán vào biến local đã khai báo trước ở khối Tele
+function resetBring()
     for _, record in pairs(Bring.records) do
         restoreBringRecord(record)
     end
@@ -2139,7 +2486,6 @@ local function bringStep(dt)
     local wanted = quest.mob
     if State.FarmAny then wanted = nil end
 
-    -- Quét định kỳ, không quét lại hai lần mỗi frame.
     if now - Bring.lastScan >= Bring.scanInterval then
         Bring.lastScan = now
         local seen = {}
@@ -2169,7 +2515,6 @@ local function bringStep(dt)
                                 applyBringHold(record)
                             else
                                 record.targetPos = targetPos
-                                -- NPC đã được thả hoàn toàn thì không đụng lại khi vẫn ở điểm gom.
                                 if record.phase == "settled" and distance > Bring.settleRadius + 2 then
                                     record.phase = "pulling"
                                     record.pauseUntil = 0
@@ -2185,7 +2530,6 @@ local function bringStep(dt)
         Bring.lastCandidateCount = diag.candidates
         Bring.lastAnchoredCount = diag.anchored
 
-        -- NPC chết, bị xóa hoặc rời vùng quét: khôi phục và bỏ quản lý.
         for mob, record in pairs(Bring.records) do
             if not seen[mob] then
                 restoreBringRecord(record)
@@ -2215,7 +2559,6 @@ local function bringStep(dt)
                 end
             elseif record.phase == "pulling" then
                 diag.moving += 1
-                -- Mỗi chu kỳ chỉ tiến một đoạn ngắn; trong thời gian pause không ghi CFrame.
                 local delta = record.targetPos - part.Position
                 local length = delta.Magnitude
                 if length > Bring.settleRadius then
@@ -2246,7 +2589,6 @@ local function bringStep(dt)
     Bring.why = "Bring Mob V5.10 (micro-step 0.12 studs / tạm nhả / settled)"
 end
 
--- Chỉ dùng một vòng Heartbeat để tránh gọi bringStep hai lần mỗi frame.
 connect(RunService.Heartbeat, function(dt)
     pcall(bringStep, dt)
 end)
@@ -2559,9 +2901,10 @@ end
 task.spawn(function()
     while State.Running do
         task.wait(math.max(Config.SkillDelay, 0.3))
-        if Config.AutoSkill and Config.AutoFarm and not State.Busy and os.clock() - State.LastEngageAt < 1.2 then
+        if Config.AutoSkill and (Config.AutoFarm or State.BossTarget) and (not State.Busy or State.BossTarget)
+            and os.clock() - State.LastEngageAt < 1.2 then
             for _, key in ipairs(SkillOrder) do
-                if Config[key] and State.Running and Config.AutoFarm then
+                if Config[key] and State.Running and (Config.AutoFarm or State.BossTarget) then
                     pressKey(SkillCodes[key])
                     task.wait(0.18)
                 end
@@ -2638,7 +2981,9 @@ task.spawn(function()
                             best, bestDist = f, d
                         end
                     end
-                    flyTo(root, CFrame.new(best.part.Position + Vector3.new(0, 3, 0)), function() return Config.AutoFruit end)
+                    -- v6.1: trái ở đảo xa thì dùng Tele (bay cao băng biển), gần thì bay như cũ
+                    Tele.travel(CFrame.new(best.part.Position + Vector3.new(0, 3, 0)), function() return Config.AutoFruit end)
+                    root = getRoot(getCharacter()) or root
                     pcall(function()
                         root.CFrame = best.part.CFrame
                         if firetouchinterest then
@@ -2845,6 +3190,125 @@ local function setLowEffects(on)
 end
 
 ------------------------------------------------------------------
+-- v6.1: AUTO ELITE HUNTER + AUTO BOSS LIST
+------------------------------------------------------------------
+local BossList = {
+    -- { tên model trong Workspace.Enemies, Sea }
+    { "Diablo", 3 }, { "Urban", 3 }, { "Deandre", 3 },          -- Elite Hunter
+    { "Dough King", 3 }, { "Cake Prince", 3 }, { "Longma", 3 },
+    { "Darkbeard", 2 }, { "Don Swan", 2 }, { "Cursed Captain", 2 }, { "Order", 2 },
+    { "Saber Expert", 1 }, { "Thunder God", 1 }, { "The Gorilla King", 1 },
+    { "Bobby", 1 }, { "Yeti", 1 }, { "Vice Admiral", 1 }, { "Warden", 1 },
+    { "Chief Warden", 1 }, { "Swan", 1 }, { "Magma Admiral", 1 }, { "Fishman Lord", 1 },
+    { "Wysper", 1 }, { "Cyborg", 3 }, { "Greybeard", 1 },
+}
+local BossPickOptions = { "Tất cả" }
+for _, b in ipairs(BossList) do BossPickOptions[#BossPickOptions + 1] = b[1] end
+
+local function findBossAny(name)
+    local folder = Workspace:FindFirstChild("Enemies")
+    if not folder then return nil end
+    for _, mob in ipairs(folder:GetChildren()) do
+        if nameMatches(mob.Name, name) then
+            local hum = mob:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 and mob:FindFirstChild("HumanoidRootPart") then
+                return mob
+            end
+        end
+    end
+    return nil
+end
+
+-- đánh 1 boss tới khi chết hoặc quá giờ; trả về true nếu hạ được
+local function killBoss(mob, condFn, maxSeconds)
+    local deadline = os.clock() + (maxSeconds or 240)
+    local hadHit = false
+    while State.Running and condFn() and os.clock() < deadline do
+        local root = getRoot(getCharacter())
+        local hum = mob and mob:FindFirstChildOfClass("Humanoid")
+        local part = mob and mob:FindFirstChild("HumanoidRootPart")
+        if not root then
+            task.wait(1)
+            continue
+        end
+        if not mob.Parent or not hum or not part or hum.Health <= 0 then
+            State.BossTarget = nil
+            return hadHit
+        end
+        State.BossTarget = mob
+        hadHit = true
+        State.LastEngageAt = os.clock()
+        if Config.AutoEquip then equipWeapon() end
+        if Config.AutoHaki then ensureHaki() end
+        local above = part.Position + Vector3.new(0, currentHeight(), 0)
+        if (root.Position - above).Magnitude > 120 then
+            Tele.travel(CFrame.lookAt(above, part.Position), condFn)
+            root = getRoot(getCharacter()) or root
+        end
+        pcall(function()
+            root.CFrame = CFrame.lookAt(above, part.Position)
+            root.AssemblyLinearVelocity = Vector3.zero
+        end)
+        attackMobs()
+        task.wait(0.1)
+    end
+    State.BossTarget = nil
+    return false
+end
+
+task.spawn(function()
+    local lastAsk = 0
+    while State.Running do
+        task.wait(2)
+
+        -- Elite Hunter (Sea 3): hỏi NPC, boss Elite xuất hiện thì đánh
+        if Config.AutoElite and getSea() == 3 and (State.Busy == nil or State.Busy == "Elite Hunter") then
+            pcall(function()
+                local cond = function() return Config.AutoElite end
+                local target
+                for _, n in ipairs({ "Diablo", "Urban", "Deandre" }) do
+                    target = findBossAny(n)
+                    if target then break end
+                end
+                if not target and os.clock() - lastAsk > 25 then
+                    lastAsk = os.clock()
+                    local commF = getCommF()
+                    if commF then
+                        -- CHECK: "EliteHunter" là remote nhận nhiệm vụ Elite Hunter ở bản hiện tại
+                        pcall(function() commF:InvokeServer("EliteHunter") end)
+                    end
+                end
+                if target then
+                    State.Busy = "Elite Hunter"
+                    State.Status = "Elite Hunter: đánh " .. cleanBossName(target.Name)
+                    killBoss(target, cond, 300)
+                end
+            end)
+            if State.Busy == "Elite Hunter" then State.Busy = nil end
+        end
+
+        -- Săn boss trong danh sách (chỉ boss thuộc Sea hiện tại)
+        if Config.AutoBossList and (State.Busy == nil or State.Busy == "Săn boss") then
+            pcall(function()
+                local cond = function() return Config.AutoBossList end
+                for _, b in ipairs(BossList) do
+                    if b[2] == getSea() and (Config.BossPick == "Tất cả" or Config.BossPick == b[1]) then
+                        local m = findBossAny(b[1])
+                        if m then
+                            State.Busy = "Săn boss"
+                            State.Status = "Săn boss: " .. b[1]
+                            killBoss(m, cond, 300)
+                            break
+                        end
+                    end
+                end
+            end)
+            if State.Busy == "Săn boss" then State.Busy = nil end
+        end
+    end
+end)
+
+------------------------------------------------------------------
 -- UNLOAD SẠCH
 ------------------------------------------------------------------
 local MusicCleanup
@@ -2859,6 +3323,9 @@ local function Unload()
     Config.AutoPumpkin = false
     Config.AutoChest = false
     Config.AutoFruit = false
+    Config.AutoElite = false
+    Config.AutoBossList = false
+    Config.AIAutoPilot = false
     State.Busy = nil
     clearHighlights()
     pcall(clearFruitMarks)
@@ -3144,12 +3611,9 @@ end
 ------------------------------------------------------------------
 ; (function()
 --=====================================================================
--- KHỐI A  (thay đoạn header cũ: httpRequest / AI_MODEL / AIKey / Agent / AllowedRemote)
---=====================================================================
---=====================================================================
--- H-HUB BRAIN v2 (TĨNH, NHÚNG TRỰC TIẾP, KHÔNG TẢI TỪ NGOÀI)
--- Dán khối này vào ngay đầu IIFE bảng AI (thay cho BRAIN_URL / BRAIN_CACHE).
--- Giao diện tương thích: BrainLib.new{Name,FileName} / :AddFeature / :Process / .features
+-- H-HUB BRAIN v3.1 (TĨNH, OFFLINE, NHÚNG TRỰC TIẾP)
+-- Từ vựng lớn, chịu sai chính tả / không dấu, nhớ ngữ cảnh, tự suy nghĩ (AutoPilot),
+-- hiểu chuỗi nhiệm vụ (Race V2/V3, Dragon Talon, Dojo Belts, Draco, Sea Event, Tushita, Saber...).
 --=====================================================================
 local BrainLib = (function()
 local HttpService = game:GetService("HttpService")
@@ -3216,11 +3680,9 @@ end
 local function fuzzyWord(a, b)
 	if a == b then return true end
 	local m = math.max(#a, #b)
-	-- Cho phép sai 1 ký tự với từ ngắn từ 3 ký tự (fam -> farm),
-	-- từ dài hơn cho phép tối đa 2 ký tự khi thật sự gần.
-	if m < 3 then return false end
-	local d = lev(a, b)
-	return d <= (m >= 9 and 2 or 1)
+	-- Cho phép lỗi 1 ký tự với từ ngắn như "fam" -> "farm".
+	if m <= 4 then return math.abs(#a - #b) <= 1 and lev(a, b) <= 1 end
+	return lev(a, b) <= (m >= 9 and 2 or 1)
 end
 
 local function hasPhrase(text, phrase)
@@ -3233,15 +3695,20 @@ local function set(list)
 	return t
 end
 
-local ON = set({ "bat", "mo", "kich", "on", "enable", "start", "chay", "khoi", "activate" })
-local OFF = set({ "tat", "ngung", "dung", "off", "disable", "stop", "huy", "thoi", "ngat" })
-local FLIP = set({ "toggle", "dao", "lat" })
-local INC = set({ "tang", "nang", "them", "increase", "up" })
-local DEC = set({ "giam", "ha", "bot", "decrease", "down", "thap" })
-local STOPW = set({ "the", "of", "a", "an" })
+-- Từ vựng động từ (đã mở rộng nhiều cách nói)
+local ON = set({ "bat", "mo", "kich", "hoat", "on", "enable", "start", "chay", "khoi", "activate", "turn" })
+local OFF = set({ "tat", "ngung", "off", "disable", "stop", "huy", "thoi", "ngat", "khoa", "pause", "cancel" })
+-- "dung" vừa là "dùng" vừa là "dừng": chỉ coi là OFF khi đi kèm "lai"/"het" (xử lý riêng bên dưới)
+local FLIP = set({ "toggle", "dao", "lat", "switch" })
+local INC = set({ "tang", "nang", "them", "increase", "up", "cao", "lon", "nhanh" })
+local DEC = set({ "giam", "ha", "bot", "decrease", "down", "thap", "nho", "cham" })
+local STOPW = set({ "the", "of", "a", "an", "cua", "cho", "toi", "minh", "giup", "voi", "di", "nhe", "nha", "ne", "thu", "xem" })
 
 local function verbOf(ws)
+	local hasLai = false
+	for _, w in ipairs(ws) do if w == "lai" or w == "het" then hasLai = true end end
 	for _, w in ipairs(ws) do
+		if w == "dung" and hasLai then return "off" end
 		if ON[w] then return "on" elseif OFF[w] then return "off" elseif FLIP[w] then return "flip" end
 	end
 	return nil
@@ -3295,25 +3762,27 @@ local function bestName(text, names)
 	return best, bestScore
 end
 
----------------- KIẾN THỨC NHIỆM VỤ (tham khảo, game có thể đã đổi) ----------------
+---------------- KIẾN THỨC (tham khảo, game có thể đã đổi) ----------------
 local GUIDES = {
-	{ names = { "saber", "kiem saber" }, text = "Saber (khoảng Lv 200, Sea 1): giải đố ở Jungle/Desert (đuốc, cần gạt, bình độc, relic...) để gọi boss Saber Expert, hạ boss là nhận kiếm. Phần đố cần làm tay; khi boss đã xuất hiện hãy bảo mình 'đánh Saber Expert'." },
 	{ names = { "godhuman", "god human" }, text = "Godhuman (Sea 3): cần mastery cao ở các võ (Superhuman, Death Step, Sharkman Karate, Electric Claw, Dragon Talon) + nguyên liệu (Fish Tail, Magma Ore, Mystic Droplet, Dragon Scale) + Beli/Fragments. Mình có thể farm mob rơi nguyên liệu nếu bạn nói tên mob." },
 	{ names = { "cdk", "cursed dual katana" }, text = "Cursed Dual Katana (Sea 3): cần sở hữu cả Tushita lẫn Yama, đủ mastery, rồi làm chuỗi thử thách mở cổng CDK. Phần lớn bước phải làm tay." },
-	{ names = { "tushita" }, text = "Tushita (Sea 3): làm chuỗi thắp đuốc ở Floating Turtle rồi hạ boss Longma. Khi Longma xuất hiện, bảo mình 'đánh Longma'." },
-	{ names = { "yama" }, text = "Yama (Sea 3): rút kiếm ở Haunted Castle sau khi đủ điều kiện (cần hạ nhiều Elite). Mình hỗ trợ đánh Elite khi chúng xuất hiện." },
+	{ names = { "yama" }, text = "Yama (Sea 3): rút kiếm ở Haunted Castle sau khi đủ điều kiện (cần hạ nhiều Elite). Mình hỗ trợ đánh Elite khi chúng xuất hiện (bật Auto Elite)." },
 	{ names = { "soul guitar", "guitar" }, text = "Soul Guitar (Sea 3): làm chuỗi đố ở Haunted Castle vào đêm trăng tròn, cần nhiều vật phẩm. Phần giải đố cần làm tay." },
-	{ names = { "race v2", "tong v2", "evo race" }, text = "Race V2 (Sea 2): gặp Alchemist, hái 3 loại hoa theo yêu cầu rồi nộp, cần một khoản Beli. Hoa hiếm nên cần đi nhiều nơi." },
-	{ names = { "race v3", "tong v3" }, text = "Race V3 (Sea 3): gặp NPC Arowe và làm nhiệm vụ theo từng tộc." },
 	{ names = { "race v4", "tong v4", "temple of time" }, text = "Race V4 (Sea 3): cần Race V3, tìm Mirage Island lấy Blue Gear, rồi tới Temple of Time vào đêm trăng tròn." },
 	{ names = { "raid", "thuc tinh", "awaken" }, text = "Raid: mua chip raid (từ Sea 2), mở raid và dọn 5 đảo để nhận Fragments / thức tỉnh trái. Mình hỗ trợ đánh mob nhưng việc chọn chip bạn cần làm tay." },
-	{ names = { "dough king" }, text = "Dough King (Sea 3, Sweet Chateau): triệu hồi bằng Sweet Chalice sau khi dọn Cake Prince. Khi boss xuất hiện, bảo mình 'đánh Dough King'." },
 	{ names = { "rip indra", "indra" }, text = "rip_indra: ở Sea 2 (Lv 1500+) là boss trong chuỗi mở Sea 3 - bật Auto Sea sẽ tự đánh khi nó xuất hiện. Hoặc bảo mình 'đánh rip_indra'." },
-	{ names = { "dark step" }, text = "Dark Step (Sea 2): học từ NPC dạy võ ở Sea 2, cần Beli. Mình chưa tự động hoá được việc học." },
+	{ names = { "dark step" }, text = "Dark Step (Sea 2): học từ NPC dạy võ ở Sea 2, cần Beli. Mình chưa tự động hoá được việc mua." },
 	{ names = { "electric claw" }, text = "Electric Claw (Sea 3): học từ NPC ở Floating Turtle, cần Beli/Fragments và mastery võ nền." },
 	{ names = { "haki", "buso", "ken", "quan sat" }, text = "Haki: Auto Haki bật Buso (vũ trang), Auto Ken bật Haki quan sát. Bạn nói 'bật auto haki' hoặc 'bật auto ken'." },
 	{ names = { "kiem tien", "beli", "fragment", "fragments" }, text = "Kiếm Beli/Fragments: farm level liên tục, Raid, Sea Events, Elite Hunter, nhặt rương (Auto Rương) và trái ác quỷ để bán." },
+	{ names = { "dragon egg", "trung rong" }, text = "Dragon Egg: dùng cho Draco Race, đổi ở Dragon Wizard sau khi có Dojo Belt đen (tham khảo, có thể đã đổi)." },
+	{ names = { "hydra", "hydra island", "dao hydra" }, text = "Hydra Island (Sea 3): có Dragon Dojo (Dojo Trainer, Uzoth, Dragon Hunter, Dragon Wizard). Nói 'tele tới Hydra Island (last spawn + hồi sinh trực tiếp)' để mình đưa bạn tới." },
+	{ names = { "prehistoric", "dao tien su", "volcano" }, text = "Prehistoric Island (Sea 3): đảo có sự kiện núi lửa và xương khủng long (liên quan Dojo Belt đen). Mình chưa tự hoá được sự kiện này." },
+	{ names = { "mirage", "mirage island" }, text = "Mirage Island (Sea 3): đảo ẩn xuất hiện theo chu kỳ trên biển, cần cho Race V4 (Blue Gear). Cần đi thuyền tìm bằng tay." },
+	{ names = { "kitsune", "kitsune island" }, text = "Kitsune Island (Sea 3): sự kiện đảo cáo, đổi vật phẩm lấy phần thưởng. Cần tìm đảo trên biển bằng tay." },
+	{ names = { "sword", "kiem", "kiem tot" }, text = "Kiếm tốt theo giai đoạn: Saber/Pole (Sea 1) -> Buddy Sword/Dark Blade/Rengoku (Sea 2) -> Hallow Scythe/CDK/Dragonheart (Sea 3). Hỏi mình từng loại để biết yêu cầu." },
 }
+
 local GUIDE_NAMES, GUIDE_BY_NAME = {}, {}
 for _, g in ipairs(GUIDES) do
 	for _, n in ipairs(g.names) do
@@ -3322,17 +3791,177 @@ for _, g in ipairs(GUIDES) do
 	end
 end
 
+-- CHUỖI NHIỆM VỤ: tự chạy được các bước đã biết, bước chưa tự động hoá sẽ dừng chờ bạn ("tiếp tục").
+local CHAINS = {
+	{
+		id = "race_v2",
+		names = { "race v2", "tong v2", "tien hoa toc", "evolve race", "alchemist" },
+		title = "Race V2 (Sea 2)",
+		info = "Race V2 (Sea 2): gặp NPC Alchemist, nhận nhiệm vụ và gom 3 loại hoa (xanh/đỏ/vàng; hoa hiếm, nguồn rơi ngẫu nhiên và có thể đã đổi), nộp lại, tốn một khoản Beli. Mình tự đi tới Alchemist và gọi remote; phần hái hoa bạn làm tay.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 2 }, text = "Kiểm tra đang ở Sea 2" },
+			{ tool = "fly_to_object", args = { name = "Alchemist" }, text = "Bay tới Alchemist" },
+			{ tool = "call_remote", args = { args = { "Alchemist", "1" } }, text = "Nhận nhiệm vụ Alchemist" },
+			{ tool = "manual", args = { text = "Hái đủ 3 loại hoa (xanh/đỏ/vàng) theo yêu cầu của Alchemist." }, text = "Chờ bạn gom hoa" },
+			{ tool = "fly_to_object", args = { name = "Alchemist" }, text = "Quay lại Alchemist" },
+			{ tool = "call_remote", args = { args = { "Alchemist", "2" } }, text = "Nộp hoa" },
+			{ tool = "call_remote", args = { args = { "Alchemist", "3" } }, text = "Hoàn tất nâng cấp" },
+		},
+	},
+	{
+		id = "race_v3",
+		names = { "race v3", "tong v3", "arowe" },
+		title = "Race V3 (Sea 3)",
+		info = "Race V3: gặp NPC Arowe ở Sea 3 và làm nhiệm vụ theo từng tộc (cần Race V2). Mình đi tới Arowe giúp bạn, nhiệm vụ cụ thể làm tay.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra đang ở Sea 3" },
+			{ tool = "fly_to_object", args = { name = "Arowe" }, text = "Bay tới Arowe" },
+			{ tool = "manual", args = { text = "Nói chuyện với Arowe và làm yêu cầu theo tộc của bạn." }, text = "Chờ bạn làm nhiệm vụ tộc" },
+		},
+	},
+	{
+		id = "dragon_talon",
+		names = { "dragon talon", "dragon claw", "vo rong", "dragon breath" },
+		title = "Dragon Talon (Sea 3)",
+		info = "Dragon Talon: Sea 3, NPC Uzoth ở Dragon Dojo trên Hydra Island. Theo các hướng dẫn mới nhất: cần Dragon Breath có mastery đủ cao, Fire Essence, Beli và Fragments (con số có thể đổi theo bản cập nhật). Mình tele tới Hydra và tới Uzoth; việc mua/nâng cấp bạn bấm tay.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra đang ở Sea 3" },
+			{ tool = "tele_island", args = { name = "Hydra Island" }, text = "Tele tới Hydra Island" },
+			{ tool = "fly_to_object", args = { name = "Uzoth" }, text = "Bay tới Uzoth (Dragon Dojo)" },
+			{ tool = "manual", args = { text = "Nói chuyện với Uzoth, nộp Fire Essence + Beli + Fragments và nhận Dragon Talon." }, text = "Chờ bạn mua / nâng cấp" },
+		},
+	},
+	{
+		id = "dojo_belts",
+		names = { "dojo belt", "dojo belts", "dai dojo", "belt dojo", "dojo trainer", "dojo" },
+		title = "Dojo Belts (Sea 3, Hydra)",
+		info = "Dojo Belts: Sea 3 (Lv 1500+), cần Dragon Talon mastery 500 (kill/mastery phải bằng Dragon Talon). Dojo Trainer ở Dragon Dojo, Hydra Island; tối đa khoảng 3 nhiệm vụ mỗi 12 giờ. Đai trắng: hạ 20 quái cùng cấp (±100). Đai tím: hạ 3 Elite Pirate. Đai đen: sự kiện núi lửa Prehistoric Island + 3 xương khủng long. Đai vàng mở Dragon Hunter, đai đen mở Dragon Wizard / Draco Race.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra đang ở Sea 3" },
+			{ tool = "tele_island", args = { name = "Hydra Island" }, text = "Tele tới Hydra Island" },
+			{ tool = "fly_to_object", args = { name = "Dojo Trainer" }, text = "Bay tới Dojo Trainer" },
+			{ tool = "manual", args = { text = "Cầm Dragon Talon (mastery 500), nói chuyện với Dojo Trainer và nhận nhiệm vụ đai." }, text = "Chờ bạn nhận nhiệm vụ đai" },
+			{ tool = "farm_for", args = { seconds = 420 }, text = "Farm quái cùng cấp (7 phút)" },
+			{ tool = "fly_to_object", args = { name = "Dojo Trainer" }, text = "Quay lại Dojo Trainer" },
+			{ tool = "manual", args = { text = "Nộp nhiệm vụ và nhận đai. Đai tím/đen cần làm tay (Elite Pirate / núi lửa)." }, text = "Chờ bạn nhận đai" },
+		},
+	},
+	{
+		id = "draco_race",
+		names = { "draco race", "tong rong", "dragon race", "draco", "tong draco" },
+		title = "Draco Race (Sea 3)",
+		info = "Draco Race (tộc Rồng): cần Dojo Belt đen từ Dojo Trainer và Dragon Egg, rồi nói chuyện với Dragon Wizard ở Dragon Dojo (Hydra Island). Mình đưa bạn tới Dragon Wizard; các bước nhận đai và trứng làm tay.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra đang ở Sea 3" },
+			{ tool = "tele_island", args = { name = "Hydra Island" }, text = "Tele tới Hydra Island" },
+			{ tool = "fly_to_object", args = { name = "Dragon Wizard" }, text = "Bay tới Dragon Wizard" },
+			{ tool = "manual", args = { text = "Đưa Dojo Belt đen + Dragon Egg cho Dragon Wizard để mở Draco Race." }, text = "Chờ bạn hoàn tất tộc Rồng" },
+		},
+	},
+	{
+		id = "sea_event",
+		names = { "sea event", "su kien bien", "sea beast", "quai bien", "terrorshark", "piranha", "leviathan", "san quai bien", "thuyen ma" },
+		title = "Sea Event (săn Sea Beast / Terrorshark / Piranha)",
+		info = "Sea Event: ra biển bằng thuyền, Sea Beast / Terrorshark / Piranha / Ghost Ship xuất hiện theo chu kỳ. Bạn lái thuyền ra khơi, mình tự quét và đánh mục tiêu gần nhất trong thời gian đã định. Leviathan cần mở khoá riêng và làm tay.",
+		steps = {
+			{ tool = "manual", args = { text = "Lên thuyền, ra vùng biển có sự kiện (Sea 2/3), rồi gõ 'tiếp tục' để mình bắt đầu săn." }, text = "Chờ bạn ra biển" },
+			{ tool = "hunt_sea", args = { seconds = 300 }, text = "Săn sự kiện biển (5 phút)" },
+		},
+	},
+	{
+		id = "full_progression",
+		names = { "len max", "max level", "full tu dong", "choi giup", "cay thue", "lam tat ca", "len cap toi da", "tu dong het" },
+		title = "Cày thuê: lên max level",
+		info = "Cày thuê: bật Auto Farm + Auto Sea và cày tới Lv 2800 (Sea 1 -> 2 -> 3 theo chuỗi Ice Admiral / rip_indra). Mỗi lần đổi Sea game dịch chuyển bạn sang server mới nên script cần chạy lại (hoặc để auto-execute).",
+		steps = {
+			{ tool = "set_config", args = { feature = "AutoSea", value = true }, text = "Bật Auto Sea" },
+			{ tool = "farm_to_level", args = { level = 2800 }, text = "Cày tới Lv 2800" },
+		},
+	},
+	{
+		id = "tushita",
+		names = { "tushita", "kiem tushita", "lay tushita" },
+		title = "Tushita (Sea 3)",
+		info = "Tushita: mở bằng chuỗi đuốc ở Floating Turtle rồi hạ boss Longma. Mình bay tới Floating Turtle và tự đánh Longma khi nó xuất hiện; phần thắp đuốc bạn làm tay.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra Sea 3" },
+			{ tool = "tele_island", args = { name = "Floating Turtle" }, text = "Tele tới Floating Turtle" },
+			{ tool = "manual", args = { text = "Thắp các đuốc theo thứ tự yêu cầu để gọi Longma, xong gõ 'tiếp tục'." }, text = "Chờ bạn thắp đuốc" },
+			{ tool = "kill_mob", args = { name = "Longma", count = 1, timeout = 300 }, text = "Hạ Longma" },
+		},
+	},
+	{
+		id = "elite_hunter",
+		names = { "elite hunter", "san elite", "elite boss", "diablo", "urban", "deandre" },
+		title = "Elite Hunter (Sea 3)",
+		info = "Elite Hunter: nhận nhiệm vụ từ NPC Elite Hunter ở Sea 3, boss Elite (Deandre/Diablo/Urban) xuất hiện theo chu kỳ. Mình bật Auto Elite để tự hỏi NPC và đánh khi boss spawn.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra Sea 3" },
+			{ tool = "set_config", args = { feature = "AutoElite", value = true }, text = "Bật Auto Elite" },
+		},
+	},
+	{
+		id = "pole",
+		names = { "pole", "pole v1", "thunder god" },
+		title = "Pole v1 (Sea 1)",
+		info = "Pole: hạ boss Thunder God ở Upper Skylands (Sea 1) để có cơ hội rơi Pole.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 1 }, text = "Kiểm tra Sea 1" },
+			{ tool = "tele_island", args = { name = "Skylands" }, text = "Tele tới Skylands" },
+			{ tool = "kill_mob", args = { name = "Thunder God", count = 1, timeout = 300 }, text = "Hạ Thunder God" },
+		},
+	},
+	{
+		id = "saber",
+		names = { "saber", "kiem saber", "lay saber" },
+		title = "Saber (Sea 1)",
+		info = "Saber: giải đố ở Jungle/Desert để gọi Saber Expert, hạ boss là nhận kiếm.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 1 }, text = "Kiểm tra Sea 1" },
+			{ tool = "tele_island", args = { name = "Jungle" }, text = "Tele tới Jungle" },
+			{ tool = "manual", args = { text = "Giải đố đuốc/cần gạt/bình độc tới khi Saber Expert xuất hiện, xong gõ 'tiếp tục'." }, text = "Chờ bạn giải đố" },
+			{ tool = "kill_mob", args = { name = "Saber Expert", count = 1, timeout = 300 }, text = "Hạ Saber Expert" },
+		},
+	},
+	{
+		id = "dough_king",
+		names = { "dough king", "bot nhao", "cake prince", "sweet chalice" },
+		title = "Dough King (Sea 3)",
+		info = "Dough King: hạ Cake Prince bằng cách dọn quái ở Sea of Treats, dùng Sweet Chalice để triệu hồi Dough King.",
+		steps = {
+			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra Sea 3" },
+			{ tool = "tele_island", args = { name = "Sea of Treats" }, text = "Tele tới Sea of Treats" },
+			{ tool = "manual", args = { text = "Dùng Sweet Chalice để triệu hồi, xong gõ 'tiếp tục'." }, text = "Chờ bạn triệu hồi" },
+			{ tool = "kill_mob", args = { name = "Dough King", count = 1, timeout = 400 }, text = "Hạ Dough King" },
+		},
+	},
+}
+local CHAIN_NAMES, CHAIN_BY_NAME = {}, {}
+for _, c in ipairs(CHAINS) do
+	for _, n in ipairs(c.names) do
+		CHAIN_NAMES[#CHAIN_NAMES + 1] = n
+		CHAIN_BY_NAME[n] = c
+	end
+end
+
 local BOSSES = set({ "ice admiral", "rip indra", "don swan", "saber expert", "the gorilla king", "bobby", "the saw", "yeti",
 	"vice admiral", "warden", "chief warden", "swan", "magma admiral", "fishman lord", "wysper", "thunder god", "cyborg",
 	"diamond", "jeremy", "fajita", "smoke admiral", "awakened ice admiral", "tide keeper", "darkbeard", "cake queen",
 	"dough king", "soul reaper", "cursed captain", "greybeard", "stone", "island empress", "kilo admiral",
-	"captain elephant", "beautiful pirate", "longma", "mob leader" })
+	"captain elephant", "beautiful pirate", "longma", "mob leader", "diablo", "urban", "deandre", "cake prince", "order" })
 
 local DEPS = { AutoSea = { "AutoFarm" }, AutoSkill = { "AutoFarm" }, AutoHop = { "AutoFarm" } }
-local KILL_CUES = { "danh", "diet", "giet", "san", "kill", "ha guc", "tieu diet", "attack", "hunt" }
-local NAV_CUES = { "den", "toi", "bay den", "bay toi", "di den", "di toi", "ghe", "bay" }
+local KILL_CUES = { "danh", "diet", "giet", "san", "kill", "ha guc", "tieu diet", "attack", "hunt", "chem", "nga", "triet ha", "xu", "dap", "ban" }
+local NAV_CUES = { "den", "toi", "bay den", "bay toi", "di den", "di toi", "ghe", "bay", "lai gan", "tim", "chay toi", "chay den" }
+local TELE_CUES = { "tele", "teleport", "dich chuyen", "dich", "bay toi", "bay den", "di toi", "di den", "den", "toi", "qua dao", "sang dao", "ve dao", "chuyen toi", "chuyen den" }
+local ACT_CUES = { "lam", "lay", "hoan thanh", "chay", "bat dau", "thuc hien", "tu dong", "nhan", "xong", "di lam", "tien hanh", "cay", "get", "unlock", "mo khoa", "len" }
+local GUIDE_CUES = { "huong dan", "cach", "lam sao", "nhu the nao", "how", "chi", "la gi", "can gi", "yeu cau", "o dau", "dieu kien", "guide", "tips", "meo" }
 
-local HELP = "Mình là AI nội bộ (chạy offline ngay trong script). Thử: 'bật auto farm và haki', 'tắt fullbright', 'tăng tốc độ bay lên 300', 'lên level 1500', 'qua sea 2', 'đánh Ice Admiral', 'đánh 5 con Bandit', 'nhặt trái', 'đến Military Detective', 'nhận nhiệm vụ', 'gợi ý', 'trạng thái', 'lấy saber', 'học bí ngô = auto bí ngô', 'dừng'."
+local HELP = "Mình là AI nội bộ (offline, chạy ngay trong script). Thử: 'bật auto farm và haki' · 'tắt fullbright' · 'tăng tốc độ bay lên 300' · 'lên level 1500' · 'qua sea 2' · 'đánh Ice Admiral' · 'đánh 5 con Bandit' · 'nhặt trái' · 'đến Military Detective' · 'tele tới Hydra Island (last spawn + hồi sinh trực tiếp)' · 'đặt hồi sinh ở đây' · 'làm race v2' · 'lấy dragon talon' · 'làm dojo belt' · 'làm draco race' · 'lấy tushita' · 'lấy saber' · 'săn elite' · 'bật auto boss' · 'săn sea beast' · 'cày thuê lên max' · 'bật tự động (autopilot)' · 'tiếp tục' · 'gợi ý' · 'trạng thái' · 'bao lâu nữa lên level' · 'học bí ngô = auto bí ngô' · 'dừng'."
+
+local function pick(list)
+	return list[math.random(#list)]
+end
 
 ---------------- khởi tạo / lưu bộ nhớ ----------------
 function Brain.new(opt)
@@ -3342,7 +3971,8 @@ function Brain.new(opt)
 	self.features = {}
 	self._aliases = {}
 	self._dirty = true
-	self.mem = { lastFeature = nil, uses = {}, learned = {}, turns = 0 }
+	self._ap = {}
+	self.mem = { lastFeature = nil, uses = {}, learned = {}, turns = 0, lastChain = nil }
 	self:_load()
 	return self
 end
@@ -3355,6 +3985,7 @@ function Brain:_load()
 				if type(data.learned) == "table" then self.mem.learned = data.learned end
 				if type(data.uses) == "table" then self.mem.uses = data.uses end
 				if type(data.lastFeature) == "string" then self.mem.lastFeature = data.lastFeature end
+				if type(data.lastChain) == "string" then self.mem.lastChain = data.lastChain end
 			end
 		end
 	end)
@@ -3364,7 +3995,8 @@ function Brain:_save()
 	pcall(function()
 		if self.FileName and writefile then
 			writefile(self.FileName, HttpService:JSONEncode({
-				learned = self.mem.learned, uses = self.mem.uses, lastFeature = self.mem.lastFeature,
+				learned = self.mem.learned, uses = self.mem.uses,
+				lastFeature = self.mem.lastFeature, lastChain = self.mem.lastChain,
 			}))
 		end
 	end)
@@ -3478,7 +4110,7 @@ local function advise(self, env)
 		end
 	elseif sea == 2 then
 		if lv < 1500 then
-			tip("Sea 2 (Lv " .. lv .. "): tiếp tục farm" .. (spot and (" '" .. spot .. "'") or "") .. " tới Lv 1500 rồi 'qua sea 3'.")
+			tip("Sea 2 (Lv " .. lv .. "): tiếp tục farm" .. (spot and (" '" .. spot .. "'") or "") .. " tới Lv 1500 rồi 'qua sea 3'. Có thể thêm 'làm race v2'.")
 		else
 			tip("Đủ Lv 1500: nói 'qua sea 3' (một số bước Sea 3 vẫn phải làm tay).")
 		end
@@ -3486,24 +4118,30 @@ local function advise(self, env)
 		if lv < 2800 then
 			tip("Sea 3 (Lv " .. lv .. "): farm" .. (spot and (" '" .. spot .. "'") or "") .. " tới Lv 2800. Nói 'lên level 2800'.")
 		else
-			tip("Bạn đã gần/đạt max level - hãy nhắm tới vũ khí/race (hỏi mình 'lấy cdk', 'race v4'...).")
+			tip("Bạn đã gần/đạt max level - hãy nhắm tới tộc/vũ khí: 'làm dragon talon', 'làm dojo belt', 'làm draco race', 'lấy tushita', 'race v4'.")
+		end
+		if lv >= 1500 then
+			tip("Sea 3 có Hydra Island (Dragon Dojo): nói 'tele tới Hydra Island (last spawn + hồi sinh trực tiếp)' hoặc 'lấy dragon talon'. Có thể bật Auto Elite để kiếm Fragments.")
 		end
 	end
 	if not cfg.AutoFarm then tip("Auto Farm đang tắt - nói 'bật auto farm'.") end
 	if cfg.AutoHaki == false then tip("Auto Haki chưa bật - nói 'bật haki'.") end
 	if cfg.AutoStats == false then tip("Chưa tự cộng điểm - nói 'bật auto cộng điểm'.") end
+	if cfg.TeleSmart == false then tip("Tele thông minh đang tắt - nói 'bật tele' để di chuyển giữa đảo nhanh hơn.") end
 	if env.fruits and env.fruits[1] then
 		tip("Có trái '" .. tostring(env.fruits[1].name) .. "' cách " .. tostring(env.fruits[1].dist) .. " stud - nói 'nhặt trái'.")
 	end
 	if (env.chests or 0) > 0 and not cfg.AutoChest then
 		tip("Có " .. env.chests .. " rương gần đây - nói 'bật auto rương'.")
 	end
-	while #tips > 5 do table.remove(tips) end
+	if cfg.AIAutoPilot == false then tip("Muốn mình tự lo việc vặt (Haki, cộng điểm, nhặt trái...)? Nói 'bật tự động'.") end
+	while #tips > 6 do table.remove(tips) end
 	return table.concat(tips, "\n")
 end
 
 local function statusText(self, env)
 	local parts = { string.format("Lv %s | Sea %s", tostring(env.level or "?"), tostring(env.sea or "?")) }
+	if env.island then parts[#parts + 1] = "Gần đảo: " .. tostring(env.island) end
 	if env.hp then parts[#parts + 1] = string.format("HP %d/%d", env.hp, env.hpMax or env.hp) end
 	if env.questUI and env.questUI ~= "không có" then parts[#parts + 1] = "Quest: " .. env.questUI
 	elseif env.quest then parts[#parts + 1] = "Quest dự kiến: " .. tostring(env.quest.mob) end
@@ -3511,6 +4149,7 @@ local function statusText(self, env)
 		parts[#parts + 1] = string.format("Quái gần nhất: %s (%d stud)", cleanName(env.enemies[1].name), env.enemies[1].dist or 0)
 	end
 	if env.status then parts[#parts + 1] = "Farm: " .. tostring(env.status) end
+	if env.tele then parts[#parts + 1] = "Tele: " .. tostring(env.tele) end
 	local on = enabledList(self, env)
 	parts[#parts + 1] = #on > 0 and ("Đang bật: " .. table.concat(on, ", ")) or "Chưa bật tính năng nào"
 	parts[#parts + 1] = env.agent and "AI đang chạy tác vụ" or "AI rảnh"
@@ -3547,6 +4186,13 @@ local function toggleActions(key, state, env)
 	return acts, notes
 end
 
+local function chainPlanReply(chain, env)
+	local steps = {}
+	for _, s in ipairs(chain.steps) do steps[#steps + 1] = s end
+	local lines = { "Chuỗi '" .. chain.title .. "' gồm " .. #steps .. " bước (bước cần tay mình sẽ dừng và chờ bạn gõ 'tiếp tục')." }
+	return table.concat(lines, " "), { type = "agent_plan", steps = steps }
+end
+
 ---------------- xử lý từng mệnh đề ----------------
 function Brain:_clause(text, env, ctx, raw)
 	local ws = words(text)
@@ -3555,50 +4201,57 @@ function Brain:_clause(text, env, ctx, raw)
 		for _, p in ipairs(list) do if hasPhrase(text, p) then return true end end
 		return false
 	end
+	local function think(t) ctx.thoughts[#ctx.thoughts + 1] = t end
 
-	-- trợ giúp / chào hỏi
-	if hasAny({ "help", "tro giup", "ban lam duoc gi", "chuc nang", "lenh" }) then return R(HELP) end
-	if hasAny({ "cam on", "thanks", "thank you" }) then return R("Không có gì! Cần gì cứ nói mình.") end
-	if hasAny({ "ban la ai", "may la ai" }) then
-		return R("Mình là AI điều khiển của H-HUB, chạy hoàn toàn offline trong script: hiểu lệnh tiếng Việt (kể cả gõ không dấu / sai chính tả), nhìn môi trường game, rồi bật tắt tính năng hoặc lập kế hoạch hành động.")
+	-- trợ giúp / chào hỏi / xã giao
+	if hasAny({ "help", "tro giup", "ban lam duoc gi", "chuc nang", "lenh", "huong dan su dung", "cach dung" }) then
+		think("Người dùng hỏi trợ giúp.")
+		return R(HELP)
 	end
-	if #ws <= 4 and hasAny({ "xin chao", "chao", "hello", "hi", "hey", "alo" }) then
+	if hasAny({ "cam on", "thanks", "thank you", "tks", "good job", "gioi lam", "tot lam" }) then
+		return R(pick({ "Không có gì! Cần gì cứ nói mình.", "Sẵn sàng giúp tiếp, bạn cứ ra lệnh.", "Vui vì giúp được! Còn gì nữa không?" }))
+	end
+	if hasAny({ "ban la ai", "may la ai", "ten gi", "who are you" }) then
+		return R("Mình là AI điều khiển của H-HUB, chạy hoàn toàn offline trong script: hiểu lệnh tiếng Việt (kể cả gõ không dấu / sai chính tả), nhìn môi trường game, rồi bật tắt tính năng hoặc lập kế hoạch nhiều bước (bay, tele, đánh boss, chuỗi nhiệm vụ).")
+	end
+	if hasAny({ "khoe khong", "the nao roi", "on khong", "co khoe" }) then
+		return R("Mình ổn, sẵn sàng! Nói 'gợi ý' nếu muốn mình tư vấn bước tiếp theo.")
+	end
+	if #ws <= 4 and hasAny({ "xin chao", "chao", "hello", "hi", "hey", "alo", "yo" }) then
 		return R(string.format("Chào bạn! Bạn đang Lv %s (Sea %s). Nói 'gợi ý' để mình tư vấn, hoặc 'help' để xem lệnh.", tostring(env.level or "?"), tostring(env.sea or "?")))
 	end
 
+	-- tiếp tục kế hoạch đang chờ
+	if hasAny({ "tiep tuc", "continue", "xong roi", "lam xong", "da xong", "ok tiep", "di tiep", "next" }) then
+		think("Người dùng báo đã xong bước thủ công.")
+		return R("Ok, mình chạy tiếp kế hoạch.", { type = "agent_continue" })
+	end
+
 	-- huỷ nhiệm vụ
-	if hasAny({ "huy nhiem vu", "bo nhiem vu", "abandon quest" }) then
+	if hasAny({ "huy nhiem vu", "bo nhiem vu", "abandon quest", "bo quest" }) then
 		return R("Huỷ nhiệm vụ hiện tại.", { type = "agent_plan", steps = {
 			{ tool = "call_remote", args = { args = { "AbandonQuest" } }, text = "Huỷ nhiệm vụ" } } })
 	end
 
 	local feats = self:matchFeatures(text)
+	if #feats > 0 then
+		self.mem.lastFeature = feats[#feats]
+	end
 	local verb = verbOf(ws)
 	local incdec = incdecOf(ws)
 	local num = numberOf(text)
 
-	-- Ngữ cảnh hội thoại: "auto farm" rồi "bật"/"tắt" dùng lại tính năng trước.
-	if #feats > 0 then
-		self.mem.lastFeature = feats[1]
-	elseif #feats == 0 and verb and self.mem.lastFeature and self.features[self.mem.lastFeature] then
-		local onlyVerb = true
-		for _, w in ipairs(ws) do
-			if not (ON[w] or OFF[w] or FLIP[w] or w == "no" or w == "nhe" or w == "di") then
-				onlyVerb = false
-				break
-			end
-		end
-		if onlyVerb then feats = { self.mem.lastFeature } end
-	end
-
 	-- tắt tất cả / dừng
-	if hasAny({ "tat het", "tat tat ca", "dung het", "all off" }) then
+	if hasAny({ "tat het", "tat tat ca", "dung het", "all off", "ngung het" }) then
 		return R("Đã tắt toàn bộ tính năng tự động.", { type = "all_off" })
 	end
 	if #ws <= 3 and #feats == 0 then
-		local onlyStop = verb == "off"
+		local onlyStop = false
 		for _, w in ipairs(ws) do
-			if not (OFF[w] or w == "lai" or w == "ai" or w == "ngay" or w == "di") then onlyStop = false end
+			if w == "dung" or w == "stop" or w == "ngung" or w == "huy" then onlyStop = true end
+		end
+		for _, w in ipairs(ws) do
+			if not (OFF[w] or w == "dung" or w == "lai" or w == "ai" or w == "ngay" or w == "di" or w == "thoi") then onlyStop = false end
 		end
 		if onlyStop then return R("Đang dừng tác vụ.", { type = "agent_stop" }) end
 	end
@@ -3619,18 +4272,73 @@ function Brain:_clause(text, env, ctx, raw)
 		end
 	end
 
-	-- trạng thái / gợi ý
-	if hasAny({ "trang thai", "tinh trang", "dang lam gi", "bao cao", "status", "dang bat gi" }) then
+	-- trạng thái / thông tin
+	if hasAny({ "trang thai", "tinh trang", "dang lam gi", "bao cao", "status", "dang bat gi", "tong ket" }) then
 		return R(statusText(self, env))
 	end
+	if hasAny({ "dang o dau", "toi o dau", "vi tri", "o dao nao", "dang o dao", "where am i" }) then
+		local p = env.pos
+		return R(string.format("Bạn đang ở Sea %s, gần đảo %s%s.", tostring(env.sea or "?"), tostring(env.island or "không rõ"),
+			p and string.format(" (toạ độ %d, %d, %d)", p.x, p.y, p.z) or ""))
+	end
+	if hasAny({ "bao lau", "eta", "khi nao len", "bao nhieu gio", "con lau khong", "toc do cay" }) then
+		return R(string.format("Level hiện tại %s, mục tiêu %s. Tốc độ phiên này: %s level/giờ, ETA: %s.",
+			tostring(env.level or "?"), tostring(env.targetLevel or "?"), tostring(env.perHour or "?"), tostring(env.eta or "--")))
+	end
+	if hasAny({ "giet bao nhieu", "da ha", "kills", "bao nhieu quai", "so quai" }) then
+		return R("Phiên này mình đã hạ khoảng " .. tostring(env.kills or 0) .. " con.")
+	end
+	if hasAny({ "bao nhieu mau", "mau cua toi", "hp bao nhieu", "con bao nhieu mau" }) then
+		return R(env.hp and string.format("Máu hiện tại %d/%d.", env.hp, env.hpMax or env.hp) or "Chưa đọc được máu (chưa spawn?).")
+	end
+	if hasAny({ "diem hoi sinh", "spawn point", "hoi sinh o dau", "diem spawn" }) then
+		return R("Điểm hồi sinh mình đã đặt: " .. tostring(env.spawnName or "chưa đặt") .. ". Nói 'đặt hồi sinh ở đây' để đặt tại vị trí hiện tại.")
+	end
 
-	-- hướng dẫn nhiệm vụ (kiến thức tĩnh)
+	-- đặt điểm hồi sinh / hồi sinh nhanh (TELE)
+	if hasAny({ "dat hoi sinh", "set spawn", "luu diem hoi sinh", "dat diem hoi sinh", "dat spawn" }) then
+		think("Đặt điểm hồi sinh tại đảo hiện tại để lần sau tele nhanh.")
+		return R("Đặt điểm hồi sinh tại vị trí hiện tại.", { type = "agent_plan", steps = {
+			{ tool = "set_spawn", args = {}, text = "Đặt điểm hồi sinh" } } })
+	end
+	if hasAny({ "hoi sinh nhanh", "chet hoi sinh", "tu chet", "respawn", "ve diem hoi sinh" }) then
+		think("Tự chết để về điểm hồi sinh đã đặt.")
+		return R("Tự chết để hồi sinh tại điểm đã đặt (" .. tostring(env.spawnName or "chưa đặt") .. ").", { type = "agent_plan", steps = {
+			{ tool = "respawn", args = {}, text = "Chết -> hồi sinh" } } })
+	end
+
+	-- sự kiện biển
+	if hasAny({ "sea event", "su kien bien", "sea beast", "quai bien", "terrorshark", "piranha", "san quai bien", "thuyen ma" })
+		and not hasAny(GUIDE_CUES) then
+		local c = CHAIN_BY_NAME["sea event"]
+		self.mem.lastChain = c.id
+		think("Nhận diện chuỗi sự kiện biển.")
+		local reply, act = chainPlanReply(c, env)
+		return R(reply, act)
+	end
+
+	-- chuỗi nhiệm vụ (race, dragon talon, dojo, draco, tushita...) và hướng dẫn nhiệm vụ
 	local killCue = hasAny(KILL_CUES)
+	local cname = bestName(text, CHAIN_NAMES)
+	if cname and not (verb and #feats > 0) and not (killCue and BOSSES[norm(cname)]) then
+		local c = CHAIN_BY_NAME[cname]
+		self.mem.lastChain = c.id
+		local wantsGuide = hasAny(GUIDE_CUES)
+		local wantsAct = hasAny(ACT_CUES)
+		if wantsAct and not wantsGuide and c.steps then
+			think("Nhận diện chuỗi '" .. c.title .. "' và yêu cầu thực hiện.")
+			local reply, act = chainPlanReply(c, env)
+			return R(reply, act)
+		end
+		return R(c.info .. " (tham khảo, game có thể đã thay đổi). Nói 'làm " .. c.names[1] .. "' để mình tự chạy các bước đã biết.")
+	end
 	local gname = bestName(text, GUIDE_NAMES)
 	if gname and #feats == 0 and not killCue then
 		return R(GUIDE_BY_NAME[gname].text .. " (tham khảo, game có thể đã thay đổi)")
 	end
-	if hasAny({ "goi y", "nen lam gi", "lam gi tiep", "tiep theo", "tu van", "cay o dau", "nen cay", "nen di dau", "lam gi bay gio", "buoc tiep" }) then
+
+	if hasAny({ "goi y", "nen lam gi", "lam gi tiep", "tiep theo", "tu van", "cay o dau", "nen cay", "nen di dau", "lam gi bay gio", "buoc tiep", "advice", "suggest" }) then
+		think("Phân tích Lv/Sea/trạng thái để gợi ý.")
 		return R(advise(self, env))
 	end
 
@@ -3692,6 +4400,7 @@ function Brain:_clause(text, env, ctx, raw)
 			list[#list + 1] = { type = "toggle", feature = "AutoSea", state = true }
 			note = " Mục tiêu vượt mốc sang Sea nên mình bật luôn Auto Sea."
 		end
+		think("Mục tiêu level " .. n .. " từ Lv " .. lv .. ".")
 		return R(string.format("Lên Lv %d: bật Auto Farm + Quest + Bring Mob + Haki.%s", n, note), { type = "batch", list = list })
 	end
 
@@ -3706,7 +4415,7 @@ function Brain:_clause(text, env, ctx, raw)
 	end
 
 	local inherited = (verb == nil and num == nil and incdec == nil and ctx.verb) or nil
-	local explicit = verb ~= nil or num ~= nil or incdec ~= nil or isQ or inherited ~= nil
+	local explicit = verb ~= nil or num ~= nil or incdec ~= nil or isQ or inherited ~= nil or (#feats > 0 and not isQ)
 
 	-- === nhánh tính năng ===
 	if #feats > 0 and explicit then
@@ -3740,8 +4449,8 @@ function Brain:_clause(text, env, ctx, raw)
 					if isQ then
 						replies[#replies + 1] = def.label .. " đang " .. onOff(cfg[key] and true or false) .. "."
 					else
-						local v = verb or inherited
-						if v == "flip" or v == nil then
+						local v = verb or inherited or "on"
+						if v == "flip" then
 							replies[#replies + 1] = "Đảo trạng thái " .. def.label .. "."
 							acts[#acts + 1] = { type = "flip", feature = key }
 						else
@@ -3770,6 +4479,16 @@ function Brain:_clause(text, env, ctx, raw)
 			{ tool = "call_remote", args = { args = { "StartQuest", q.quest, q.idx } }, text = "Nhận quest " .. tostring(q.quest) } } })
 	end
 
+	-- TELE tới đảo
+	do
+		local iname = bestName(text, env.islands or {})
+		if iname and hasAny(TELE_CUES) and not hasAny({ "danh", "diet", "giet", "kill" }) then
+			think("Đảo đích: " .. iname .. ". Tele thông minh sẽ chọn: hồi sinh / cổng / bay cao.")
+			return R("Tele tới " .. iname .. ".", { type = "agent_plan", steps = {
+				{ tool = "tele_island", args = { name = iname }, text = "Tele tới " .. iname } } })
+		end
+	end
+
 	-- đánh quái / boss
 	if killCue then
 		local pool, seen = {}, {}
@@ -3793,6 +4512,7 @@ function Brain:_clause(text, env, ctx, raw)
 		end
 		if name then
 			local timeout = math.clamp(25 * count + 40, 40, 300)
+			think("Mục tiêu: " .. count .. " x " .. name .. ".")
 			return R(string.format("Kế hoạch: hạ %d x %s (tối đa %ds).", count, name, timeout), { type = "agent_plan", steps = {
 				{ tool = "kill_mob", args = { name = name, count = count, timeout = timeout }, text = "Hạ " .. count .. " " .. name } } })
 		end
@@ -3836,7 +4556,7 @@ function Brain:_clause(text, env, ctx, raw)
 			for _, w in ipairs(ws) do
 				local isCue = false
 				for _, c in ipairs(NAV_CUES) do if c == w then isCue = true end end
-				if not isCue and not ON[w] and not OFF[w] then rest[#rest + 1] = w end
+				if not isCue and not ON[w] and not OFF[w] and not STOPW[w] then rest[#rest + 1] = w end
 			end
 			name = #rest > 0 and table.concat(rest, " ") or nil
 		end
@@ -3849,7 +4569,6 @@ function Brain:_clause(text, env, ctx, raw)
 	-- tên tính năng gõ trơ: đảo trạng thái
 	if #feats > 0 then
 		local key = feats[1]
-		self.mem.lastFeature = key
 		local def = self.features[key]
 		if def.kind == "toggle" then
 			self.mem.lastFeature = key
@@ -3888,7 +4607,7 @@ local function splitClauses(raw)
 		local n = norm(part)
 		if n ~= "" then
 			local padded = " " .. n .. " "
-			for _, conj in ipairs({ " sau do ", " dong thoi ", " roi ", " xong ", " and ", " va " }) do
+			for _, conj in ipairs({ " sau do ", " dong thoi ", " roi ", " xong ", " and ", " va ", " roi thi ", " kem ", " cung voi " }) do
 				padded = (padded:gsub(conj, " \1 "))
 			end
 			for sub in padded:gmatch("([^\1]+)") do
@@ -3905,17 +4624,29 @@ function Brain:Process(text, env)
 	if self._dirty then self:_rebuild() end
 	self.mem.turns = self.mem.turns + 1
 	local raw = tostring(text or "")
+	local normalized = norm(raw)
+	-- Câu ngắn "bật/tắt/tiếp tục" dùng lại tính năng gần nhất đã nhắc.
+	if self.mem.lastFeature and self.features[self.mem.lastFeature] then
+		local short = words(normalized)
+		if #short <= 2 and (verbOf(short) ~= nil or hasPhrase(normalized, "tiep tuc")) then
+			raw = self.features[self.mem.lastFeature].label .. " " .. raw
+		end
+	end
+
+	local thoughts = {}
+	thoughts[#thoughts + 1] = string.format("Quan sát: Lv %s, Sea %s%s.", tostring(env.level or "?"), tostring(env.sea or "?"),
+		env.island and (", gần " .. tostring(env.island)) or "")
 
 	-- toạ độ: "bay tới 100 50 -200"
 	local cx, cy, cz = raw:match("(-?%d+)[%s,]+(-?%d+)[%s,]+(-?%d+)")
-	if cx and (hasPhrase(norm(raw), "bay") or hasPhrase(norm(raw), "den") or hasPhrase(norm(raw), "toi")) then
+	if cx and (hasPhrase(norm(raw), "bay") or hasPhrase(norm(raw), "den") or hasPhrase(norm(raw), "toi") or hasPhrase(norm(raw), "tele")) then
 		local x, y, z = tonumber(cx), tonumber(cy), tonumber(cz)
-		return { reply = string.format("Bay tới (%d, %d, %d).", x, y, z), action = { type = "agent_plan", steps = {
-			{ tool = "fly_to", args = { x = x, y = y, z = z }, text = "Bay tới toạ độ" } } } }
+		return { reply = string.format("Tele/bay tới (%d, %d, %d).", x, y, z), thought = table.concat(thoughts, " "), action = { type = "agent_plan", steps = {
+			{ tool = "fly_to", args = { x = x, y = y, z = z }, text = "Di chuyển tới toạ độ" } } } }
 	end
 
 	local replies, actions = {}, {}
-	local ctx = {}
+	local ctx = { thoughts = thoughts }
 	for _, c in ipairs(splitClauses(raw)) do
 		local ok, r = pcall(self._clause, self, c.text, env, ctx, c.raw)
 		if ok and r then
@@ -3935,18 +4666,70 @@ function Brain:Process(text, env)
 	local action
 	if #actions == 1 then action = actions[1] elseif #actions > 1 then action = { type = "batch", list = actions } end
 	self:_save()
-	return { reply = table.concat(replies, "\n"), action = action }
+	return { reply = table.concat(replies, "\n"), action = action, thought = table.concat(thoughts, " ") }
+end
+
+-- AutoPilot: tự suy nghĩ định kỳ, tự chăm sóc những việc vặt dựa trên quan sát (không tự ý di chuyển xa).
+function Brain:Autopilot(env)
+	env = type(env) == "table" and env or {}
+	local cfg = env.cfg or {}
+	local acts, notes = {}, {}
+	local now = os.clock()
+	local lv, sea = env.level or 1, env.sea or 1
+	local function once(key, cooldown)
+		local last = self._ap[key] or -1e9
+		if now - last < cooldown then return false end
+		self._ap[key] = now
+		return true
+	end
+	local function turnOn(key, why)
+		if cfg[key] == false and once("on_" .. key, 90) then
+			acts[#acts + 1] = { type = "toggle", feature = key, state = true }
+			notes[#notes + 1] = why
+		end
+	end
+
+	if cfg.AutoFarm then
+		turnOn("AutoHaki", "bật Haki khi đang farm")
+		turnOn("BringMob", "bật Bring Mob khi đang farm")
+		turnOn("TeleOnQuestChange", "bật tele khi đổi quest sang đảo xa")
+		if (env.points or 0) > 0 then turnOn("AutoStats", "còn điểm chưa cộng") end
+		if (sea == 1 and lv >= 700) or (sea == 2 and lv >= 1500) then
+			turnOn("AutoSea", "đủ level để qua Sea tiếp theo")
+		end
+		if (cfg.SafeHP or 0) == 0 and env.hp and env.hpMax and env.hpMax > 0
+			and env.hp / env.hpMax < 0.4 and once("safehp", 120) then
+			acts[#acts + 1] = { type = "set", feature = "SafeHP", value = 25 }
+			notes[#notes + 1] = "đặt Máu An Toàn 25% vì máu thấp"
+		end
+		if sea == 3 and lv >= 2000 then turnOn("AutoElite", "đã ở Sea 3 high-level: săn Elite lấy Fragments") end
+	end
+	if env.fruits and env.fruits[1] and cfg.AutoFruit == false and once("fruitseen", 180) then
+		acts[#acts + 1] = { type = "toggle", feature = "AutoFruit", state = true }
+		notes[#notes + 1] = "có trái ác quỷ " .. tostring(env.fruits[1].name) .. " trong server"
+	end
+	if (env.chests or 0) >= 5 and cfg.AutoChest == false and not cfg.AutoFarm and once("chests", 300) then
+		notes[#notes + 1] = "có " .. env.chests .. " rương gần đây, nói 'bật auto rương' để nhặt"
+	end
+	if cfg.TeleSmart == false and cfg.AutoFarm and once("tele", 600) then
+		notes[#notes + 1] = "gợi ý: bật Tele thông minh để đổi đảo nhanh hơn"
+	end
+	if not cfg.AutoFarm and lv < 2800 and once("idle", 900) then
+		notes[#notes + 1] = "bạn đang rảnh ở Lv " .. lv .. ", nói 'lên level " .. math.min(lv + 200, 2800) .. "' nếu muốn cày tiếp"
+	end
+	return acts, notes
 end
 
 return Brain
 end)()
-local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false }
+local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false, Continue = false }
 local AllowedRemote = {
 	StartQuest = true, AbandonQuest = true, Buso = true,
 	ZQuestProgress = true, DressrosaQuestProgress = true,
 	TravelDressrosa = true, TravelZou = true, TravelMain = true,
+	SetSpawnPoint = true, Alchemist = true, requestEntrance = true,
 }
- 
+
 ---------------- GIAO DIỆN BẢNG AI ----------------
 AIPanel = make("Frame", {
     Name = "AIPanel",
@@ -3976,7 +4759,7 @@ local AITitle = make("TextLabel", {
     Position = UDim2.fromOffset(12, 0),
     Size = UDim2.new(1, -80, 1, 0),
     BackgroundTransparency = 1,
-    Text = "✧  H-HUB NATIVE AI  ·  OFFLINE  ·  kéo để di chuyển",
+    Text = "✧  H-HUB AI · BRAIN v3.1 OFFLINE  ·  kéo để di chuyển",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 11,
@@ -4027,7 +4810,7 @@ local AnswerLabel = make("TextLabel", {
     Size = UDim2.new(1, -12, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
     BackgroundTransparency = 1,
-    Text = "H-HUB AI offline đã sẵn sàng. Nhập lệnh tiếng Việt để bắt đầu.",
+    Text = "AI Brain v3.1 (offline) sẵn sàng. Nói 'help' để xem lệnh, hoặc gõ mục tiêu.",
     TextColor3 = Colors.Text,
     Font = Enum.Font.Gotham,
     TextSize = 11,
@@ -4083,9 +4866,6 @@ local function panelBox(y, placeholder, widthOffset, onEnter)
     return box
 end
 
---=====================================================================
--- KHỐI B  (khởi tạo Native AI offline + startAgent)
---=====================================================================
 local Brain, BrainErr
 do
 	local okNew, inst = pcall(BrainLib.new, {
@@ -4094,49 +4874,60 @@ do
 	})
 	if okNew then Brain = inst else BrainErr = tostring(inst) end
 end
- 
+
 ---------------- TÍNH NĂNG CỦA HUB MÀ NÃO ĐIỀU KHIỂN ĐƯỢC ----------------
 -- { key trong Config, kind, nhãn, {alias}, min, max }
 local FeatureDefs = {
-	{ "AutoFarm", "toggle", "Auto Farm", { "auto farm", "farm", "cay level", "cay" } },
-	{ "AutoQuest", "toggle", "Auto Quest", { "auto quest", "tu nhan nhiem vu" } },
-	{ "BringMob", "toggle", "Bring Mob", { "bring mob", "gom quai", "keo quai" } },
-	{ "AutoHaki", "toggle", "Auto Haki", { "auto haki", "haki" } },
-	{ "AutoKen", "toggle", "Auto Ken", { "auto ken", "ken" } },
-	{ "AutoStats", "toggle", "Auto Cộng Điểm", { "auto cong diem", "cong diem", "auto stats" } },
-	{ "AutoSkill", "toggle", "Auto Skill", { "auto skill", "skill" } },
-	{ "AutoSea", "toggle", "Auto Sea", { "auto sea", "auto qua sea", "qua sea tu dong" } },
-	{ "AutoHop", "toggle", "Auto Hop", { "auto hop", "server hop tu dong", "tu dong doi server" } },
-	{ "AutoChest", "toggle", "Auto Rương", { "auto ruong", "auto chest", "nhat ruong tu dong" } },
-	{ "AutoFruit", "toggle", "Auto Nhặt Trái", { "auto trai", "auto fruit", "nhat trai tu dong" } },
-	{ "AutoStore", "toggle", "Auto Cất Trái", { "auto cat trai", "cat trai" } },
-	{ "FruitESP", "toggle", "Fruit ESP", { "fruit esp", "esp trai", "soi trai" } },
-	{ "FullBright", "toggle", "Fullbright", { "fullbright", "full bright", "sang man hinh" } },
-	{ "LowEffects", "toggle", "Giảm Hiệu Ứng", { "giam hieu ung", "low effects", "giam lag" } },
-	{ "MobHighlight", "toggle", "Highlight Quái", { "highlight quai", "highlight" } },
-	{ "AutoPumpkin", "toggle", "Auto Bí Ngô", { "auto bi ngo", "bi ngo", "pumpkin" } },
-	{ "AutoRejoin", "toggle", "Auto Rejoin", { "auto rejoin" } },
-	{ "MultiHit", "toggle", "Multi-Hit", { "multi hit", "multihit" } },
- 
-	{ "TweenSpeed", "value", "Tốc Độ Bay", { "toc do bay", "speed bay", "tween speed" }, 100, 400 },
-	{ "HitRange", "value", "Tầm Đánh", { "tam danh", "hit range" }, 30, 200 },
-	{ "BringRadius", "value", "Bán Kính Gom", { "ban kinh gom", "bring radius" }, 50, 600 },
-	{ "HitboxSize", "value", "Hitbox Quái", { "hitbox", "kich thuoc hitbox" }, 10, 80 },
-	{ "SafeHP", "value", "Máu An Toàn", { "mau an toan", "safe hp", "hoi mau" }, 0, 60 },
-	{ "TargetLevel", "value", "Level Mục Tiêu", { "level muc tieu", "target level", "muc tieu level" }, 0, 2800 },
-	{ "FarmHeightLate", "value", "Độ Cao Farm", { "do cao farm", "do cao" }, 5, 60 },
- 
-	{ "ServerHop", "command", "Đổi Server", { "doi server", "server hop", "hop server" } },
-	{ "ResetChar", "command", "Reset Nhân Vật", { "reset nhan vat", "reset char" } },
-	{ "RejoinNow", "command", "Vào Lại Server", { "vao lai server", "rejoin", "join lai" } },
+	{ "AutoFarm", "toggle", "Auto Farm", { "auto farm", "farm", "cay level", "cay", "cay cuoc", "treo may", "cay quai", "auto cay", "grind", "level farm" } },
+	{ "AutoQuest", "toggle", "Auto Quest", { "auto quest", "tu nhan nhiem vu", "nhan quest tu dong", "auto nhiem vu" } },
+	{ "BringMob", "toggle", "Bring Mob", { "bring mob", "gom quai", "keo quai", "hut quai", "bring" } },
+	{ "AutoHaki", "toggle", "Auto Haki", { "auto haki", "haki", "buso", "vu trang", "haki vu trang" } },
+	{ "AutoKen", "toggle", "Auto Ken", { "auto ken", "ken", "haki quan sat", "quan sat" } },
+	{ "AutoStats", "toggle", "Auto Cộng Điểm", { "auto cong diem", "cong diem", "auto stats", "chi so", "tu cong diem", "add point" } },
+	{ "AutoSkill", "toggle", "Auto Skill", { "auto skill", "skill", "ky nang", "xai skill", "tu dung skill", "spam skill" } },
+	{ "AutoSea", "toggle", "Auto Sea", { "auto sea", "auto qua sea", "qua sea tu dong", "tu dong qua sea", "tu chuyen sea" } },
+	{ "AutoHop", "toggle", "Auto Hop", { "auto hop", "server hop tu dong", "tu dong doi server", "tu doi server", "hop khi het quai" } },
+	{ "AutoChest", "toggle", "Auto Rương", { "auto ruong", "auto chest", "nhat ruong tu dong", "san ruong", "nhat ruong", "chest farm" } },
+	{ "AutoFruit", "toggle", "Auto Nhặt Trái", { "auto trai", "auto fruit", "nhat trai tu dong", "san trai", "bat trai", "tu nhat trai" } },
+	{ "AutoStore", "toggle", "Auto Cất Trái", { "auto cat trai", "cat trai", "luu trai", "store fruit", "cat trai vao kho" } },
+	{ "FruitESP", "toggle", "Fruit ESP", { "fruit esp", "esp trai", "soi trai", "hien trai", "radar trai" } },
+	{ "FullBright", "toggle", "Fullbright", { "fullbright", "full bright", "sang man hinh", "sang hon", "ban dem sang", "do sang" } },
+	{ "LowEffects", "toggle", "Giảm Hiệu Ứng", { "giam hieu ung", "low effects", "giam lag", "bot lag", "toi uu do hoa", "fps boost" } },
+	{ "MobHighlight", "toggle", "Highlight Quái", { "highlight quai", "highlight", "danh dau quai", "to sang quai" } },
+	{ "AutoPumpkin", "toggle", "Auto Bí Ngô", { "auto bi ngo", "bi ngo", "pumpkin", "halloween", "thu bi ngo" } },
+	{ "AutoRejoin", "toggle", "Auto Rejoin", { "auto rejoin", "tu vao lai", "tu rejoin" } },
+	{ "MultiHit", "toggle", "Multi-Hit", { "multi hit", "multihit", "danh nhieu muc tieu", "danh dien rong", "aoe" } },
+	{ "AutoEquip", "toggle", "Auto Equip", { "auto equip", "tu cam vu khi", "cam vu khi", "equip" } },
+	{ "TeleSmart", "toggle", "Tele Thông Minh", { "tele thong minh", "tele", "dich chuyen", "teleport", "tele dao", "bay nhanh giua dao", "tele khi doi dao" } },
+	{ "TeleRespawn", "toggle", "Tele: Chết Hồi Sinh", { "tele chet hoi sinh", "chet hoi sinh", "hoi sinh tele", "tu chet de tele" } },
+	{ "TeleEntrance", "toggle", "Tele: Cổng Game", { "tele cong game", "request entrance", "cong dich chuyen", "cong game" } },
+	{ "TeleAutoSpawn", "toggle", "Tele: Tự Đặt Hồi Sinh", { "tu dat hoi sinh", "auto spawn", "tu dat diem hoi sinh" } },
+	{ "TeleOnQuestChange", "toggle", "Tele khi đổi quest", { "tele khi doi quest", "tele quest", "doi quest tele" } },
+	{ "AutoElite", "toggle", "Auto Elite Hunter", { "auto elite", "elite hunter", "san elite", "tu san elite" } },
+	{ "AutoBossList", "toggle", "Auto Săn Boss", { "auto boss", "san boss", "tu san boss", "boss list" } },
+	{ "AIAutoPilot", "toggle", "AI Tự Động (AutoPilot)", { "autopilot", "tu dong hoa", "che do tu dong", "tu suy nghi", "tu lai", "ai tu dong", "ai tu lam", "tu quan ly" } },
+
+	{ "TeleSafeY", "value", "Độ Cao Tele", { "do cao tele", "tele y", "cao do bay bien" }, 150, 1500 },
+	{ "TweenSpeed", "value", "Tốc Độ Bay", { "toc do bay", "speed bay", "tween speed", "van toc bay" }, 100, 400 },
+	{ "HitRange", "value", "Tầm Đánh", { "tam danh", "hit range", "tam hit" }, 30, 200 },
+	{ "BringRadius", "value", "Bán Kính Gom", { "ban kinh gom", "bring radius", "pham vi gom" }, 50, 600 },
+	{ "HitboxSize", "value", "Hitbox Quái", { "hitbox", "kich thuoc hitbox", "hit box" }, 10, 80 },
+	{ "SafeHP", "value", "Máu An Toàn", { "mau an toan", "safe hp", "hoi mau", "nguong mau" }, 0, 60 },
+	{ "TargetLevel", "value", "Level Mục Tiêu", { "level muc tieu", "target level", "muc tieu level", "cap muc tieu" }, 0, 2800 },
+	{ "FarmHeightLate", "value", "Độ Cao Farm", { "do cao farm", "do cao", "bay cao", "do cao dung" }, 5, 60 },
+	{ "TeleThreshold", "value", "Ngưỡng Tele (stud)", { "nguong tele", "tele threshold", "khoang cach tele", "tele tu bao xa" }, 300, 5000 },
+
+	{ "ServerHop", "command", "Đổi Server", { "doi server", "server hop", "hop server", "qua server khac", "chuyen server" } },
+	{ "ResetChar", "command", "Reset Nhân Vật", { "reset nhan vat", "reset char", "tu sat", "reset" } },
+	{ "RejoinNow", "command", "Vào Lại Server", { "vao lai server", "rejoin", "join lai", "vao lai game" } },
 }
- 
+
 if Brain then
 	for _, d in ipairs(FeatureDefs) do
 		Brain:AddFeature(d[1], d[4], { kind = d[2], label = d[3], min = d[5], max = d[6] })
 	end
 end
- 
+
 local ToggleSpecial = { LowEffects = setLowEffects, FullBright = setFullbright }
 local CommandRun = {
 	ServerHop = function() serverHop("AI yêu cầu đổi server") end,
@@ -4148,7 +4939,7 @@ local CommandRun = {
 		TeleportService:Teleport(game.PlaceId, LocalPlayer)
 	end,
 }
- 
+
 local function setFeature(key, value)
 	if type(Config[key]) == "boolean" then
 		local tg = Toggles[key]
@@ -4164,12 +4955,62 @@ local function setFeature(key, value)
 		saveSoon()
 	end
 end
- 
----------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
-local function stripName(n)
-	return (tostring(n):gsub("%s*%[.-%]", ""))
+
+------------------------------------------------------------------
+-- MAIN TAB BUILD (v6.2 hotfix): tạo tab + widget thật cho trang chính
+------------------------------------------------------------------
+local MainPages = {}
+local function newMainTab(name, glyph)
+    local page = addTab(name, glyph)
+    MainPages[name] = page
+    return page
 end
- 
+local pFarm = newMainTab("Farm", "⚔")
+local pCombat = newMainTab("Chiến đấu", "✦")
+local pUtility = newMainTab("Tiện ích", "⌘")
+local pTele = newMainTab("Teleport", "➤")
+local pVisual = newMainTab("Hiển thị", "◉")
+local pSettings = newMainTab("Cài đặt", "⚙")
+
+local tabFor = {
+    AutoFarm=pFarm, AutoQuest=pFarm, AutoPumpkin=pFarm, AutoElite=pFarm, AutoBossList=pFarm,
+    BringMob=pCombat, AutoHaki=pCombat, AutoKen=pCombat, AutoSkill=pCombat, MultiHit=pCombat,
+    AutoStats=pUtility, AutoChest=pUtility, AutoFruit=pUtility, AutoStore=pUtility, AutoEquip=pUtility,
+    AutoSea=pTele, AutoHop=pTele, TeleSmart=pTele, TeleRespawn=pTele, TeleEntrance=pTele,
+    TeleAutoSpawn=pTele, TeleOnQuestChange=pTele,
+    FruitESP=pVisual, FullBright=pVisual, LowEffects=pVisual, MobHighlight=pVisual,
+    AutoRejoin=pSettings, AIAutoPilot=pSettings,
+}
+local labelsAdded = {}
+for _, d in ipairs(FeatureDefs) do
+    local key, kind, label = d[1], d[2], d[3]
+    local page = tabFor[key] or pSettings
+    if kind == "toggle" then
+        addToggle(page, label, Config[key] == true, function(value)
+            Config[key] = value
+            if ToggleSpecial[key] then pcall(ToggleSpecial[key], value) end
+            saveSoon()
+        end, key)
+        labelsAdded[key] = true
+    elseif kind == "value" then
+        local mn, mx = d[5] or 0, d[6] or 100
+        local step = (key == "TargetLevel" or key == "TeleThreshold") and 50 or 5
+        addStepper(page, label, mn, mx, step, tonumber(Config[key]) or mn, function(value)
+            Config[key] = value
+            saveSoon()
+        end)
+    elseif kind == "command" then
+        addButton(page, label, function()
+            if CommandRun[key] then pcall(CommandRun[key]) end
+        end)
+    end
+end
+addButton(pFarm, "Bật Auto Farm", function() setFeature("AutoFarm", true) end, Colors.Blue)
+addButton(pFarm, "Tắt Auto Farm", function() setFeature("AutoFarm", false) end, Colors.Off)
+selectTab("Farm")
+Footer.Text = "H-HUB v6.2.2.2 | Native AI | Stable Farm Movement | RightShift: ẩn/hiện"
+
+---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
 local KnownMobs = {}
 do
 	local seen = {}
@@ -4184,7 +5025,8 @@ do
 		"Mob Leader", "Vice Admiral", "Warden", "Chief Warden", "Swan", "Magma Admiral", "Fishman Lord", "Wysper",
 		"Thunder God", "Cyborg", "Diamond", "Jeremy", "Fajita", "Smoke Admiral", "Awakened Ice Admiral", "Tide Keeper",
 		"Darkbeard", "Cake Queen", "Dough King", "Soul Reaper", "Cursed Captain", "Greybeard", "Stone",
-		"Island Empress", "Kilo Admiral", "Captain Elephant", "Beautiful Pirate", "Longma",
+		"Island Empress", "Kilo Admiral", "Captain Elephant", "Beautiful Pirate", "Longma", "Diablo", "Urban", "Deandre",
+		"Cake Prince", "Elite Pirate", "Order",
 	}) do
 		if not seen[boss] then
 			seen[boss] = true
@@ -4192,7 +5034,17 @@ do
 		end
 	end
 end
- 
+
+local function allIslandNames()
+	local out = {}
+	for s = 1, 3 do
+		for _, island in ipairs(Islands[s]) do
+			out[#out + 1] = island.name
+		end
+	end
+	return out
+end
+
 local function findNearest(name)
 	local root = getRoot(getCharacter())
 	local character = getCharacter()
@@ -4215,32 +5067,46 @@ local function findNearest(name)
 	end
 	return best
 end
- 
+
 local function observe()
 	local root, hum = getRoot(getCharacter()), getHumanoid()
 	local env = {
 		enemies = {}, npcs = {}, prompts = {}, fruits = {}, knownMobs = KnownMobs,
 		level = getLevel(), sea = getSea(), tool = getEquippedToolName(),
 		chests = State.ChestCount or 0, questUI = questText() or "không có",
+		islands = allIslandNames(), targetLevel = Config.TargetLevel,
+		tele = Tele.Status, spawnName = Tele.SpawnName, kills = State.TotalKills,
 	}
+	local okS, _, _, perHour, eta = pcall(sessionSummary)
+	if okS then
+		env.perHour = string.format("%.1f", perHour or 0)
+		env.eta = eta
+	end
+	pcall(function()
+		local data = LocalPlayer:FindFirstChild("Data")
+		local points = data and data:FindFirstChild("Points")
+		env.points = points and tonumber(points.Value) or 0
+	end)
 	local q = State.Quest or currentQuest()
 	if q then env.quest = { quest = q.quest, idx = q.idx, mob = q.mob, count = q.count } end
-		env.cfg = {}
+	env.cfg = {}
 	for _, d in ipairs(FeatureDefs) do
 		if Config[d[1]] ~= nil then env.cfg[d[1]] = Config[d[1]] end
 	end
 	env.agent = Agent.Running
 	env.status = State.Status
-    if not root or not hum then return env end
- 
+	if not root or not hum then return env end
+
 	env.hp, env.hpMax = math.floor(hum.Health), math.floor(hum.MaxHealth)
 	env.pos = { x = math.floor(root.Position.X), y = math.floor(root.Position.Y), z = math.floor(root.Position.Z) }
- 
+	local isl = nearestIsland(root.Position)
+	env.island = isl and isl.name or nil
+
 	local list = scanEnemies(nil)
 	for i = 1, math.min(12, #list) do
 		env.enemies[i] = { name = list[i].Name, dist = math.floor(list[i].Distance), hp = math.floor(list[i].Health) }
 	end
- 
+
 	local npcFolder = Workspace:FindFirstChild("NPCs")
 	if npcFolder then
 		for _, n in ipairs(npcFolder:GetChildren()) do
@@ -4252,7 +5118,7 @@ local function observe()
 		end
 		table.sort(env.npcs, function(a, b) return a.dist < b.dist end)
 	end
- 
+
 	for _, d in ipairs(Workspace:GetDescendants()) do
 		if #env.prompts >= 8 then break end
 		if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart") then
@@ -4262,7 +5128,7 @@ local function observe()
 			end
 		end
 	end
- 
+
 	local character = getCharacter()
 	for _, obj in ipairs(Workspace:GetChildren()) do
 		if (obj:IsA("Tool") or obj:IsA("Model")) and obj.Name:find("Fruit")
@@ -4280,29 +5146,64 @@ local function observe()
 	table.sort(env.fruits, function(a, b) return a.dist < b.dist end)
 	return env
 end
- 
+
 ---------------- HÀNH ĐỘNG (WHITELIST) ----------------
 local Actions = {}
-local function agentCond() return Agent.Running end
- 
+local function agentCond() return Agent.Running and State.Running end
+
 function Actions.fly_to(a)
 	local root = getRoot(getCharacter())
 	if not root then return "chưa spawn" end
-	flyTo(root, CFrame.new(a.x, a.y, a.z), agentCond)
-	return "đã bay tới"
+	Tele.travel(CFrame.new(a.x, a.y, a.z), agentCond)
+	return "đã tới toạ độ"
 end
 function Actions.fly_to_object(a)
 	local root = getRoot(getCharacter())
 	local f = findNearest(tostring(a.name))
-	if not root or not f then return "không tìm thấy " .. tostring(a.name) end
-	flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+	if not root or not f then return "không tìm thấy " .. tostring(a.name) .. " quanh đây (có thể phải tele tới đảo trước)" end
+	Tele.travel(CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
 	return "đã tới " .. tostring(a.name)
+end
+function Actions.tele_island(a)
+	local ok = Tele.goIsland(tostring(a.name))
+	return ok and ("đã tele tới " .. tostring(a.name)) or ("không rõ đảo " .. tostring(a.name) .. " ở Sea hiện tại")
+end
+function Actions.set_spawn()
+	local ok = Tele.setSpawn()
+	return ok and ("đã đặt hồi sinh: " .. Tele.SpawnName) or "đặt hồi sinh thất bại / đang chờ cooldown"
+end
+function Actions.respawn()
+	if not Tele.SpawnPos then return "chưa có điểm hồi sinh đã đặt (nói 'đặt hồi sinh ở đây' trước)" end
+	return Tele.respawn() and "đã hồi sinh" or "hồi sinh thất bại"
+end
+function Actions.ensure_sea(a)
+	local want = tonumber(a.sea) or 1
+	if getSea() == want then return "đang ở Sea " .. want end
+	return "ABORT: cần ở Sea " .. want .. " (đang ở Sea " .. getSea() .. "). Nói 'qua sea " .. want .. "' rồi thử lại."
+end
+function Actions.set_config(a)
+	if a.feature then setFeature(tostring(a.feature), a.value) end
+	return "đã đặt " .. tostring(a.feature) .. " = " .. tostring(a.value)
+end
+function Actions.manual(a)
+	Agent.Continue = false
+	setAnswer(tostring(a.text) .. "\n→ Làm xong gõ 'tiếp tục' (hoặc 'dừng' để huỷ).")
+	setStatus("AI: chờ bạn làm tay...")
+	local deadline = os.clock() + 1200
+	while Agent.Running and State.Running and not Agent.Continue and os.clock() < deadline do
+		task.wait(0.5)
+	end
+	if not Agent.Running then return "đã huỷ" end
+	if not Agent.Continue then return "ABORT: quá thời gian chờ" end
+	Agent.Continue = false
+	return "bạn đã xác nhận"
 end
 function Actions.pickup(a)
 	local root = getRoot(getCharacter())
 	local f = findNearest(tostring(a.name))
 	if not root or not f then return "không thấy " .. tostring(a.name) end
-	flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+	Tele.travel(CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+	root = getRoot(getCharacter()) or root
 	local part = f.obj:IsA("BasePart") and f.obj or f.obj:FindFirstChildWhichIsA("BasePart", true)
 	if part and firetouchinterest then
 		firetouchinterest(root, part, 0)
@@ -4317,7 +5218,7 @@ function Actions.use_prompt(a)
 	for _, d in ipairs(Workspace:GetDescendants()) do
 		if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
 			and d.Parent.Name:lower():find(wanted, 1, true) then
-			flyTo(root, d.Parent.CFrame + Vector3.new(0, 3, 0), agentCond)
+			Tele.travel(d.Parent.CFrame + Vector3.new(0, 3, 0), agentCond)
 			if fireproximityprompt then
 				fireproximityprompt(d)
 				return "đã kích hoạt prompt"
@@ -4333,7 +5234,10 @@ function Actions.kill_mob(a)
 	local name = tostring(a.name)
 	while Agent.Running and State.Running and os.clock() < deadline and kills < need do
 		local root = getRoot(getCharacter())
-		if not root then break end
+		if not root then
+			task.wait(1)
+			continue
+		end
 		local hum = target and target:FindFirstChildOfClass("Humanoid")
 		if not target or not target.Parent or not hum or hum.Health <= 0 then
 			if target then kills += 1 end
@@ -4342,10 +5246,9 @@ function Actions.kill_mob(a)
 			local list = scanEnemies(name)
 			target = list[1] and list[1].Model
 			if not target then
-				-- chưa thấy quái: bay tới điểm spawn rồi chờ
 				local sp = findSpawnPos(name)
 				if sp then
-					flyTo(root, CFrame.new(sp + Vector3.new(0, currentHeight(), 0)), agentCond)
+					Tele.travel(CFrame.new(sp + Vector3.new(0, currentHeight(), 0)), agentCond)
 				end
 				task.wait(0.8)
 			end
@@ -4353,24 +5256,106 @@ function Actions.kill_mob(a)
 		local part = target and target:FindFirstChild("HumanoidRootPart")
 		if part then
 			State.BossTarget = target
+			State.LastEngageAt = os.clock()
 			if Config.AutoEquip then equipWeapon() end
 			if Config.AutoHaki then ensureHaki() end
 			local above = part.Position + Vector3.new(0, currentHeight(), 0)
 			if (root.Position - above).Magnitude > 120 then
-				flyTo(root, CFrame.lookAt(above, part.Position), agentCond)
+				Tele.travel(CFrame.lookAt(above, part.Position), agentCond)
+				root = getRoot(getCharacter()) or root
 			end
 			root.CFrame = CFrame.lookAt(above, part.Position)
 			root.AssemblyLinearVelocity = Vector3.zero
-			if not (State.KeyLearned and Config.HitKey ~= "") then
-				clickOnce()
-				screenClick()
-			end
 			attackMobs()
 		end
 		task.wait(0.1)
 	end
 	State.BossTarget = nil
 	return string.format("hạ %d/%d con %s", kills, need, name)
+end
+function Actions.hunt_sea(a)
+	local deadline = os.clock() + (tonumber(a.seconds) or 180)
+	local keys = { "seabeast", "sea beast", "terrorshark", "piranha", "leviathan", "shark", "ghost ship", "kraken", "brigade" }
+	local hunted, lastTarget = 0, nil
+	local function isWanted(n)
+		n = n:lower()
+		for _, k in ipairs(keys) do if n:find(k, 1, true) then return true end end
+		return false
+	end
+	while Agent.Running and State.Running and os.clock() < deadline do
+		local root = getRoot(getCharacter())
+		if not root then
+			task.wait(1)
+			continue
+		end
+		local best, bestD
+		for _, folderName in ipairs({ "SeaBeasts", "Enemies" }) do
+			local folder = Workspace:FindFirstChild(folderName)
+			if folder then
+				for _, m in ipairs(folder:GetChildren()) do
+					if m:IsA("Model") and isWanted(m.Name) then
+						local part = m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
+						local hum = m:FindFirstChildOfClass("Humanoid")
+						if part and (not hum or hum.Health > 0) then
+							local d = (part.Position - root.Position).Magnitude
+							if not bestD or d < bestD then best, bestD = { model = m, part = part }, d end
+						end
+					end
+				end
+			end
+		end
+		if best then
+			if best.model ~= lastTarget then lastTarget = best.model; hunted += 1 end
+			State.BossTarget = best.model
+			State.LastEngageAt = os.clock()
+			if Config.AutoEquip then equipWeapon() end
+			if Config.AutoHaki then ensureHaki() end
+			setStatus("AI: săn " .. best.model.Name .. " (" .. math.floor(bestD) .. " stud)")
+			local above = best.part.Position + Vector3.new(0, 45, 0)
+			if (root.Position - above).Magnitude > 60 then
+				flyTo(root, CFrame.lookAt(above, best.part.Position), agentCond)
+			else
+				root.CFrame = CFrame.lookAt(above, best.part.Position)
+				root.AssemblyLinearVelocity = Vector3.zero
+			end
+			attackMobs()
+			task.wait(0.1)
+		else
+			State.BossTarget = nil
+			setStatus("AI: chưa thấy sự kiện biển, đang chờ...")
+			task.wait(2)
+		end
+	end
+	State.BossTarget = nil
+	return "đã săn " .. hunted .. " mục tiêu biển"
+end
+function Actions.farm_for(a)
+	local seconds = math.clamp(tonumber(a.seconds) or 120, 10, 3600)
+	State.Busy = nil
+	if Toggles.AutoFarm then Toggles.AutoFarm.Set(true) else Config.AutoFarm = true end
+	local deadline = os.clock() + seconds
+	while Agent.Running and State.Running and os.clock() < deadline do
+		setStatus(string.format("AI: đang farm (%ds còn lại)", math.floor(deadline - os.clock())))
+		task.wait(1)
+	end
+	if Toggles.AutoFarm then Toggles.AutoFarm.Set(false) else Config.AutoFarm = false end
+	State.Busy = "AI Agent"
+	return "đã farm " .. seconds .. "s"
+end
+function Actions.farm_to_level(a)
+	local target = math.clamp(tonumber(a.level) or 2800, 1, 2800)
+	Config.TargetLevel = target
+	State.Busy = nil
+	if Toggles.AutoFarm then Toggles.AutoFarm.Set(true) else Config.AutoFarm = true end
+	while Agent.Running and State.Running and getLevel() < target and Config.AutoFarm do
+		setStatus(string.format("AI: cày Lv %d/%d", getLevel(), target))
+		task.wait(2)
+	end
+	local reached = getLevel() >= target
+	if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
+	Config.AutoFarm = false
+	State.Busy = "AI Agent"
+	return reached and ("đạt Lv " .. target) or "dừng giữa chừng"
 end
 function Actions.call_remote(a)
 	local args = {}
@@ -4390,10 +5375,11 @@ function Actions.wait(a)
 	task.wait(math.clamp(tonumber(a.seconds) or 1, 0.2, 60))
 	return "đã chờ"
 end
- 
+
 ---------------- ĐIỀU KHIỂN AGENT ----------------
 local function stopAgent(msg, resume)
 	Agent.Running = false
+	Agent.Continue = false
 	State.BossTarget = nil
 	State.ClusterPoint = nil
 	State.TargetMob = nil
@@ -4408,13 +5394,13 @@ local function stopAgent(msg, resume)
 	setAnswer(msg or "AI đã dừng.")
 	setStatus("AI: chờ lệnh")
 end
- 
+
 local function startPlan(steps)
 	if Agent.Running then
 		setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
 		return
 	end
-	Agent.Running, Agent.Steps, Agent.Log = true, 0, {}
+	Agent.Running, Agent.Steps, Agent.Log, Agent.Continue = true, 0, {}, false
 	Agent.Resume = Config.AutoFarm and true or false
 	Config.AutoFarm, Config.AutoPumpkin = false, false
 	if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
@@ -4434,6 +5420,10 @@ local function startPlan(steps)
 			end
 			Agent.Log[#Agent.Log + 1] = string.format("#%d %s -> %s", i, tostring(step.text or step.tool), result)
 			setAnswer(table.concat(Agent.Log, "\n"))
+			if result:sub(1, 6) == "ABORT:" then
+				stopAgent("Dừng kế hoạch:\n" .. table.concat(Agent.Log, "\n"), true)
+				return
+			end
 			task.wait(0.3)
 		end
 		if Agent.Running then
@@ -4441,14 +5431,14 @@ local function startPlan(steps)
 		end
 	end)
 end
- 
+
 ---------------- XỬ LÝ LỆNH: observe -> não -> thực thi ----------------
 local function onOff(v) return v and "bật" or "tắt" end
- 
+
 local function runAction(a, res, quiet)
 	local def = a.feature and Brain.features[a.feature]
 	local label = def and def.label or tostring(a.feature)
- 
+
 	if a.type == "batch" then
 		for _, sub in ipairs(a.list or {}) do
 			pcall(runAction, sub, res, true)
@@ -4470,7 +5460,7 @@ local function runAction(a, res, quiet)
 		local fn = CommandRun[a.feature]
 		if fn then pcall(fn) end
 	elseif a.type == "all_off" then
-		for _, k in ipairs({ "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea", "AutoSkill", "AutoStats" }) do
+		for _, k in ipairs({ "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea", "AutoSkill", "AutoStats", "AutoElite", "AutoBossList", "AIAutoPilot" }) do
 			if Config[k] then setFeature(k, false) end
 		end
 	elseif a.type == "status" then
@@ -4486,6 +5476,12 @@ local function runAction(a, res, quiet)
 		else
 			startPlan(a.steps or {})
 		end
+	elseif a.type == "agent_continue" then
+		if Agent.Running then
+			Agent.Continue = true
+		else
+			setAnswer("Không có kế hoạch nào đang chờ.")
+		end
 	elseif a.type == "agent_stop" then
 		if Agent.Running then
 			stopAgent("Đã dừng bởi người dùng.")
@@ -4494,7 +5490,7 @@ local function runAction(a, res, quiet)
 		end
 	end
 end
- 
+
 local function dispatch(res)
 	if res.action then runAction(res.action, res, false) end
 end
@@ -4510,7 +5506,7 @@ local function handleCommand(text)
 		setStatus("AI: chờ lệnh")
 		return
 	end
-	setStatus("AI: đang xử lý...")
+	setStatus("AI: đang suy nghĩ...")
 	local okRes, res = pcall(function() return Brain:Process(text, env) end)
 	if not okRes then
 		setAnswer("Não lỗi: " .. tostring(res))
@@ -4518,7 +5514,7 @@ local function handleCommand(text)
 		return
 	end
 	Agent.Goal = text
-	setAnswer(res.reply)
+	setAnswer("🧠 " .. tostring(res.thought or "") .. "\n" .. res.reply)
 	local okDis, err = pcall(dispatch, res)
 	if not okDis then
 		setAnswer(res.reply .. "\n[Lỗi thực thi: " .. tostring(err) .. "]")
@@ -4529,9 +5525,28 @@ end
 local function startAgent(goal)
 	task.spawn(handleCommand, goal)
 end
+
+-- AutoPilot: mỗi 12 giây AI tự quan sát và xử lý việc vặt (không can thiệp khi đang chạy kế hoạch)
+task.spawn(function()
+	while State.Running do
+		task.wait(12)
+		if Config.AIAutoPilot and Brain and not Agent.Running then
+			pcall(function()
+				local env = observe()
+				local acts, notes = Brain:Autopilot(env)
+				if #acts > 0 or #notes > 0 then
+					for _, a in ipairs(acts) do pcall(runAction, a, { reply = "" }, true) end
+					local msg = "🧠 AutoPilot: " .. table.concat(notes, "; ")
+					setAnswer(msg)
+					notify("AI AUTOPILOT", notes[1] or "đã xử lý")
+				end
+			end)
+		end
+	end
+end)
+
 ---------------- Ô NHẬP + NÚT ----------------
--- API key được cấu hình cố định trong script; giao diện không còn ô nhập key.
-local GoalBox = panelBox(126, "Mục tiêu cho AI + Enter", -94, function(box)
+local GoalBox = panelBox(126, "Ra lệnh cho AI + Enter (gõ help)", -94, function(box)
     local goal = box.Text
     box.Text = ""
     startAgent(goal)
@@ -4539,7 +5554,7 @@ end)
 
 local StopBtn = make("TextButton", {
     Text = "DỪNG",
-    Position = UDim2.new(1, -80, 0, 126), -- Dời nút dừng lên cùng hàng với ô mục tiêu
+    Position = UDim2.new(1, -80, 0, 126),
     Size = UDim2.fromOffset(70, 24),
     BackgroundColor3 = Color3.fromRGB(130, 40, 60),
     BackgroundTransparency = 0.3,
@@ -4552,6 +5567,46 @@ round(StopBtn, 6)
 stroke(StopBtn, Colors.Accent, 1, 0.5)
 StopBtn.Activated:Connect(function()
     if Agent.Running then stopAgent("Đã dừng bởi người dùng.") end
+end)
+
+local ContBtn = make("TextButton", {
+    Text = "TIẾP TỤC ▶",
+    Position = UDim2.fromOffset(10, 156),
+    Size = UDim2.fromOffset(100, 24),
+    BackgroundColor3 = Colors.Blue,
+    BackgroundTransparency = 0.35,
+    TextColor3 = Colors.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    BorderSizePixel = 0,
+}, AIPanel)
+round(ContBtn, 6)
+stroke(ContBtn, Colors.Accent, 1, 0.5)
+ContBtn.Activated:Connect(function()
+    if Agent.Running then Agent.Continue = true end
+end)
+
+local PilotBtn = make("TextButton", {
+    Text = "AUTOPILOT",
+    Position = UDim2.fromOffset(118, 156),
+    Size = UDim2.fromOffset(100, 24),
+    BackgroundColor3 = Colors.Panel2,
+    BackgroundTransparency = 0.35,
+    TextColor3 = Colors.Muted,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    BorderSizePixel = 0,
+}, AIPanel)
+round(PilotBtn, 6)
+stroke(PilotBtn, Colors.Accent, 1, 0.5)
+PilotBtn.Activated:Connect(function()
+    setFeature("AIAutoPilot", not Config.AIAutoPilot)
+end)
+task.spawn(function()
+    while State.Running do
+        PilotBtn.TextColor3 = Config.AIAutoPilot and Colors.Accent or Colors.Muted
+        task.wait(0.5)
+    end
 end)
 
 ---------------- DOCK + CHUYỂN BẢNG ----------------
@@ -4622,228 +5677,3 @@ end)
 
 paintDock()
 end)()
-
-------------------------------------------------------------------
--- CÁC TAB GIAO DIỆN
-------------------------------------------------------------------
-local Info = {}
-local OverviewPage = addTab("Tổng quan", "◈")
-local FarmPage = addTab("Auto Farm", "⚔")
-local FeaturePage = addTab("Tính năng", "✦")
-local TunePage = addTab("Thông số", "⚙")
-local EventPage = addTab("Halloween", "☾")
-local PerformancePage = addTab("Hiệu năng", "▣")
-local MusicPage = addTab("Nhạc", "♪")
-local SettingsPage = addTab("Cài đặt", "☰")
-
-local function bind(key)
-    return function(value)
-        Config[key] = value
-        saveSoon()
-    end
-end
-
--- TỔNG QUAN
-addSection(OverviewPage, "PLAYER MONITOR")
-local setLevelProgress = addProgress(OverviewPage, "TIẾN ĐỘ LEVEL → MỤC TIÊU")
-Info.Level = addInfo(OverviewPage, "CẤP ĐỘ / SEA", "Đang đọc...")
-Info.Health = addInfo(OverviewPage, "MÁU", "Đang đọc...")
-Info.Tool = addInfo(OverviewPage, "VŨ KHÍ / TOOL", "Đang đọc...")
-Info.Quest = addInfo(OverviewPage, "NHIỆM VỤ", "Đang đọc...")
-Info.Status = addInfo(OverviewPage, "TRẠNG THÁI FARM", "Đang tắt")
-Info.Attack = addInfo(OverviewPage, "ĐÁNH", "--")
-Info.Bring = addInfo(OverviewPage, "BRING MOB (micro-step)", "--")
-Info.Aggro = addInfo(OverviewPage, "AGGRO TRACKER", "Đang đo...")
-Info.Session = addInfo(OverviewPage, "PHIÊN FARM", "--")
-Info.Network = addInfo(OverviewPage, "PING / FPS", "Đang đo...")
-
--- AUTO FARM
-addSection(FarmPage, "AUTO FARM")
-addToggle(FarmPage, "Auto Farm Level", false, function(v)
-    Config.AutoFarm = v
-    if v then
-        State.FarmStartAt = os.clock()
-        State.LastEngageAt = 0
-        State.NoMobSince = nil
-        State.ClusterPoint = nil
-        State.TargetMob = nil
-        State.Status = State.KeyLearned and "Đã có HitKey" or "Chưa có HitKey - click thường"
-    else
-        State.Status = "Đang tắt"
-        State.Fleeing = false
-        State.ClusterPoint = nil
-        State.TargetMob = nil
-        State.BossTarget = nil
-        clearBringMovers()
-        if not Config.AutoPumpkin then stopMovers() end
-    end
-end, "AutoFarm")
-addCycle(FarmPage, "Chế độ farm", { "Level Quest", "Quái gần nhất" }, Config.FarmMode, bind("FarmMode"))
-addStepper(FarmPage, "Level mục tiêu (0 = không dừng)", 0, 2800, 50, Config.TargetLevel, bind("TargetLevel"))
-addToggle(FarmPage, "Auto Quest", Config.AutoQuest, bind("AutoQuest"))
-addToggle(FarmPage, "Bring Mob (micro-step)", Config.BringMob, bind("BringMob"))
-addCycle(FarmPage, "Chế độ kéo quái", { "Cưỡng bức", "Dụ quái", "Không kéo" }, Config.BringMode, bind("BringMode"))
-addButton(FarmPage, "LÀM MỚI QUÁI BỊ BỎ QUA", resetBringLearning, Colors.Panel)
-addToggle(FarmPage, "Mở rộng hitbox quái", Config.BringHitbox, bind("BringHitbox"))
-addToggle(FarmPage, "Highlight quái gần", Config.MobHighlight, bind("MobHighlight"))
-addCycle(FarmPage, "Chế độ đánh", AttackModes, Config.AttackMode, bind("AttackMode"))
-addToggle(FarmPage, "Tự đổi chế độ nếu kẹt", Config.AutoSwitch, bind("AutoSwitch"))
-addToggle(FarmPage, "Multi-Hit", Config.MultiHit, bind("MultiHit"))
-addToggle(FarmPage, "Auto Equip vũ khí", Config.AutoEquip, bind("AutoEquip"))
-addCycle(FarmPage, "Loại vũ khí", { "Melee", "Sword", "Blox Fruit", "Gun" }, Config.Weapon, bind("Weapon"))
-addToggle(FarmPage, "Auto Haki", Config.AutoHaki, bind("AutoHaki"))
-addToggle(FarmPage, "Auto Ken", Config.AutoKen, bind("AutoKen"))
-
--- TÍNH NĂNG
-addSection(FeaturePage, "AUTO SKILL")
-addToggle(FeaturePage, "Auto Skill", Config.AutoSkill, bind("AutoSkill"))
-addToggle(FeaturePage, "Skill Z", Config.SkillZ, bind("SkillZ"))
-addToggle(FeaturePage, "Skill X", Config.SkillX, bind("SkillX"))
-addToggle(FeaturePage, "Skill C", Config.SkillC, bind("SkillC"))
-addToggle(FeaturePage, "Skill V", Config.SkillV, bind("SkillV"))
-addToggle(FeaturePage, "Skill F", Config.SkillF, bind("SkillF"))
-addStepper(FeaturePage, "Nhịp dùng skill (giây)", 0.3, 6, 0.1, Config.SkillDelay, bind("SkillDelay"))
-
-addSection(FeaturePage, "CHỈ SỐ")
-addToggle(FeaturePage, "Auto cộng điểm", Config.AutoStats, bind("AutoStats"))
-addCycle(FeaturePage, "Chỉ số cộng", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, bind("StatName"))
-addStepper(FeaturePage, "Điểm cộng mỗi lần", 1, 50, 1, Config.StatAmount, bind("StatAmount"))
-
-addSection(FeaturePage, "SEA / SERVER")
-addToggle(FeaturePage, "Auto qua Sea theo chuỗi nhiệm vụ", false, function(v) Config.AutoSea = v end, "AutoSea")
-addToggle(FeaturePage, "Auto Server Hop khi hết quái", false, function(v) Config.AutoHop = v; State.NoMobSince = nil end, "AutoHop")
-addStepper(FeaturePage, "Hop sau (giây)", 15, 300, 5, Config.HopAfter, bind("HopAfter"))
-addButton(FeaturePage, "ĐỔI SERVER NGAY", function() serverHop("Đổi server theo yêu cầu") end)
-
-addSection(FeaturePage, "TRÁI ÁC QUỶ & RƯƠNG")
-addToggle(FeaturePage, "Auto nhặt trái ác quỷ", false, function(v) Config.AutoFruit = v end, "AutoFruit")
-addToggle(FeaturePage, "Auto cất trái vào kho", Config.AutoStore, bind("AutoStore"))
-addToggle(FeaturePage, "Fruit ESP", Config.FruitESP, bind("FruitESP"))
-addToggle(FeaturePage, "Auto nhặt rương", false, function(v) Config.AutoChest = v end, "AutoChest")
-Info.Fruit = addInfo(FeaturePage, "TRÁI / RƯƠNG TRONG SERVER", "--")
-
--- THÔNG SỐ
-addSection(TunePage, "THÔNG SỐ AUTO FARM")
-addInfo(TunePage, "ĐỘ CAO BAN ĐẦU", "7 (Tự động tăng sau khi học HitKey)")
-addStepper(TunePage, "Độ cao sau khi có HitKey", 5, 60, 1, Config.FarmHeightLate, bind("FarmHeightLate"))
-addStepper(TunePage, "Tốc độ bay", 100, 400, 10, Config.TweenSpeed, bind("TweenSpeed"))
-addStepper(TunePage, "Tầm đánh (stud)", 30, 200, 10, Config.HitRange, bind("HitRange"))
-addStepper(TunePage, "Bán kính gom", 50, 600, 50, Config.BringRadius, bind("BringRadius"))
-addStepper(TunePage, "Hitbox quái", 10, 80, 5, Config.HitboxSize, bind("HitboxSize"))
-addStepper(TunePage, "Nhịp đánh", 0.02, 0.3, 0.01, Config.Delay, bind("Delay"))
-addStepper(TunePage, "Bay lên hồi máu khi < (%)", 0, 60, 5, Config.SafeHP, bind("SafeHP"))
-
--- HALLOWEEN
-addSection(EventPage, "HALLOWEEN - PUMPKIN EVENT")
-addToggle(EventPage, "Auto Collect Pumpkin", false, function(v)
-    Config.AutoPumpkin = v
-    if not v then
-        State.PumpkinStatus = "Đang tắt"
-        if not Config.AutoFarm then stopMovers() end
-    end
-end, "AutoPumpkin")
-addToggle(EventPage, "Click & đánh khi thu bí ngô", Config.PumpkinAttack, bind("PumpkinAttack"))
-addStepper(EventPage, "Tốc độ bay tìm bí ngô", 100, 400, 10, Config.PumpkinSpeed, bind("PumpkinSpeed"))
-Info.Pumpkin = addInfo(EventPage, "TRẠNG THÁI BÍ NGÔ", "Đang tắt")
-
--- HIỆU NĂNG
-addSection(PerformancePage, "TỐI ƯU HIỂN THỊ")
-addToggle(PerformancePage, "Giảm hiệu ứng hạt", Config.LowEffects, function(v)
-    Config.LowEffects = v
-    setLowEffects(v)
-    saveSoon()
-end)
-addToggle(PerformancePage, "Fullbright", Config.FullBright, function(v)
-    Config.FullBright = v
-    setFullbright(v)
-    saveSoon()
-end)
-addSection(PerformancePage, "KẾT NỐI")
-addToggle(PerformancePage, "Auto Rejoin", Config.AutoRejoin, bind("AutoRejoin"))
-addButton(PerformancePage, "RESET NHÂN VẬT", function()
-    pcall(function() local h = getHumanoid(); if h then h.Health = 0 end end)
-end)
-addButton(PerformancePage, "VÀO LẠI SERVER", function()
-    pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-end)
-
--- CÀI ĐẶT
-addSection(SettingsPage, "ĐIỀU KHIỂN")
-addButton(SettingsPage, "ẨN / HIỆN MENU (RightShift)", function() Main.Visible = not Main.Visible end)
-addButton(SettingsPage, "XÓA HIGHLIGHT", clearHighlights, Colors.Panel)
-addButton(SettingsPage, "ĐÓNG SCRIPT & KHÔI PHỤC", Unload, Color3.fromRGB(130, 40, 60))
-
--- NHẠC
-addSection(MusicPage, "TRÌNH ĐIỀU KHIỂN")
-addToggle(MusicPage, "Phát / Tạm dừng", false, function(on)
-    if on then
-        if Music.CurrentId then pcall(function() MusicSound:Resume() end)
-        else playId(MusicDefaultId, "Bài mặc định") end
-    else
-        pcall(function() MusicSound:Pause() end)
-    end
-end)
-addStepper(MusicPage, "Âm lượng", 0, 10, 0.5, 1, function(v) MusicSound.Volume = v end)
-addInput(MusicPage, "Audio ID tùy chỉnh", "Dán ID...", function(text) playId(text) end)
-addButton(MusicPage, "ẨN / HIỆN BẢNG NHẠC", function() togglePanel("music") end, Colors.Panel)
-addSection(MusicPage, "PLAYLIST")
-for _, track in ipairs(MusicPlaylist) do
-    addButton(MusicPage, track.Name, function() playId(track.Id, track.Name, track.From, track.To) end)
-end
-
--- AI
-local AIMenuPage = addTab("AI", "✧")
-addSection(AIMenuPage, "BẢNG NỔI (AI / NHẠC)")
-addButton(AIMenuPage, "MỞ / ĐÓNG BẢNG AI", function() togglePanel("ai") end)
-addButton(AIMenuPage, "MỞ / ĐÓNG BẢNG NHẠC", function() togglePanel("music") end, Colors.Panel)
-addButton(AIMenuPage, "ẨN CẢ 2 BẢNG (RightControl)", function() setPanel(nil) end, Colors.Panel)
-
-selectTab("Tổng quan")
-if Config.FullBright then setFullbright(true) end
-if Config.LowEffects then setLowEffects(true) end
-
-------------------------------------------------------------------
--- VÒNG LẶP CẬP NHẬT UI
-------------------------------------------------------------------
-local frameCount, fpsStart = 0, os.clock()
-connect(RunService.RenderStepped, function()
-    frameCount += 1
-    local now = os.clock()
-    if now - fpsStart >= 1 then
-        State.FPS = math.floor(frameCount / (now - fpsStart) + 0.5)
-        frameCount = 0
-        fpsStart = now
-    end
-end)
-
-task.spawn(function()
-    while State.Running and Gui.Parent do
-        pcall(function()
-            local level = getLevel()
-            local target = Config.TargetLevel > 0 and Config.TargetLevel or 2800
-            setLevelProgress(level / target, string.format("%d / %d  (%.1f%%)", level, target, math.min(level / target, 1) * 100))
-            Info.Level.Text = string.format("Level %d  |  Sea %d", level, getSea())
-            local humanoid = getHumanoid()
-            Info.Health.Text = humanoid and string.format("%d / %d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)) or "Chưa spawn"
-            Info.Tool.Text = getEquippedToolName()
-            local quest = State.Quest or currentQuest()
-            Info.Quest.Text = State.FarmAny and "Quái gần nhất" or questLabel(quest)
-            Info.Status.Text = State.Status
-            Info.Attack.Text = string.format("%s | Key: %s", Config.AttackMode, State.KeyLearned and "Đã học" or "Chưa")
-            local bd = State.BringDiagnostics or {}
-            Info.Bring.Text = string.format("Đang kéo: %d/%d con | micro-step", bd.moving or 0, bd.candidates or 0)
-            local ad = AggroTracker.Diagnostics or {}
-            Info.Aggro.Text = string.format("Tiến gần:%d | Đứng:%d | Tổng:%d", ad.approaching or 0, ad.stationary or 0, ad.total or 0)
-            local elapsed, gained, perHour, eta = sessionSummary()
-            Info.Session.Text = string.format("%s | hạ %d con | +%d level (%.1f/h) | ETA: %s", formatDuration(elapsed), State.TotalKills, gained, perHour, eta)
-            Info.Network.Text = State.FPS .. " FPS"
-            Info.Pumpkin.Text = State.PumpkinStatus
-            Info.Fruit.Text = string.format("%d trái  |  %d rương", State.FruitCount or 0, State.ChestCount or 0)
-            Footer.Text = string.format("H-HUB v5.12  |  Level %d  |  %s  |  RightShift: ẩn/hiện", level, State.Status)
-        end)
-        task.wait(0.5)
-    end
-end)
-
-notify("H-HUB v5.12", "Native AI đã sẵn sàng! Bấm nút ✧ bên trái để mở bảng AI.")
-print("[H-HUB] Companion v5.12 Native AI đã khởi động thành công!")
