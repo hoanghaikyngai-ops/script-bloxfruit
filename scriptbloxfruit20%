@@ -3146,8 +3146,782 @@ end
 --=====================================================================
 -- KHỐI A  (thay đoạn header cũ: httpRequest / AI_MODEL / AIKey / Agent / AllowedRemote)
 --=====================================================================
-local BRAIN_URL = "https://raw.githubusercontent.com/hoanghaikyngai-ops/n-o-ai-h-hub-blox-fruit/refs/heads/main/b%E1%BB%99%20n%C3%A3o%20ai%20blox%20fruit" -- << raw bộ não của bạn
-local BRAIN_CACHE = "HHubBrain.cache.lua"
+--=====================================================================
+-- H-HUB BRAIN v2 (TĨNH, NHÚNG TRỰC TIẾP, KHÔNG TẢI TỪ NGOÀI)
+-- Dán khối này vào ngay đầu IIFE bảng AI (thay cho BRAIN_URL / BRAIN_CACHE).
+-- Giao diện tương thích: BrainLib.new{Name,FileName} / :AddFeature / :Process / .features
+--=====================================================================
+local BrainLib = (function()
+local HttpService = game:GetService("HttpService")
+local Brain = {}
+Brain.__index = Brain
+
+---------------- chuẩn hoá tiếng Việt -> ASCII ----------------
+local ACCENT = {
+	a = "àáạảãâầấậẩẫăằắặẳẵÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴ",
+	e = "èéẹẻẽêềếệểễÈÉẸẺẼÊỀẾỆỂỄ",
+	i = "ìíịỉĩÌÍỊỈĨ",
+	o = "òóọỏõôồốộổỗơờớợởỡÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠ",
+	u = "ùúụủũưừứựửữÙÚỤỦŨƯỪỨỰỬỮ",
+	y = "ỳýỵỷỹỲÝỴỶỸ",
+	d = "đĐ",
+}
+local MAP = {}
+for base, chars in pairs(ACCENT) do
+	for _, cp in utf8.codes(chars) do MAP[cp] = base end
+end
+
+local function norm(s)
+	s = tostring(s or "")
+	local ok, res = pcall(function()
+		local out = {}
+		for _, cp in utf8.codes(s) do
+			local b = MAP[cp]
+			if b then out[#out + 1] = b
+			elseif cp < 128 then out[#out + 1] = string.char(cp)
+			else out[#out + 1] = " " end
+		end
+		return table.concat(out)
+	end)
+	if ok then s = res end
+	s = s:lower():gsub("[^%w]+", " ")
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function words(s)
+	local t = {}
+	for w in s:gmatch("%S+") do t[#t + 1] = w end
+	return t
+end
+
+local function lev(a, b)
+	if a == b then return 0 end
+	local la, lb = #a, #b
+	if la == 0 then return lb end
+	if lb == 0 then return la end
+	local prev, cur = {}, {}
+	for j = 0, lb do prev[j] = j end
+	for i = 1, la do
+		cur[0] = i
+		local ca = a:byte(i)
+		for j = 1, lb do
+			local cost = (ca == b:byte(j)) and 0 or 1
+			cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+		end
+		prev, cur = cur, prev
+	end
+	return prev[lb]
+end
+
+local function fuzzyWord(a, b)
+	if a == b then return true end
+	local m = math.max(#a, #b)
+	if m < 5 then return false end
+	return lev(a, b) <= (m >= 9 and 2 or 1)
+end
+
+local function hasPhrase(text, phrase)
+	return (" " .. text .. " "):find(" " .. phrase .. " ", 1, true) ~= nil
+end
+
+local function set(list)
+	local t = {}
+	for _, w in ipairs(list) do t[w] = true end
+	return t
+end
+
+local ON = set({ "bat", "mo", "kich", "on", "enable", "start", "chay", "khoi", "activate" })
+local OFF = set({ "tat", "ngung", "dung", "off", "disable", "stop", "huy", "thoi", "ngat" })
+local FLIP = set({ "toggle", "dao", "lat" })
+local INC = set({ "tang", "nang", "them", "increase", "up" })
+local DEC = set({ "giam", "ha", "bot", "decrease", "down", "thap" })
+local STOPW = set({ "the", "of", "a", "an" })
+
+local function verbOf(ws)
+	for _, w in ipairs(ws) do
+		if ON[w] then return "on" elseif OFF[w] then return "off" elseif FLIP[w] then return "flip" end
+	end
+	return nil
+end
+
+local function incdecOf(ws)
+	for _, w in ipairs(ws) do
+		if INC[w] then return 1 elseif DEC[w] then return -1 end
+	end
+	return nil
+end
+
+local function numberOf(text)
+	local k = text:match("(%d+)%s?k%f[%W]")
+	if k then return tonumber(k) * 1000 end
+	local n = text:match("(%d+)")
+	return n and tonumber(n) or nil
+end
+
+local function cleanName(n)
+	return (tostring(n):gsub("%s*%[.-%]", ""))
+end
+
+-- Tìm tên khớp nhất trong danh sách (cho phép sai chính tả, thiếu từ). Trả về tên gốc + điểm.
+local function bestName(text, names)
+	local tw = words(text)
+	local best, bestScore
+	for _, name in ipairs(names) do
+		local nw = words(norm(name))
+		local sig, hit, longest = 0, 0, 0
+		for _, w in ipairs(nw) do
+			if not STOPW[w] then
+				sig = sig + 1
+				for _, t in ipairs(tw) do
+					if t == w or fuzzyWord(t, w) then
+						hit = hit + 1
+						if #w > longest then longest = #w end
+						break
+					end
+				end
+			end
+		end
+		if sig > 0 and hit > 0 and longest >= 3 then
+			local ratio = hit / sig
+			if ratio >= 0.5 then
+				local score = ratio + 0.01 * hit - 0.001 * #nw
+				if not bestScore or score > bestScore then best, bestScore = name, score end
+			end
+		end
+	end
+	return best, bestScore
+end
+
+---------------- KIẾN THỨC NHIỆM VỤ (tham khảo, game có thể đã đổi) ----------------
+local GUIDES = {
+	{ names = { "saber", "kiem saber" }, text = "Saber (khoảng Lv 200, Sea 1): giải đố ở Jungle/Desert (đuốc, cần gạt, bình độc, relic...) để gọi boss Saber Expert, hạ boss là nhận kiếm. Phần đố cần làm tay; khi boss đã xuất hiện hãy bảo mình 'đánh Saber Expert'." },
+	{ names = { "godhuman", "god human" }, text = "Godhuman (Sea 3): cần mastery cao ở các võ (Superhuman, Death Step, Sharkman Karate, Electric Claw, Dragon Talon) + nguyên liệu (Fish Tail, Magma Ore, Mystic Droplet, Dragon Scale) + Beli/Fragments. Mình có thể farm mob rơi nguyên liệu nếu bạn nói tên mob." },
+	{ names = { "cdk", "cursed dual katana" }, text = "Cursed Dual Katana (Sea 3): cần sở hữu cả Tushita lẫn Yama, đủ mastery, rồi làm chuỗi thử thách mở cổng CDK. Phần lớn bước phải làm tay." },
+	{ names = { "tushita" }, text = "Tushita (Sea 3): làm chuỗi thắp đuốc ở Floating Turtle rồi hạ boss Longma. Khi Longma xuất hiện, bảo mình 'đánh Longma'." },
+	{ names = { "yama" }, text = "Yama (Sea 3): rút kiếm ở Haunted Castle sau khi đủ điều kiện (cần hạ nhiều Elite). Mình hỗ trợ đánh Elite khi chúng xuất hiện." },
+	{ names = { "soul guitar", "guitar" }, text = "Soul Guitar (Sea 3): làm chuỗi đố ở Haunted Castle vào đêm trăng tròn, cần nhiều vật phẩm. Phần giải đố cần làm tay." },
+	{ names = { "race v2", "tong v2", "evo race" }, text = "Race V2 (Sea 2): gặp Alchemist, hái 3 loại hoa theo yêu cầu rồi nộp, cần một khoản Beli. Hoa hiếm nên cần đi nhiều nơi." },
+	{ names = { "race v3", "tong v3" }, text = "Race V3 (Sea 3): gặp NPC Arowe và làm nhiệm vụ theo từng tộc." },
+	{ names = { "race v4", "tong v4", "temple of time" }, text = "Race V4 (Sea 3): cần Race V3, tìm Mirage Island lấy Blue Gear, rồi tới Temple of Time vào đêm trăng tròn." },
+	{ names = { "raid", "thuc tinh", "awaken" }, text = "Raid: mua chip raid (từ Sea 2), mở raid và dọn 5 đảo để nhận Fragments / thức tỉnh trái. Mình hỗ trợ đánh mob nhưng việc chọn chip bạn cần làm tay." },
+	{ names = { "dough king" }, text = "Dough King (Sea 3, Sweet Chateau): triệu hồi bằng Sweet Chalice sau khi dọn Cake Prince. Khi boss xuất hiện, bảo mình 'đánh Dough King'." },
+	{ names = { "rip indra", "indra" }, text = "rip_indra: ở Sea 2 (Lv 1500+) là boss trong chuỗi mở Sea 3 - bật Auto Sea sẽ tự đánh khi nó xuất hiện. Hoặc bảo mình 'đánh rip_indra'." },
+	{ names = { "dark step" }, text = "Dark Step (Sea 2): học từ NPC dạy võ ở Sea 2, cần Beli. Mình chưa tự động hoá được việc học." },
+	{ names = { "electric claw" }, text = "Electric Claw (Sea 3): học từ NPC ở Floating Turtle, cần Beli/Fragments và mastery võ nền." },
+	{ names = { "haki", "buso", "ken", "quan sat" }, text = "Haki: Auto Haki bật Buso (vũ trang), Auto Ken bật Haki quan sát. Bạn nói 'bật auto haki' hoặc 'bật auto ken'." },
+	{ names = { "kiem tien", "beli", "fragment", "fragments" }, text = "Kiếm Beli/Fragments: farm level liên tục, Raid, Sea Events, Elite Hunter, nhặt rương (Auto Rương) và trái ác quỷ để bán." },
+}
+local GUIDE_NAMES, GUIDE_BY_NAME = {}, {}
+for _, g in ipairs(GUIDES) do
+	for _, n in ipairs(g.names) do
+		GUIDE_NAMES[#GUIDE_NAMES + 1] = n
+		GUIDE_BY_NAME[n] = g
+	end
+end
+
+local BOSSES = set({ "ice admiral", "rip indra", "don swan", "saber expert", "the gorilla king", "bobby", "the saw", "yeti",
+	"vice admiral", "warden", "chief warden", "swan", "magma admiral", "fishman lord", "wysper", "thunder god", "cyborg",
+	"diamond", "jeremy", "fajita", "smoke admiral", "awakened ice admiral", "tide keeper", "darkbeard", "cake queen",
+	"dough king", "soul reaper", "cursed captain", "greybeard", "stone", "island empress", "kilo admiral",
+	"captain elephant", "beautiful pirate", "longma", "mob leader" })
+
+local DEPS = { AutoSea = { "AutoFarm" }, AutoSkill = { "AutoFarm" }, AutoHop = { "AutoFarm" } }
+local KILL_CUES = { "danh", "diet", "giet", "san", "kill", "ha guc", "tieu diet", "attack", "hunt" }
+local NAV_CUES = { "den", "toi", "bay den", "bay toi", "di den", "di toi", "ghe", "bay" }
+
+local HELP = "Mình là AI nội bộ (chạy offline ngay trong script). Thử: 'bật auto farm và haki', 'tắt fullbright', 'tăng tốc độ bay lên 300', 'lên level 1500', 'qua sea 2', 'đánh Ice Admiral', 'đánh 5 con Bandit', 'nhặt trái', 'đến Military Detective', 'nhận nhiệm vụ', 'gợi ý', 'trạng thái', 'lấy saber', 'học bí ngô = auto bí ngô', 'dừng'."
+
+---------------- khởi tạo / lưu bộ nhớ ----------------
+function Brain.new(opt)
+	local self = setmetatable({}, Brain)
+	self.Name = opt and opt.Name or "AI"
+	self.FileName = opt and opt.FileName
+	self.features = {}
+	self._aliases = {}
+	self._dirty = true
+	self.mem = { lastFeature = nil, uses = {}, learned = {}, turns = 0 }
+	self:_load()
+	return self
+end
+
+function Brain:_load()
+	pcall(function()
+		if self.FileName and readfile and isfile and isfile(self.FileName) then
+			local data = HttpService:JSONDecode(readfile(self.FileName))
+			if type(data) == "table" then
+				if type(data.learned) == "table" then self.mem.learned = data.learned end
+				if type(data.uses) == "table" then self.mem.uses = data.uses end
+				if type(data.lastFeature) == "string" then self.mem.lastFeature = data.lastFeature end
+			end
+		end
+	end)
+end
+
+function Brain:_save()
+	pcall(function()
+		if self.FileName and writefile then
+			writefile(self.FileName, HttpService:JSONEncode({
+				learned = self.mem.learned, uses = self.mem.uses, lastFeature = self.mem.lastFeature,
+			}))
+		end
+	end)
+end
+
+function Brain:AddFeature(key, aliases, def)
+	def = def or {}
+	self.features[key] = {
+		key = key, kind = def.kind or "toggle", label = def.label or key,
+		min = def.min, max = def.max, aliases = aliases or {},
+	}
+	self._dirty = true
+end
+
+function Brain:_rebuild()
+	local seen, list = {}, {}
+	local function add(alias, key)
+		alias = norm(alias)
+		if alias == "" then return end
+		local id = key .. "|" .. alias
+		if seen[id] then return end
+		seen[id] = true
+		list[#list + 1] = { alias = alias, words = words(alias), key = key }
+	end
+	for key, def in pairs(self.features) do
+		add(def.label, key)
+		add(key, key)
+		for _, a in ipairs(def.aliases) do add(a, key) end
+	end
+	for _, l in ipairs(self.mem.learned) do
+		if type(l) == "table" and self.features[l.key] then add(l.alias, l.key) end
+	end
+	self._aliases = list
+	self._dirty = false
+end
+
+-- Tìm các tính năng trong câu (bag-of-words, chịu sai chính tả, không phụ thuộc thứ tự từ).
+function Brain:matchFeatures(text)
+	local tw = words(text)
+	local used, found = {}, {}
+	while true do
+		local best
+		for _, it in ipairs(self._aliases) do
+			local ok, score, taken, idxs = true, 0, {}, {}
+			for _, aw in ipairs(it.words) do
+				local hit, kind
+				for i, w in ipairs(tw) do
+					if not used[i] and not taken[i] then
+						if w == aw then hit, kind = i, 1; break
+						elseif not hit and fuzzyWord(w, aw) then hit, kind = i, 0.8 end
+					end
+				end
+				if not hit then ok = false; break end
+				taken[hit] = true
+				idxs[#idxs + 1] = hit
+				score = score + kind
+			end
+			if ok and (not best or score > best.score or (score == best.score and #it.words > #best.it.words)) then
+				best = { it = it, score = score, idxs = idxs }
+			end
+		end
+		if not best then break end
+		local pos = math.huge
+		for _, i in ipairs(best.idxs) do
+			used[i] = true
+			if i < pos then pos = i end
+		end
+		local dup = false
+		for _, f in ipairs(found) do if f.key == best.it.key then dup = true end end
+		if not dup then found[#found + 1] = { key = best.it.key, pos = pos } end
+	end
+	table.sort(found, function(a, b) return a.pos < b.pos end)
+	local keys = {}
+	for _, f in ipairs(found) do keys[#keys + 1] = f.key end
+	return keys
+end
+
+---------------- tiện ích câu trả lời ----------------
+local function onOff(v) return v and "bật" or "tắt" end
+
+local function enabledList(self, env)
+	local on = {}
+	for key, def in pairs(self.features) do
+		if def.kind == "toggle" and env.cfg and env.cfg[key] then on[#on + 1] = def.label end
+	end
+	table.sort(on)
+	return on
+end
+
+local function farmSpot(env)
+	local q = env.quest
+	if q and q.mob then return q.mob end
+	return nil
+end
+
+local function advise(self, env)
+	local lv, sea = env.level or 1, env.sea or 1
+	local cfg = env.cfg or {}
+	local tips = {}
+	local function tip(t) tips[#tips + 1] = "• " .. t end
+
+	if env.hp and env.hpMax and env.hpMax > 0 and env.hp / env.hpMax < 0.35 then
+		tip("Máu đang thấp (" .. env.hp .. "/" .. env.hpMax .. ") - nên hồi máu / bật Máu An Toàn trước khi farm.")
+	end
+	local spot = farmSpot(env)
+	if sea == 1 then
+		if lv < 700 then
+			tip("Sea 1 (Lv " .. lv .. "): farm quest" .. (spot and (" '" .. spot .. "'") or "") .. ", mục tiêu Lv 700 để sang Sea 2. Nói 'lên level 700'.")
+		else
+			tip("Đã đủ Lv 700: nói 'qua sea 2' để bật chuỗi Military Detective → Ice Admiral.")
+		end
+	elseif sea == 2 then
+		if lv < 1500 then
+			tip("Sea 2 (Lv " .. lv .. "): tiếp tục farm" .. (spot and (" '" .. spot .. "'") or "") .. " tới Lv 1500 rồi 'qua sea 3'.")
+		else
+			tip("Đủ Lv 1500: nói 'qua sea 3' (một số bước Sea 3 vẫn phải làm tay).")
+		end
+	else
+		if lv < 2800 then
+			tip("Sea 3 (Lv " .. lv .. "): farm" .. (spot and (" '" .. spot .. "'") or "") .. " tới Lv 2800. Nói 'lên level 2800'.")
+		else
+			tip("Bạn đã gần/đạt max level - hãy nhắm tới vũ khí/race (hỏi mình 'lấy cdk', 'race v4'...).")
+		end
+	end
+	if not cfg.AutoFarm then tip("Auto Farm đang tắt - nói 'bật auto farm'.") end
+	if cfg.AutoHaki == false then tip("Auto Haki chưa bật - nói 'bật haki'.") end
+	if cfg.AutoStats == false then tip("Chưa tự cộng điểm - nói 'bật auto cộng điểm'.") end
+	if env.fruits and env.fruits[1] then
+		tip("Có trái '" .. tostring(env.fruits[1].name) .. "' cách " .. tostring(env.fruits[1].dist) .. " stud - nói 'nhặt trái'.")
+	end
+	if (env.chests or 0) > 0 and not cfg.AutoChest then
+		tip("Có " .. env.chests .. " rương gần đây - nói 'bật auto rương'.")
+	end
+	while #tips > 5 do table.remove(tips) end
+	return table.concat(tips, "\n")
+end
+
+local function statusText(self, env)
+	local parts = { string.format("Lv %s | Sea %s", tostring(env.level or "?"), tostring(env.sea or "?")) }
+	if env.hp then parts[#parts + 1] = string.format("HP %d/%d", env.hp, env.hpMax or env.hp) end
+	if env.questUI and env.questUI ~= "không có" then parts[#parts + 1] = "Quest: " .. env.questUI
+	elseif env.quest then parts[#parts + 1] = "Quest dự kiến: " .. tostring(env.quest.mob) end
+	if env.enemies and env.enemies[1] then
+		parts[#parts + 1] = string.format("Quái gần nhất: %s (%d stud)", cleanName(env.enemies[1].name), env.enemies[1].dist or 0)
+	end
+	if env.status then parts[#parts + 1] = "Farm: " .. tostring(env.status) end
+	local on = enabledList(self, env)
+	parts[#parts + 1] = #on > 0 and ("Đang bật: " .. table.concat(on, ", ")) or "Chưa bật tính năng nào"
+	parts[#parts + 1] = env.agent and "AI đang chạy tác vụ" or "AI rảnh"
+	return table.concat(parts, " | ")
+end
+
+local function R(reply, action) return { reply = reply or "", action = action } end
+
+local function toggleActions(key, state, env)
+	local cfg = env.cfg or {}
+	local acts, notes = {}, {}
+	if state then
+		if DEPS[key] then
+			for _, dep in ipairs(DEPS[key]) do
+				if cfg[dep] ~= true then
+					acts[#acts + 1] = { type = "toggle", feature = dep, state = true }
+					notes[#notes + 1] = "bật kèm " .. dep
+				end
+			end
+		end
+		if key == "AutoPumpkin" and cfg.AutoFarm then
+			acts[#acts + 1] = { type = "toggle", feature = "AutoFarm", state = false }
+			notes[#notes + 1] = "tạm tắt Auto Farm (không chạy chung với Bí Ngô)"
+		end
+		if key == "AutoFarm" and cfg.AutoPumpkin then
+			acts[#acts + 1] = { type = "toggle", feature = "AutoPumpkin", state = false }
+			notes[#notes + 1] = "tắt Auto Bí Ngô (không chạy chung)"
+		end
+		if key == "AutoFarm" and env.hp and env.hpMax and env.hpMax > 0 and env.hp / env.hpMax < 0.3 then
+			notes[#notes + 1] = "lưu ý: máu đang thấp"
+		end
+	end
+	acts[#acts + 1] = { type = "toggle", feature = key, state = state }
+	return acts, notes
+end
+
+---------------- xử lý từng mệnh đề ----------------
+function Brain:_clause(text, env, ctx, raw)
+	local ws = words(text)
+	local cfg = env.cfg or {}
+	local function hasAny(list)
+		for _, p in ipairs(list) do if hasPhrase(text, p) then return true end end
+		return false
+	end
+
+	-- trợ giúp / chào hỏi
+	if hasAny({ "help", "tro giup", "ban lam duoc gi", "chuc nang", "lenh" }) then return R(HELP) end
+	if hasAny({ "cam on", "thanks", "thank you" }) then return R("Không có gì! Cần gì cứ nói mình.") end
+	if hasAny({ "ban la ai", "may la ai" }) then
+		return R("Mình là AI điều khiển của H-HUB, chạy hoàn toàn offline trong script: hiểu lệnh tiếng Việt (kể cả gõ không dấu / sai chính tả), nhìn môi trường game, rồi bật tắt tính năng hoặc lập kế hoạch hành động.")
+	end
+	if #ws <= 4 and hasAny({ "xin chao", "chao", "hello", "hi", "hey", "alo" }) then
+		return R(string.format("Chào bạn! Bạn đang Lv %s (Sea %s). Nói 'gợi ý' để mình tư vấn, hoặc 'help' để xem lệnh.", tostring(env.level or "?"), tostring(env.sea or "?")))
+	end
+
+	-- huỷ nhiệm vụ
+	if hasAny({ "huy nhiem vu", "bo nhiem vu", "abandon quest" }) then
+		return R("Huỷ nhiệm vụ hiện tại.", { type = "agent_plan", steps = {
+			{ tool = "call_remote", args = { args = { "AbandonQuest" } }, text = "Huỷ nhiệm vụ" } } })
+	end
+
+	local feats = self:matchFeatures(text)
+	local verb = verbOf(ws)
+	local incdec = incdecOf(ws)
+	local num = numberOf(text)
+
+	-- tắt tất cả / dừng
+	if hasAny({ "tat het", "tat tat ca", "dung het", "all off" }) then
+		return R("Đã tắt toàn bộ tính năng tự động.", { type = "all_off" })
+	end
+	if #ws <= 3 and #feats == 0 then
+		local onlyStop = verb == "off"
+		for _, w in ipairs(ws) do
+			if not (OFF[w] or w == "lai" or w == "ai" or w == "ngay" or w == "di") then onlyStop = false end
+		end
+		if onlyStop then return R("Đang dừng tác vụ.", { type = "agent_stop" }) end
+	end
+
+	-- học từ đồng nghĩa: "học bí ngô = auto bí ngô"
+	if (ws[1] == "hoc" or ws[1] == "nho" or ws[1] == "day") and raw:find("=", 1, true) then
+		local left, right = raw:match("^%S+%s+(.-)%s*=%s*(.+)$")
+		if left and right then
+			local alias = norm(left)
+			local target = self:matchFeatures(norm(right))[1]
+			if alias ~= "" and target then
+				self.mem.learned[#self.mem.learned + 1] = { alias = alias, key = target }
+				self._dirty = true
+				self:_rebuild()
+				return R(string.format("Đã học: '%s' = %s.", alias, self.features[target].label))
+			end
+			return R("Mình chưa hiểu vế phải là tính năng nào. Ví dụ: 'học bí ngô = auto bí ngô'.")
+		end
+	end
+
+	-- trạng thái / gợi ý
+	if hasAny({ "trang thai", "tinh trang", "dang lam gi", "bao cao", "status", "dang bat gi" }) then
+		return R(statusText(self, env))
+	end
+
+	-- hướng dẫn nhiệm vụ (kiến thức tĩnh)
+	local killCue = hasAny(KILL_CUES)
+	local gname = bestName(text, GUIDE_NAMES)
+	if gname and #feats == 0 and not killCue then
+		return R(GUIDE_BY_NAME[gname].text .. " (tham khảo, game có thể đã thay đổi)")
+	end
+	if hasAny({ "goi y", "nen lam gi", "lam gi tiep", "tiep theo", "tu van", "cay o dau", "nen cay", "nen di dau", "lam gi bay gio", "buoc tiep" }) then
+		return R(advise(self, env))
+	end
+
+	-- chuyển Sea
+	if not hasAny({ "auto" }) then
+		local target = text:match("sea (%d)")
+		if target and hasAny({ "qua", "sang", "len", "den", "di", "chuyen" }) then
+			local t = tonumber(target)
+			local sea, lv = env.sea or 1, env.level or 1
+			if t == sea then return R("Bạn đang ở Sea " .. sea .. " rồi.") end
+			if t == 1 then
+				return R("Quay về Sea 1.", { type = "agent_plan", steps = {
+					{ tool = "call_remote", args = { args = { "TravelMain" } }, text = "Về Sea 1" } } })
+			end
+			if t == 2 and sea == 1 then
+				if lv < 700 then
+					return R("Cần Lv 700 để sang Sea 2. Mình đặt mục tiêu 700 và bật farm.", { type = "batch", list = {
+						{ type = "set", feature = "TargetLevel", value = 700 },
+						{ type = "toggle", feature = "AutoFarm", state = true } } })
+				end
+				return R("Đủ Lv 700: bật Auto Sea + Auto Farm để làm chuỗi Military Detective → Ice Admiral rồi tự sang Sea 2.", { type = "batch", list = {
+					{ type = "set", feature = "TargetLevel", value = 2800 },
+					{ type = "toggle", feature = "AutoFarm", state = true },
+					{ type = "toggle", feature = "AutoSea", state = true } } })
+			end
+			if t == 3 and sea == 2 then
+				if lv < 1500 then
+					return R("Cần Lv 1500 để sang Sea 3. Mình đặt mục tiêu 1500 và bật farm.", { type = "batch", list = {
+						{ type = "set", feature = "TargetLevel", value = 1500 },
+						{ type = "toggle", feature = "AutoFarm", state = true } } })
+				end
+				return R("Đủ Lv 1500: bật Auto Sea + Auto Farm. Lưu ý một số bước Sea 3 (Colosseum, Don Swan, nút nhà tù) vẫn phải làm tay.", { type = "batch", list = {
+					{ type = "set", feature = "TargetLevel", value = 2800 },
+					{ type = "toggle", feature = "AutoFarm", state = true },
+					{ type = "toggle", feature = "AutoSea", state = true } } })
+			end
+			if t == 3 and sea == 1 then
+				return R("Phải qua Sea 2 trước. Nói 'qua sea 2'.")
+			end
+			return R("Mình chưa có đường chuyển từ Sea " .. sea .. " sang Sea " .. t .. " (chỉ hỗ trợ 1→2→3 và về Sea 1).")
+		end
+	end
+
+	-- mục tiêu level: "lên level 1500", "cày tới 2000"
+	if not hasAny({ "muc tieu" }) and num and (hasAny({ "len level", "cay toi", "cay den", "len lv", "dat level", "farm toi", "farm den" })
+		or (hasAny({ "cay", "farm", "len" }) and hasAny({ "level", "lv" }))) then
+		local n = math.clamp(num, 0, 2800)
+		local lv, sea = env.level or 1, env.sea or 1
+		if n <= lv and n > 0 then return R("Bạn đã Lv " .. lv .. " rồi (mục tiêu " .. n .. ").") end
+		local list = {
+			{ type = "set", feature = "TargetLevel", value = n },
+			{ type = "toggle", feature = "AutoQuest", state = true },
+			{ type = "toggle", feature = "BringMob", state = true },
+			{ type = "toggle", feature = "AutoHaki", state = true },
+			{ type = "toggle", feature = "AutoFarm", state = true },
+		}
+		local note = ""
+		if (sea == 1 and n >= 700) or (sea == 2 and n >= 1500) then
+			list[#list + 1] = { type = "toggle", feature = "AutoSea", state = true }
+			note = " Mục tiêu vượt mốc sang Sea nên mình bật luôn Auto Sea."
+		end
+		return R(string.format("Lên Lv %d: bật Auto Farm + Quest + Bring Mob + Haki.%s", n, note), { type = "batch", list = list })
+	end
+
+	-- hỏi trạng thái 1 tính năng
+	local polite = hasAny({ "co the", "giup", "lam on", "hay", "vui long" })
+	local isQ = (raw:find("?", 1, true) ~= nil or text:match("%f[%w]khong$") ~= nil or text:match("%f[%w]chua$") ~= nil
+		or hasAny({ "dang bat", "dang tat", "co dang" })) and not (polite and verb ~= nil)
+
+	-- đại từ: "bật nó lên"
+	if #feats == 0 and verb and self.mem.lastFeature and hasAny({ "no", "cai do", "tinh nang do", "cai nay" }) then
+		feats = { self.mem.lastFeature }
+	end
+
+	local inherited = (verb == nil and num == nil and incdec == nil and ctx.verb) or nil
+	local explicit = verb ~= nil or num ~= nil or incdec ~= nil or isQ or inherited ~= nil
+
+	-- === nhánh tính năng ===
+	if #feats > 0 and explicit then
+		local replies, acts = {}, {}
+		for _, key in ipairs(feats) do
+			local def = self.features[key]
+			if def then
+				self.mem.lastFeature = key
+				self.mem.uses[key] = (self.mem.uses[key] or 0) + 1
+				if def.kind == "command" then
+					replies[#replies + 1] = "Thực hiện: " .. def.label .. "."
+					acts[#acts + 1] = { type = "run", feature = key }
+				elseif def.kind == "value" then
+					local cur = cfg[key]
+					if num == nil and incdec == nil then
+						replies[#replies + 1] = def.label .. " hiện là " .. tostring(cur or "?") .. string.format(" (giới hạn %s-%s).", tostring(def.min), tostring(def.max))
+					else
+						local value
+						local absolute = incdec == nil or text:find("len %d") or text:find("thanh %d") or text:find("muc %d") or text:find("den %d")
+						if absolute and num ~= nil then
+							value = num
+						else
+							local step = num or math.max(1, math.floor(((def.max or 100) - (def.min or 0)) / 10))
+							value = (tonumber(cur) or 0) + (incdec or 1) * step
+						end
+						local clamped = math.clamp(value, def.min or value, def.max or value)
+						replies[#replies + 1] = string.format("Đặt %s = %s%s.", def.label, tostring(clamped), clamped ~= value and (" (đã giới hạn trong " .. tostring(def.min) .. "-" .. tostring(def.max) .. ")") or "")
+						acts[#acts + 1] = { type = "set", feature = key, value = clamped }
+					end
+				else -- toggle
+					if isQ then
+						replies[#replies + 1] = def.label .. " đang " .. onOff(cfg[key] and true or false) .. "."
+					else
+						local v = verb or inherited
+						if v == "flip" or v == nil then
+							replies[#replies + 1] = "Đảo trạng thái " .. def.label .. "."
+							acts[#acts + 1] = { type = "flip", feature = key }
+						else
+							local state = (v == "on")
+							local list, notes = toggleActions(key, state, env)
+							for _, a in ipairs(list) do acts[#acts + 1] = a end
+							local line = "Đã " .. onOff(state) .. " " .. def.label
+							if #notes > 0 then line = line .. " (" .. table.concat(notes, "; ") .. ")" end
+							replies[#replies + 1] = line .. "."
+						end
+					end
+				end
+			end
+		end
+		if verb then ctx.verb = verb end
+		local action
+		if #acts == 1 then action = acts[1] elseif #acts > 1 then action = { type = "batch", list = acts } end
+		self:_save()
+		return R(table.concat(replies, " "), action)
+	end
+
+	-- nhận nhiệm vụ hiện tại
+	if hasAny({ "nhan nhiem vu", "nhan quest", "start quest", "lay nhiem vu" }) and env.quest then
+		local q = env.quest
+		return R(string.format("Nhận nhiệm vụ %s (%s).", tostring(q.quest), tostring(q.mob)), { type = "agent_plan", steps = {
+			{ tool = "call_remote", args = { args = { "StartQuest", q.quest, q.idx } }, text = "Nhận quest " .. tostring(q.quest) } } })
+	end
+
+	-- đánh quái / boss
+	if killCue then
+		local pool, seen = {}, {}
+		for _, m in ipairs(env.knownMobs or {}) do
+			if m.name and not seen[m.name] then seen[m.name] = true; pool[#pool + 1] = m.name end
+		end
+		for _, e in ipairs(env.enemies or {}) do
+			local n = cleanName(e.name)
+			if not seen[n] then seen[n] = true; pool[#pool + 1] = n end
+		end
+		local name = bestName(text, pool)
+		local count = math.clamp(num or 1, 1, 50)
+		if name and num == nil and not BOSSES[norm(name)] then count = 5 end
+		if not name then
+			if hasAny({ "gan nhat", "nearest" }) and env.enemies and env.enemies[1] then
+				name = cleanName(env.enemies[1].name)
+			elseif hasAny({ "quai", "mob" }) and env.quest then
+				name = env.quest.mob
+				count = math.clamp(num or 10, 1, 50)
+			end
+		end
+		if name then
+			local timeout = math.clamp(25 * count + 40, 40, 300)
+			return R(string.format("Kế hoạch: hạ %d x %s (tối đa %ds).", count, name, timeout), { type = "agent_plan", steps = {
+				{ tool = "kill_mob", args = { name = name, count = count, timeout = timeout }, text = "Hạ " .. count .. " " .. name } } })
+		end
+	end
+
+	-- nhặt trái / rương
+	if hasAny({ "nhat", "lay", "an" }) and not hasAny({ "auto", "tu dong" }) then
+		if hasAny({ "trai", "fruit" }) then
+			local f = env.fruits and env.fruits[1]
+			if f then
+				return R(string.format("Đi nhặt %s (cách %d stud).", tostring(f.name), f.dist or 0), { type = "agent_plan", steps = {
+					{ tool = "pickup", args = { name = f.name }, text = "Nhặt " .. tostring(f.name) } } })
+			end
+			return R("Không thấy trái nào quanh đây. Mình có thể 'bật auto nhặt trái' để tự bắt khi có trái xuất hiện.")
+		end
+		if hasAny({ "ruong", "chest" }) then
+			return R("Chưa có lệnh nhặt đơn lẻ cho rương - mình bật Auto Rương cho bạn.", { type = "toggle", feature = "AutoChest", state = true })
+		end
+	end
+
+	-- nói chuyện / tương tác prompt
+	if hasAny({ "noi chuyen", "tuong tac", "bam nut", "nhan nut", "talk" }) then
+		local names = {}
+		for _, p in ipairs(env.prompts or {}) do names[#names + 1] = tostring(p.name) end
+		local name = bestName(text, names)
+		if name then
+			return R("Tương tác với " .. name .. ".", { type = "agent_plan", steps = {
+				{ tool = "use_prompt", args = { name = name }, text = "Tương tác " .. name } } })
+		end
+		if #names > 0 then return R("Gần bạn có: " .. table.concat(names, ", ") .. ". Nói rõ muốn tương tác với cái nào.") end
+		return R("Không có đối tượng tương tác nào quanh đây.")
+	end
+
+	-- di chuyển tới NPC / vật thể
+	if hasAny(NAV_CUES) then
+		local names = {}
+		for _, n in ipairs(env.npcs or {}) do names[#names + 1] = tostring(n.name) end
+		local name = bestName(text, names)
+		if not name then
+			local rest = {}
+			for _, w in ipairs(ws) do
+				local isCue = false
+				for _, c in ipairs(NAV_CUES) do if c == w then isCue = true end end
+				if not isCue and not ON[w] and not OFF[w] then rest[#rest + 1] = w end
+			end
+			name = #rest > 0 and table.concat(rest, " ") or nil
+		end
+		if name then
+			return R("Bay tới " .. name .. ".", { type = "agent_plan", steps = {
+				{ tool = "fly_to_object", args = { name = name }, text = "Bay tới " .. name } } })
+		end
+	end
+
+	-- tên tính năng gõ trơ: đảo trạng thái
+	if #feats > 0 then
+		local key = feats[1]
+		local def = self.features[key]
+		if def.kind == "toggle" then
+			self.mem.lastFeature = key
+			return R("Đảo trạng thái " .. def.label .. ".", { type = "flip", feature = key })
+		elseif def.kind == "command" then
+			return R("Thực hiện: " .. def.label .. ".", { type = "run", feature = key })
+		elseif def.kind == "value" then
+			return R(def.label .. " hiện là " .. tostring(cfg[key] or "?") .. string.format(" (giới hạn %s-%s). Nói 'đặt %s 123' để đổi.", tostring(def.min), tostring(def.max), def.label))
+		end
+	end
+
+	-- không hiểu: đoán gần đúng
+	local core = {}
+	for _, w in ipairs(ws) do
+		if not ON[w] and not OFF[w] and not FLIP[w] and not INC[w] and not DEC[w] then core[#core + 1] = w end
+	end
+	local coreText = table.concat(core, " ")
+	local bestA, bestD
+	if coreText ~= "" then
+		for _, it in ipairs(self._aliases) do
+			local d = lev(coreText, it.alias)
+			if not bestD or d < bestD then bestA, bestD = it, d end
+		end
+	end
+	if bestA and bestD <= math.max(2, math.floor(#bestA.alias * 0.35)) then
+		return R(string.format("Ý bạn là '%s' (%s)? Nói lại kèm 'bật'/'tắt' nhé.", bestA.alias, self.features[bestA.key].label))
+	end
+	return R("Mình chưa hiểu '" .. raw .. "'. Nói 'help' để xem các lệnh.")
+end
+
+---------------- điểm vào chính ----------------
+local function splitClauses(raw)
+	local s = raw:gsub("[,;\n]", "\1")
+	local out = {}
+	for part in (s .. "\1"):gmatch("([^\1]*)\1") do
+		local n = norm(part)
+		if n ~= "" then
+			local padded = " " .. n .. " "
+			for _, conj in ipairs({ " sau do ", " dong thoi ", " roi ", " xong ", " and ", " va " }) do
+				padded = (padded:gsub(conj, " \1 "))
+			end
+			for sub in padded:gmatch("([^\1]+)") do
+				local t = sub:gsub("^%s+", ""):gsub("%s+$", "")
+				if t ~= "" then out[#out + 1] = { text = t, raw = part } end
+			end
+		end
+	end
+	return out
+end
+
+function Brain:Process(text, env)
+	env = type(env) == "table" and env or {}
+	if self._dirty then self:_rebuild() end
+	self.mem.turns = self.mem.turns + 1
+	local raw = tostring(text or "")
+
+	-- toạ độ: "bay tới 100 50 -200"
+	local cx, cy, cz = raw:match("(-?%d+)[%s,]+(-?%d+)[%s,]+(-?%d+)")
+	if cx and (hasPhrase(norm(raw), "bay") or hasPhrase(norm(raw), "den") or hasPhrase(norm(raw), "toi")) then
+		local x, y, z = tonumber(cx), tonumber(cy), tonumber(cz)
+		return { reply = string.format("Bay tới (%d, %d, %d).", x, y, z), action = { type = "agent_plan", steps = {
+			{ tool = "fly_to", args = { x = x, y = y, z = z }, text = "Bay tới toạ độ" } } } }
+	end
+
+	local replies, actions = {}, {}
+	local ctx = {}
+	for _, c in ipairs(splitClauses(raw)) do
+		local ok, r = pcall(self._clause, self, c.text, env, ctx, c.raw)
+		if ok and r then
+			if r.reply ~= "" then replies[#replies + 1] = r.reply end
+			if r.action then
+				if r.action.type == "batch" then
+					for _, a in ipairs(r.action.list) do actions[#actions + 1] = a end
+				else
+					actions[#actions + 1] = r.action
+				end
+			end
+		elseif not ok then
+			replies[#replies + 1] = "Lỗi nhỏ khi xử lý: " .. tostring(r)
+		end
+	end
+	if #replies == 0 then replies[1] = "Mình chưa hiểu. Nói 'help' để xem các lệnh." end
+	local action
+	if #actions == 1 then action = actions[1] elseif #actions > 1 then action = { type = "batch", list = actions } end
+	self:_save()
+	return { reply = table.concat(replies, "\n"), action = action }
+end
+
+return Brain
+end)()
 local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false }
 local AllowedRemote = {
 	StartQuest = true, AbandonQuest = true, Buso = true,
@@ -3294,30 +4068,13 @@ end
 --=====================================================================
 -- KHỐI B  (thay toàn bộ đoạn GEMINI API ... startAgent)
 --=====================================================================
----------------- NẠP NÃO LOCAL (raw -> cache) ----------------
 local Brain, BrainErr
 do
-	local src
-	local okHttp = pcall(function() src = game:HttpGet(BRAIN_URL) end)
-	if okHttp and type(src) == "string" and #src > 500 then
-		if writefile then pcall(writefile, BRAIN_CACHE, src) end
-	elseif isfile and isfile(BRAIN_CACHE) then
-		src = readfile(BRAIN_CACHE)
-	end
-	if type(src) ~= "string" or #src == 0 then
-		BrainErr = "không tải được raw và chưa có cache"
-	else
-		local okLoad, lib = pcall(function() return loadstring(src)() end)
-		if okLoad and type(lib) == "table" and lib.new then
-			local okNew, inst = pcall(lib.new, {
-				Name = "H-HUB AI",
-				FileName = "HHubAI_BF_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json",
-			})
-			if okNew then Brain = inst else BrainErr = tostring(inst) end
-		else
-			BrainErr = "não lỗi: " .. tostring(lib)
-		end
-	end
+	local okNew, inst = pcall(BrainLib.new, {
+		Name = "H-HUB AI",
+		FileName = "HHubAI_BF_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json",
+	})
+	if okNew then Brain = inst else BrainErr = tostring(inst) end
 end
  
 ---------------- TÍNH NĂNG CỦA HUB MÀ NÃO ĐIỀU KHIỂN ĐƯỢC ----------------
