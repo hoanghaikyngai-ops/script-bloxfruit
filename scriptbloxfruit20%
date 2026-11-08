@@ -1,5 +1,5 @@
 --[[
-    H-HUB // GAME COMPANION v6.3.0 - ISLAND SPAWN + COMBAT + STATS
+    H-HUB // GAME COMPANION v6.4.0 - QUEST HUB + SEA EVENTS + VERIFIED AUTO EQUIP
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -697,7 +697,7 @@ local TitleLabel = make("TextLabel", {
     Position = UDim2.fromOffset(14, 0),
     Size = UDim2.new(1, -150, 1, 0),
     BackgroundTransparency = 1,
-    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.3.0 AI STABILITY + SPECIAL ENTRANCES + FARM",
+    Text = "◈  H-HUB  //  BLOX FRUITS  ·  v6.4.0 QUEST HUB + SEA EVENTS + VERIFIED EQUIP",
     TextColor3 = Colors.Accent,
     Font = Enum.Font.GothamBold,
     TextSize = 14,
@@ -2036,21 +2036,48 @@ end
 -- TRANG BỊ / HAKI
 ------------------------------------------------------------------
 local function equipWeapon()
+    -- Chỉ xác nhận thành công khi Tool đúng loại thực sự nằm trong Character.
     local character = getCharacter()
     local humanoid = getHumanoid()
-    if not character or not humanoid then return end
-    local held = character:FindFirstChildOfClass("Tool")
-    if held and held.ToolTip == Config.Weapon then return end
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-    if not backpack then return end
+    if not character or not humanoid or humanoid.Health <= 0 or not backpack then
+        return false, "Chưa sẵn sàng Character/Backpack"
+    end
+
+    local wanted = tostring(Config.Weapon or "Melee")
+    local held = character:FindFirstChildOfClass("Tool")
+    if held and held.ToolTip == wanted then
+        return true, held.Name
+    end
+
+    local candidate
     for _, tool in ipairs(backpack:GetChildren()) do
-        if tool:IsA("Tool") and tool.ToolTip == Config.Weapon then
-            pcall(function()
-                humanoid:EquipTool(tool)
-            end)
-            return
+        if tool:IsA("Tool") and tool.ToolTip == wanted then
+            candidate = tool
+            break
         end
     end
+    if not candidate then
+        return false, "Không tìm thấy vũ khí loại " .. wanted .. " trong Backpack"
+    end
+
+    pcall(function() humanoid:UnequipTools() end)
+    local ok, err = pcall(function() humanoid:EquipTool(candidate) end)
+    if not ok then
+        return false, "EquipTool thất bại: " .. tostring(err)
+    end
+
+    -- EquipTool có thể hoàn tất trễ một vài frame; xác minh lại thay vì giả định.
+    local deadline = os.clock() + 1.25
+    repeat
+        local current = character:FindFirstChildOfClass("Tool")
+        if current and current.Name == candidate.Name and current.ToolTip == wanted then
+            return true, current.Name
+        end
+        task.wait(0.05)
+    until os.clock() >= deadline or not character.Parent
+
+    return false, "Game chưa xác nhận đã cầm " .. candidate.Name
 end
 
 local function ensureHaki()
@@ -2124,7 +2151,10 @@ local function fightBoss(mob, root)
     local part = mob:FindFirstChild("HumanoidRootPart")
     if not part then return false end
     State.BossTarget = mob
-    if Config.AutoEquip then equipWeapon() end
+    if Config.AutoEquip then
+        local equipped, detail = equipWeapon()
+        if not equipped then State.Status = "Chờ vũ khí: " .. tostring(detail); return false end
+    end
     if Config.AutoHaki then ensureHaki() end
     local height = currentHeight()
     local above = part.Position + Vector3.new(0, height, 0)
@@ -2847,7 +2877,13 @@ local function farmStep()
         return
     end
 
-    if Config.AutoEquip then equipWeapon() end
+    if Config.AutoEquip then
+        local equipped, detail = equipWeapon()
+        if not equipped then
+            State.Status = "Tạm dừng farm: " .. tostring(detail)
+            return
+        end
+    end
     if Config.AutoHaki and os.clock() - lastHaki > 3 then
         lastHaki = os.clock()
         ensureHaki()
@@ -4048,7 +4084,7 @@ local CHAINS = {
 		id = "draco_race",
 		names = { "draco race", "tong rong", "dragon race", "draco", "tong draco" },
 		title = "Draco Race (Sea 3)",
-		info = "Draco Race (tộc Rồng): cần Dojo Belt đen từ Dojo Trainer và Dragon Egg, rồi nói chuyện với Dragon Wizard ở Dragon Dojo (Hydra Island). Mình đưa bạn tới Dragon Wizard; các bước nhận đai và trứng làm tay.",
+		info = "Draco Race (Sea 3): hoàn tất chuỗi Dojo Belt tới đai Đen, nói chuyện với Dragon Wizard để học Dragon Tether, sau đó tham gia Prehistoric Island / Volcano Event và dùng Dragon Tether lấy Dragon Egg. Mang trứng về Dragon Wizard để nhận Draco. Các bước mở sự kiện, lấy trứng và nộp vật phẩm vẫn cần điều kiện game và có thể cần thao tác tay.",
 		steps = {
 			{ tool = "ensure_sea", args = { sea = 3 }, text = "Kiểm tra đang ở Sea 3" },
 			{ tool = "tele_island", args = { name = "Hydra Island" }, text = "Tele tới Hydra Island" },
@@ -5380,6 +5416,11 @@ addCycle(pCombat, "Loại vũ khí Auto Equip", { "Melee", "Blox Fruit", "Sword"
     Config.Weapon = value
     saveSoon()
 end)
+addButton(pCombat, "✓  Kiểm tra & cầm vũ khí đã chọn", function()
+    local ok, detail = equipWeapon()
+    State.Status = ok and ("Đã xác nhận đang cầm: " .. tostring(detail)) or ("Không thể trang bị: " .. tostring(detail))
+    setAnswer(State.Status)
+end)
 addSection(pUtility, "TỰ CỘNG CHỈ SỐ")
 addCycle(pUtility, "Chỉ số nhận điểm", { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }, Config.StatName, function(value)
     Config.StatName = value
@@ -5846,11 +5887,187 @@ function Actions.kill_mob(a)
 	State.BossTarget = nil
 	return string.format("hạ %d/%d con %s", kills, need, name)
 end
+-- PILOT THUYEN THEO SEA DANGER ZONES (SEA 3)
+local function findPlayerBoat()
+    local char = getCharacter()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local charRoot = getRoot(char)
+    local candidates = {}
+    local seen = {}
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("VehicleSeat") then
+            local model = obj:FindFirstAncestorOfClass("Model")
+            if model and not seen[model] then
+                seen[model] = true
+                local ownerMatch = false
+                for _, key in ipairs({ "Owner", "OwnerName", "Creator", "PlayerName" }) do
+                    local value = model:GetAttribute(key) or model:FindFirstChild(key)
+                    if typeof(value) == "Instance" and value:IsA("ValueBase") then value = value.Value end
+                    if value ~= nil and (tostring(value) == LocalPlayer.Name or tostring(value) == tostring(LocalPlayer.UserId)) then
+                        ownerMatch = true
+                    end
+                end
+                local occupiedByMe = hum and obj.Occupant == hum
+                local primary = model.PrimaryPart or obj
+                local distance = charRoot and (primary.Position - charRoot.Position).Magnitude or math.huge
+                if occupiedByMe or ownerMatch or (distance < 260 and (model.Name:lower():find("boat") or model.Name:lower():find("ship"))) then
+                    table.insert(candidates, { model = model, seat = obj, root = primary, score = (occupiedByMe and -100000 or 0) + (ownerMatch and -50000 or 0) + distance })
+                end
+            end
+        end
+    end
+    table.sort(candidates, function(a, b) return a.score < b.score end)
+    return candidates[1]
+end
+
+local function readSeaDangerLevel()
+    local gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not gui then return nil end
+    for _, obj in ipairs(gui:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            local t = tostring(obj.Text or "")
+            local n = t:match("[Dd]anger%s*[Ll]evel%s*[:%-]?%s*([0-6])")
+                or t:match("[Ss]ea%s*[Dd]anger%s*[:%-]?%s*([0-6])")
+            if n then return tonumber(n) end
+        end
+    end
+    return nil
+end
+
+local function clearBoatThrust(boatRoot)
+    if not boatRoot then return end
+    for _, name in ipairs({ "HHubSeaThrust", "HHubSeaGyro" }) do
+        local mover = boatRoot:FindFirstChild(name)
+        if mover then mover:Destroy() end
+    end
+end
+
+local function setBoatThrust(boatRoot, direction, speed, cruiseY)
+    if not boatRoot or not boatRoot.Parent then return false end
+    local dir = Vector3.new(direction.X, 0, direction.Z)
+    if dir.Magnitude < 0.01 then return false end
+    dir = dir.Unit
+    local velocity = boatRoot:FindFirstChild("HHubSeaThrust")
+    if not velocity then
+        velocity = Instance.new("BodyVelocity")
+        velocity.Name = "HHubSeaThrust"
+        velocity.MaxForce = Vector3.new(1e7, 1e7, 1e7)
+        velocity.P = 25000
+        velocity.Parent = boatRoot
+    end
+    local gyro = boatRoot:FindFirstChild("HHubSeaGyro")
+    if not gyro then
+        gyro = Instance.new("BodyGyro")
+        gyro.Name = "HHubSeaGyro"
+        gyro.MaxTorque = Vector3.new(1e7, 1e7, 1e7)
+        gyro.P = 18000
+        gyro.D = 900
+        gyro.Parent = boatRoot
+    end
+    local targetY = tonumber(cruiseY) or math.max(boatRoot.Position.Y, 8)
+    velocity.Velocity = dir * speed + Vector3.new(0, math.clamp((targetY - boatRoot.Position.Y) * 2, -22, 22), 0)
+    gyro.CFrame = CFrame.lookAt(boatRoot.Position, boatRoot.Position + dir)
+    return true
+end
+
+-- CHE DO CHIEN DAU SEA EVENT: 2 profile tach biet
+State.SeaCombatMode = State.SeaCombatMode or "FruitM1"
+local function seaEquip(kind)
+    Config.Weapon = kind
+    local ok = equipWeapon()
+    return ok
+end
+
+local function seaPressSkill(key)
+    local code = ({ Z = Enum.KeyCode.Z, X = Enum.KeyCode.X, C = Enum.KeyCode.C, V = Enum.KeyCode.V })[key]
+    if not code then return end
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, code, false, game)
+        task.wait(0.045)
+        VirtualInputManager:SendKeyEvent(false, code, false, game)
+    end)
+end
+
+local function seaCombatTick()
+    local mode = State.SeaCombatMode or "FruitM1"
+    if mode == "FruitM1" then
+        -- Profile nay danh M1 bang trai (chi phu hop voi trai co M1 gay damage Sea Event).
+        local ok = seaEquip("Blox Fruit")
+        if ok then
+            activateTool()
+            screenClick()
+            for _, key in ipairs({ "Z", "X", "C", "V" }) do
+                if not Agent.Running or not State.Running then break end
+                seaPressSkill(key)
+                task.wait(0.14)
+            end
+        else
+            setStatus("Sea Event: khong tim thay trai trong hotbar; kiem tra Tool Blox Fruit.")
+            task.wait(0.25)
+        end
+    else
+        -- Profile phu hop voi trai khong co M1 damage: luan phien 4 loai vu khi.
+        for _, kind in ipairs({ "Melee", "Gun", "Sword", "Blox Fruit" }) do
+            if not Agent.Running or not State.Running then break end
+            local ok = seaEquip(kind)
+            if ok then
+                if kind == "Blox Fruit" then
+                    -- Trai khong co M1 damage: chi spam skill, khong click M1 trai.
+                    for _, key in ipairs({ "Z", "X", "C", "V" }) do
+                        if not Agent.Running or not State.Running then break end
+                        seaPressSkill(key)
+                        task.wait(0.11)
+                    end
+                else
+                    activateTool()
+                    screenClick()
+                    task.wait(0.16)
+                end
+            end
+        end
+    end
+end
+
+local function jumpOutOfBoat()
+    local character = getCharacter()
+    local hum = character and character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if hum.Sit or hum.SeatPart then
+        pcall(function()
+            hum.Sit = false
+            hum.Jump = true
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+        task.wait(0.28)
+        -- Neu van con bi gan ghe, yeu cau nhay them mot nhip nhe.
+        if hum.SeatPart then
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+            task.wait(0.18)
+        end
+    else
+        pcall(function()
+            hum.Jump = true
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+        task.wait(0.12)
+    end
+end
+
 function Actions.hunt_sea(a)
+    local originalWeapon = Config.Weapon
 	local deadline = os.clock() + (tonumber(a.seconds) or 180)
 	local keys = { "seabeast", "sea beast", "terrorshark", "piranha", "leviathan", "shark", "ghost ship", "kraken", "brigade" }
 	local hunted, lastTarget = 0, nil
-	local function isWanted(n)
+    local boatInfo = findPlayerBoat()
+    local boatRoot = boatInfo and boatInfo.root
+    local boatCruiseY = boatRoot and (boatRoot.Position.Y + 9) or nil
+    local boatDirection = boatRoot and Vector3.new(boatRoot.CFrame.LookVector.X, 0, boatRoot.CFrame.LookVector.Z).Unit or Vector3.new(1, 0, 0)
+    local zone = 1
+    local zoneHoldUntil = 0
+    local zoneStartedAt = os.clock()
+    local lastZoneCheck = 0
+    jumpOutOfBoat() -- thoat trang thai lai thuyen truoc khi nhan vat bay danh muc tieu
+    local function isWanted(n)
 		n = n:lower()
 		for _, k in ipairs(keys) do if n:find(k, 1, true) then return true end end
 		return false
@@ -5861,6 +6078,43 @@ function Actions.hunt_sea(a)
 			task.wait(1)
 			continue
 		end
+        if boatRoot and boatRoot.Parent and not lastTarget then
+            setBoatThrust(boatRoot, boatDirection, 115, boatCruiseY)
+            if os.clock() - lastZoneCheck >= 3 then
+                lastZoneCheck = os.clock()
+                local observed = readSeaDangerLevel()
+                if observed and observed >= zone then
+                    if zoneHoldUntil == 0 then
+                        zoneHoldUntil = os.clock() + 28
+                        setStatus(string.format("Sea 3: đã vào Danger %d, rà soát vùng này...", observed))
+                    elseif os.clock() >= zoneHoldUntil then
+                        zone = (zone >= 6) and 1 or (zone + 1)
+                        local angle = math.rad(55)
+                        boatDirection = Vector3.new(
+                            boatDirection.X * math.cos(angle) - boatDirection.Z * math.sin(angle),
+                            0,
+                            boatDirection.X * math.sin(angle) + boatDirection.Z * math.cos(angle)
+                        ).Unit
+                        zoneHoldUntil = 0
+                        zoneStartedAt = os.clock()
+                        setStatus(string.format("Sea 3: chuyển hướng sang cung biển kế tiếp, Danger mục tiêu %d", zone))
+                    end
+                elseif not observed and zoneHoldUntil == 0 then
+                    setStatus(string.format("Sea 3: đang đẩy thuyền qua cung biển %d (HUD không cung cấp cấp Danger, dùng thời gian dự phòng)...", zone))
+                    if os.clock() - zoneStartedAt >= 32 then
+                        zone = (zone >= 6) and 1 or (zone + 1)
+                        local angle = math.rad(55)
+                        boatDirection = Vector3.new(
+                            boatDirection.X * math.cos(angle) - boatDirection.Z * math.sin(angle),
+                            0,
+                            boatDirection.X * math.sin(angle) + boatDirection.Z * math.cos(angle)
+                        ).Unit
+                        zoneStartedAt = os.clock()
+                        setStatus(string.format("Sea 3: đổi hướng sang cung biển %d", zone))
+                    end
+                end
+            end
+        end
 		local best, bestD
 		for _, folderName in ipairs({ "SeaBeasts", "Enemies" }) do
 			local folder = Workspace:FindFirstChild(folderName)
@@ -5878,13 +6132,14 @@ function Actions.hunt_sea(a)
 			end
 		end
 		if best then
+            if boatRoot then clearBoatThrust(boatRoot) end
 			if best.model ~= lastTarget then lastTarget = best.model; hunted += 1 end
 			State.BossTarget = best.model
 			State.LastEngageAt = os.clock()
 			if Config.AutoEquip then equipWeapon() end
 			if Config.AutoHaki then ensureHaki() end
 			setStatus("AI: săn " .. best.model.Name .. " (" .. math.floor(bestD) .. " stud)")
-			local above = best.part.Position + Vector3.new(0, 45, 0)
+			local above = best.part.Position + Vector3.new(0, 20, 0)
 			if (root.Position - above).Magnitude > 60 then
 				flyTo(root, CFrame.lookAt(above, best.part.Position), agentCond)
 			else
@@ -5894,13 +6149,30 @@ function Actions.hunt_sea(a)
 			attackMobs()
 			task.wait(0.1)
 		else
+            lastTarget = nil
 			State.BossTarget = nil
-			setStatus("AI: chưa thấy sự kiện biển, đang chờ...")
+            if not boatRoot then
+                setStatus("Sea 3: chưa tìm thấy thuyền của bạn. Hãy gọi thuyền và đứng gần/ ngồi vào ghế lái.")
+            elseif not boatRoot.Parent then
+                boatInfo = findPlayerBoat()
+                boatRoot = boatInfo and boatInfo.root
+                boatCruiseY = boatRoot and (boatRoot.Position.Y + 9) or nil
+                if boatRoot then
+                    local look = Vector3.new(boatRoot.CFrame.LookVector.X, 0, boatRoot.CFrame.LookVector.Z)
+                    boatDirection = look.Magnitude > 0.01 and look.Unit or Vector3.new(1, 0, 0)
+                end
+                setStatus("Sea 3: thuyền cũ đã mất, đang tìm thuyền mới...")
+            else
+                setStatus("Sea 3: thuyền đang thăm dò từng Danger Zone; chờ mục tiêu xuất hiện...")
+            end
 			task.wait(2)
 		end
 	end
+    if boatRoot then clearBoatThrust(boatRoot) end
+    Config.Weapon = originalWeapon
+    if originalWeapon then pcall(equipWeapon) end
 	State.BossTarget = nil
-	return "đã săn " .. hunted .. " mục tiêu biển"
+	return "đã săn " .. hunted .. " mục tiêu biển; đã thăm dò đến Danger " .. tostring(zone)
 end
 function Actions.farm_for(a)
 	local seconds = math.clamp(tonumber(a.seconds) or 120, 10, 3600)
@@ -6004,6 +6276,83 @@ local function startPlan(steps)
 		end
 	end)
 end
+
+------------------------------------------------------------------
+-- TAB NHIỆM VỤ / SEA EVENT: CHẠY KẾ HOẠCH ĐỊNH SẴN, KHÔNG QUA AI
+------------------------------------------------------------------
+local pQuests = addTab("Nhiệm vụ", "☷")
+addSection(pQuests, "CHUỖI NHIỆM VỤ CÓ SẴN")
+addInfo(pQuests, "Cách hoạt động", "Chọn chuỗi để chạy từng bước; bước cần điều kiện game sẽ chờ bạn xác nhận.")
+for _, chain in ipairs(CHAINS) do
+    local captured = chain
+    addButton(pQuests, "▶  " .. tostring(captured.title), function()
+        if Agent.Running or Agent.CommandBusy or Agent.PilotBusy then
+            setAnswer("Đang có tác vụ khác. Dừng tác vụ hiện tại trước khi chạy chuỗi mới.")
+            return
+        end
+        if type(captured.steps) ~= "table" or #captured.steps == 0 then
+            setAnswer("Chuỗi này chưa có bước tự động an toàn.")
+            return
+        end
+        startPlan(captured.steps)
+    end)
+end
+addButton(pQuests, "■  Dừng chuỗi nhiệm vụ", function()
+    if Agent.Running then stopAgent("Đã dừng chuỗi nhiệm vụ theo yêu cầu.") end
+end, Colors.Off)
+
+local pDraco = addTab("Draco", "🐉")
+addSection(pDraco, "TIẾN TRÌNH DRACO / DRAGON DOJO")
+addInfo(pDraco, "Lộ trình", "Dragon Talon mastery 500 → Dojo Belt Đen → Dragon Tether → Prehistoric Island / Dragon Egg → Dragon Wizard.")
+for _, wantedId in ipairs({ "dragon_talon", "dojo_belts", "draco_race" }) do
+    for _, chain in ipairs(CHAINS) do
+        if chain.id == wantedId then
+            local captured = chain
+            addButton(pDraco, "▶  " .. tostring(captured.title), function()
+                if Agent.Running or Agent.CommandBusy or Agent.PilotBusy then
+                    setAnswer("Đang có tác vụ khác. Dừng tác vụ hiện tại trước khi chạy chuỗi Draco.")
+                    return
+                end
+                startPlan(captured.steps)
+            end)
+            addInfo(pDraco, captured.title, captured.info)
+            break
+        end
+    end
+end
+addInfo(pDraco, "Giới hạn tự động", "Đai theo cooldown, Volcano Event, Dragon Egg và các điều kiện mastery do server xác nhận; menu không giả lập vật phẩm hay bỏ qua yêu cầu.")
+
+local pSeaEvents = addTab("Sea Events", "⚓")
+addSection(pSeaEvents, "SĂN SỰ KIỆN BIỂN")
+addInfo(pSeaEvents, "Điều kiện", "Gọi thuyền của bạn và ngồi vào ghế lái để bắt đầu. Trước khi nhân vật bay đi đánh, script sẽ nhảy khỏi ghế; thuyền giữ độ cao thấp-vừa và quét lần lượt Sea Danger 1→6.")
+addSection(pSeaEvents, "CHẾ ĐỘ ĐÁNH SEA EVENT")
+addButton(pSeaEvents, "⚡ Chế độ 1 · Trái có M1 gây sát thương", function()
+    State.SeaCombatMode = "FruitM1"
+    setAnswer("Đã chọn chế độ Trái M1: cầm trái, đánh thường và luân phiên Z/X/C/V.")
+end)
+addButton(pSeaEvents, "🔁 Chế độ 2 · Trái không có M1 gây sát thương", function()
+    State.SeaCombatMode = "RotateAll"
+    setAnswer("Đã chọn chế độ luân phiên Melee → Gun → Sword → Blox Fruit; dùng Z/X/C/V khi cầm trái.")
+end)
+addInfo(pSeaEvents, "Lưu ý sát thương", "Chế độ 1 chỉ phù hợp với trái có M1 thực sự gây sát thương lên mục tiêu biển. Chế độ 2 dùng cho trái không có M1 hiệu quả; tốc độ kỹ năng vẫn phụ thuộc cooldown và xác nhận từ server.")
+addButton(pSeaEvents, "▶  Săn Sea Event · 5 phút", function()
+    if Agent.Running or Agent.CommandBusy or Agent.PilotBusy then
+        setAnswer("Đang có tác vụ khác. Dừng tác vụ hiện tại trước.")
+        return
+    end
+    startPlan({ { tool = "hunt_sea", args = { seconds = 300 }, text = "Quét và săn mục tiêu Sea Event trong 5 phút" } })
+end)
+addButton(pSeaEvents, "▶  Săn Sea Event · 15 phút", function()
+    if Agent.Running or Agent.CommandBusy or Agent.PilotBusy then
+        setAnswer("Đang có tác vụ khác. Dừng tác vụ hiện tại trước.")
+        return
+    end
+    startPlan({ { tool = "hunt_sea", args = { seconds = 900 }, text = "Quét và săn mục tiêu Sea Event trong 15 phút" } })
+end)
+addInfo(pSeaEvents, "Leviathan / Prehistoric / Mirage / Kitsune", "Có điều kiện xuất hiện và tương tác riêng; không tự giả lập hoàn thành điều kiện.")
+addButton(pSeaEvents, "■  Dừng săn biển", function()
+    if Agent.Running then stopAgent("Đã dừng săn Sea Event.") end
+end, Colors.Off)
 
 ---------------- XỬ LÝ LỆNH: observe -> não -> thực thi ----------------
 local function onOff(v) return v and "bật" or "tắt" end
