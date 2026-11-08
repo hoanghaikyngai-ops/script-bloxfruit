@@ -5,7 +5,7 @@
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
     - Auto Collect Pumpkin: có click màn hình + Activate + RegisterAttack
     - Aggro Tracker (chỉ quan sát), Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
-    - AI Agent (Claude API): quan sát -> quyết định -> hành động (whitelist), bảng AI luân phiên với bảng nhạc
+    - AI Agent (Gemini API): quan sát -> quyết định -> hành động (whitelist), bảng AI luân phiên với bảng nhạc
 ]]
 
 if not game:IsLoaded() then
@@ -3144,8 +3144,8 @@ end
 ------------------------------------------------------------------
 ; (function()
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-local AI_MODEL = "gemini-1.5-flash"
-local AIKey = "AQ.Ab8RN6KCW-AQ8vX5vZh7wmMWiLjx3l_1v-peelX_b1uH9TkUZA" -- API key mặc định được giấu trong RAM
+local AI_MODEL = "gemini-2.5-flash"
+local AIKey = "AQ.Ab8RN6KB29QlZ529G2QAYCJMVOU7hFGh0rZ3KjawzrPlyRRQ1A" -- Khóa cố định; không chia sẻ script công khai
 local Agent = { Running = false, Goal = "", Plan = "", History = {}, Steps = 0, MaxSteps = 60 }
 local AllowedRemote = {
     StartQuest = true, AbandonQuest = true, Buso = true,
@@ -3233,7 +3233,7 @@ local AnswerLabel = make("TextLabel", {
     Size = UDim2.new(1, -12, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
     BackgroundTransparency = 1,
-    Text = "Dán API key, rồi nhập mục tiêu (VD: lấy Sea 2).",
+    Text = "Gemini AI đã được cấu hình sẵn. Nhập mục tiêu để bắt đầu.",
     TextColor3 = Colors.Text,
     Font = Enum.Font.Gotham,
     TextSize = 11,
@@ -3289,57 +3289,92 @@ local function panelBox(y, placeholder, widthOffset, onEnter)
     return box
 end
 
----------------- GỌI API ----------------
-local function sendClaude(body)
-    if not httpRequest then return nil, "executor không có request()" end
-    
-    local promptText = ""
-    if body.system then
-        promptText = body.system .. "\n\n"
-    end
-    if body.messages and body.messages[1] then
-        promptText = promptText .. body.messages[1].content
+---------------- GEMINI API ----------------
+local function sendGemini(promptText, toolList, functionMode)
+    if not httpRequest then return nil, "Executor không có request()" end
+    if type(AIKey) ~= "string" or AIKey == "" then
+        return nil, "Gemini API key chưa được cấu hình trong script"
     end
 
-    local geminiBody = {
-        contents = {
-            {
-                parts = {
-                    { text = promptText }
-                }
-            }
-        }
+    local requestBody = {
+        contents = {{
+            role = "user",
+            parts = {{ text = tostring(promptText or "") }}
+        }},
+        generationConfig = { temperature = 0.25, maxOutputTokens = 1800 }
     }
+    if toolList and #toolList > 0 then requestBody.tools = toolList end
+    if functionMode then
+        requestBody.toolConfig = {
+            functionCallingConfig = { mode = functionMode }
+        }
+    end
 
-    local ok, res = pcall(function()
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/"
+        .. AI_MODEL .. ":generateContent?key=" .. HttpService:UrlEncode(AIKey)
+
+    local okRequest, response = pcall(function()
         return httpRequest({
-            Url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" .. AIKey,
+            Url = url,
             Method = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
+                ["Accept"] = "application/json"
             },
-            Body = HttpService:JSONEncode(geminiBody),
+            Body = HttpService:JSONEncode(requestBody)
         })
     end)
-    
-    if not ok or not res then return nil, tostring(res) end
-    if res.StatusCode ~= 200 then
-        return nil, tostring(res.StatusCode) .. " " .. tostring(res.Body):sub(1, 140)
+    if not okRequest then
+        return nil, "Không gửi được HTTP request: " .. tostring(response)
     end
-    
-    local okJson, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
-    if not okJson then return nil, "JSON lỗi" end
-    
-    if data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts[1] then
-        local textContent = data.candidates[1].content.parts[1].text
-        return {
-            content = {
-                { type = "text", text = textContent }
-            }
-        }
+    if type(response) ~= "table" then
+        return nil, "Executor trả về response không hợp lệ"
     end
-    
-    return data
+
+    local statusCode = tonumber(response.StatusCode or response.Status or 0) or 0
+    local responseBody = tostring(response.Body or "")
+    if statusCode < 200 or statusCode >= 300 then
+        local detail = responseBody
+        local decodedOk, decoded = pcall(function()
+            return HttpService:JSONDecode(responseBody)
+        end)
+        if decodedOk and type(decoded) == "table" and decoded.error then
+            detail = tostring(decoded.error.message or decoded.error.status or responseBody)
+        end
+        return nil, string.format("HTTP %d: %s", statusCode, detail:sub(1, 500))
+    end
+
+    local decodedOk, data = pcall(function()
+        return HttpService:JSONDecode(responseBody)
+    end)
+    if not decodedOk or type(data) ~= "table" then
+        return nil, "Gemini trả về JSON không hợp lệ: " .. responseBody:sub(1, 250)
+    end
+    if data.error then
+        return nil, "Gemini API: " .. tostring(data.error.message or data.error.status or "lỗi không xác định")
+    end
+
+    local candidate = data.candidates and data.candidates[1]
+    if not candidate then
+        local reason = data.promptFeedback and data.promptFeedback.blockReason
+        return nil, "Gemini không trả candidate" .. (reason and (": " .. tostring(reason)) or "")
+    end
+
+    local texts, calls = {}, {}
+    for _, part in ipairs(candidate.content and candidate.content.parts or {}) do
+        if type(part.text) == "string" and part.text ~= "" then
+            table.insert(texts, part.text)
+        end
+        if type(part.functionCall) == "table" then
+            table.insert(calls, part.functionCall)
+        end
+    end
+    return {
+        text = table.concat(texts, "\n"),
+        functionCalls = calls,
+        finishReason = candidate.finishReason,
+        raw = data
+    }
 end
 
 ---------------- QUAN SÁT ----------------
@@ -3505,17 +3540,34 @@ function Actions.wait(a)
 end
 
 local function schema(props, required)
-    return { type = "object", properties = props, required = required }
+    return { type = "OBJECT", properties = props, required = required }
 end
+
 local ToolDefs = {
-    { name = "fly_to", description = "Bay tới tọa độ", input_schema = schema({ x = { type = "number" }, y = { type = "number" }, z = { type = "number" } }, { "x", "y", "z" }) },
-    { name = "fly_to_object", description = "Bay tới vật/NPC gần nhất theo tên", input_schema = schema({ name = { type = "string" } }, { "name" }) },
-    { name = "pickup", description = "Bay tới và nhặt vật theo tên", input_schema = schema({ name = { type = "string" } }, { "name" }) },
-    { name = "use_prompt", description = "Bay tới và kích hoạt ProximityPrompt theo tên vật chứa", input_schema = schema({ name = { type = "string" } }, { "name" }) },
-    { name = "kill_mob", description = "Đánh quái theo tên", input_schema = schema({ name = { type = "string" }, count = { type = "integer" }, timeout = { type = "number" } }, { "name" }) },
-    { name = "call_remote", description = "Gọi CommF_ (chỉ whitelist: StartQuest, AbandonQuest, Buso, ZQuestProgress, DressrosaQuestProgress, TravelDressrosa, TravelZou, TravelMain). args[1] là tên lệnh, các phần tử là chuỗi (số viết dạng chuỗi)", input_schema = schema({ args = { type = "array", items = { type = "string" } } }, { "args" }) },
-    { name = "wait", description = "Chờ vài giây", input_schema = schema({ seconds = { type = "number" } }, { "seconds" }) },
-    { name = "done", description = "Kết thúc: mục tiêu xong hoặc không thể tiếp tục", input_schema = schema({ summary = { type = "string" } }, { "summary" }) },
+    { name = "fly_to", description = "Di chuyển tới tọa độ.", parameters = schema({
+        x = { type = "NUMBER" }, y = { type = "NUMBER" }, z = { type = "NUMBER" }
+    }, { "x", "y", "z" }) },
+    { name = "fly_to_object", description = "Tìm đối tượng gần nhất theo tên và di chuyển tới đó.", parameters = schema({
+        name = { type = "STRING" }
+    }, { "name" }) },
+    { name = "pickup", description = "Tìm vật phẩm theo tên, di chuyển tới và thử nhặt.", parameters = schema({
+        name = { type = "STRING" }
+    }, { "name" }) },
+    { name = "use_prompt", description = "Tìm ProximityPrompt theo tên vật chứa và kích hoạt.", parameters = schema({
+        name = { type = "STRING" }
+    }, { "name" }) },
+    { name = "kill_mob", description = "Chọn NPC quái theo tên trong trò chơi.", parameters = schema({
+        name = { type = "STRING" }, count = { type = "INTEGER" }, timeout = { type = "NUMBER" }
+    }, { "name" }) },
+    { name = "call_remote", description = "Gọi CommF_ với lệnh thuộc whitelist hiện có; args[1] là tên lệnh.", parameters = schema({
+        args = { type = "ARRAY", items = { type = "STRING" } }
+    }, { "args" }) },
+    { name = "wait", description = "Chờ một khoảng thời gian ngắn.", parameters = schema({
+        seconds = { type = "NUMBER" }
+    }, { "seconds" }) },
+    { name = "done", description = "Kết thúc tác vụ và tóm tắt kết quả.", parameters = schema({
+        summary = { type = "STRING" }
+    }, { "summary" }) },
 }
 
 ---------------- ĐIỀU KHIỂN AGENT ----------------
@@ -3532,18 +3584,24 @@ local function stopAgent(msg)
 end
 
 local function makePlan(goal)
-    local data, err = sendClaude({
-        model = AI_MODEL, max_tokens = 1500,
-        system = "Bạn lập kế hoạch cho một agent tự động trong Blox Fruits. Tìm trên web các bước chính xác của mục tiêu. Trả về danh sách bước ngắn, ghi rõ tên NPC, tên quái, tên vật phẩm, tên remote CommF_ nếu chắc chắn. Chỗ nào không chắc phải ghi 'KHÔNG CHẮC'.",
-        messages = { { role = "user", content = "Mục tiêu: " .. goal .. ". Sea hiện tại: " .. getSea() .. ", level " .. getLevel() } },
-        tools = { { type = "web_search_20250305", name = "web_search", max_uses = 4 } },
-    })
-    if not data then return nil, err end
-    local text = {}
-    for _, b in ipairs(data.content or {}) do
-        if b.type == "text" then text[#text + 1] = b.text end
+    local prompt = table.concat({
+        "Bạn lập kế hoạch cho agent trong trò chơi Blox Fruits.",
+        "Trả về các bước ngắn, theo thứ tự. Không bịa tên NPC, vật phẩm hoặc lệnh remote.",
+        "Nếu thông tin không chắc chắn, ghi rõ KHÔNG CHẮC. Chỉ lập kế hoạch, không thực hiện hành động.",
+        "Mục tiêu: " .. tostring(goal),
+        "Sea hiện tại: " .. tostring(getSea()),
+        "Level hiện tại: " .. tostring(getLevel())
+    }, "\n")
+
+    -- Gemini Google Search grounding, không dùng schema web_search của Claude.
+    local data, err = sendGemini(prompt, { { google_search = {} } }, nil)
+    if not data then
+        -- Fallback text-only nếu model/key không hỗ trợ grounding.
+        data, err = sendGemini(prompt, nil, nil)
     end
-    return table.concat(text, "\n")
+    if not data then return nil, err end
+    if data.text == "" then return nil, "Gemini không trả nội dung kế hoạch" end
+    return data.text
 end
 
 local function agentLoop()
@@ -3555,35 +3613,46 @@ local function agentLoop()
         end
         Agent.Steps += 1
         setStatus(string.format("AI: bước %d/%d - đang suy nghĩ...", Agent.Steps, Agent.MaxSteps))
-        local data, err = sendClaude({
-            model = AI_MODEL, max_tokens = 500,
-            system = "Bạn là agent điều khiển nhân vật Blox Fruits. Mỗi lượt gọi ĐÚNG MỘT tool. Mục tiêu: " .. Agent.Goal
-                .. "\nKế hoạch tham khảo (có thể sai):\n" .. Agent.Plan
-                .. "\nQuy tắc: không đoán tên remote ngoài whitelist; nếu kẹt 3 lượt liền hoặc máu dưới 30% thì gọi done.",
-            messages = { { role = "user", content = "Lịch sử:\n" .. table.concat(Agent.History, "\n") .. "\n\nQuan sát hiện tại:\n" .. perceive() } },
-            tools = ToolDefs,
-            tool_choice = { type = "any" },
-        })
+        local prompt = table.concat({
+            "Bạn là agent điều khiển nhân vật trong Blox Fruits.",
+            "Mỗi lượt phải gọi đúng MỘT function trong danh sách được cung cấp.",
+            "Mục tiêu: " .. Agent.Goal,
+            "Kế hoạch tham khảo (có thể sai): " .. Agent.Plan,
+            "Không đoán tên remote ngoài whitelist. Nếu kẹt 3 lượt liền hoặc máu dưới 30% thì gọi done.",
+            "Lịch sử hành động:",
+            table.concat(Agent.History, "\n"),
+            "Quan sát hiện tại:",
+            perceive()
+        }, "\n\n")
+        local data, err = sendGemini(prompt, {
+            { functionDeclarations = ToolDefs }
+        }, "ANY")
         if not Agent.Running then return end
         if not data then stopAgent("Lỗi API: " .. tostring(err)) return end
 
-        local call
-        for _, b in ipairs(data.content or {}) do
-            if b.type == "tool_use" then call = b break end
+        local call = data.functionCalls and data.functionCalls[1]
+        if not call then
+            local message = data.text ~= "" and data.text or "Gemini không trả functionCall."
+            stopAgent("AI không đưa ra hành động: " .. message:sub(1, 350))
+            return
         end
-        if not call then stopAgent("AI không đưa ra hành động.") return end
-        if call.name == "done" then stopAgent("Xong: " .. tostring(call.input and call.input.summary)) return end
+        local callName = tostring(call.name or "")
+        local callArgs = type(call.args) == "table" and call.args or {}
+        if callName == "done" then
+            stopAgent("Xong: " .. tostring(callArgs.summary or "AI kết thúc tác vụ"))
+            return
+        end
 
-        local fn = Actions[call.name]
+        local fn = Actions[callName]
         local result = "tool không tồn tại"
-        local inputText = HttpService:JSONEncode(call.input or {})
+        local inputText = HttpService:JSONEncode(callArgs)
         if fn then
-            setAnswer(string.format("Bước %d: %s %s", Agent.Steps, call.name, inputText))
-            setStatus(string.format("AI: bước %d/%d - %s", Agent.Steps, Agent.MaxSteps, call.name))
-            local ok, r = pcall(fn, call.input or {})
+            setAnswer(string.format("Bước %d: %s %s", Agent.Steps, callName, inputText))
+            setStatus(string.format("AI: bước %d/%d - %s", Agent.Steps, Agent.MaxSteps, callName))
+            local ok, r = pcall(fn, callArgs)
             result = ok and tostring(r) or ("lỗi: " .. tostring(r))
         end
-        table.insert(Agent.History, string.format("#%d %s %s -> %s", Agent.Steps, call.name, inputText, result))
+        table.insert(Agent.History, string.format("#%d %s %s -> %s", Agent.Steps, callName, inputText, result))
         if #Agent.History > 8 then table.remove(Agent.History, 1) end
         task.wait(0.3)
     end
@@ -3594,7 +3663,7 @@ end
 
 local function startAgent(goal)
     if Agent.Running then return end
-    if AIKey == "" then setAnswer("Chưa nhập API key.") return end
+    if AIKey == "" then setAnswer("Gemini API key chưa được cấu hình trong script.") return end
     if not httpRequest then setAnswer("Executor không hỗ trợ request().") return end
     Agent.Running, Agent.Goal, Agent.Steps, Agent.History = true, goal, 0, {}
     -- Tắt farm/pumpkin bằng công tắc để UI đồng bộ, rồi tạm dừng mọi vòng lặp khác
@@ -3617,7 +3686,7 @@ local function startAgent(goal)
 end
 
 ---------------- Ô NHẬP + NÚT ----------------
--- Đã ẩn ô nhập API key vì đã được gắn sẵn mặc định ngầm trong RAM
+-- API key được cấu hình cố định trong script; giao diện không còn ô nhập key.
 local GoalBox = panelBox(126, "Mục tiêu cho AI + Enter", -94, function(box)
     local goal = box.Text
     box.Text = ""
