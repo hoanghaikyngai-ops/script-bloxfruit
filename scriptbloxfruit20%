@@ -4480,6 +4480,37 @@ end
 local function dispatch(res)
 	if res.action then runAction(res.action, res, false) end
 end
+local function handleCommand(text)
+	if not Brain then
+		setAnswer("Não chưa nạp được: " .. tostring(BrainErr))
+		return
+	end
+	setStatus("AI: đang quan sát...")
+	local okEnv, env = pcall(observe)
+	if not okEnv then
+		setAnswer("Lỗi quan sát: " .. tostring(env))
+		setStatus("AI: chờ lệnh")
+		return
+	end
+	setStatus("AI: đang xử lý...")
+	local okRes, res = pcall(function() return Brain:Process(text, env) end)
+	if not okRes then
+		setAnswer("Não lỗi: " .. tostring(res))
+		setStatus("AI: chờ lệnh")
+		return
+	end
+	Agent.Goal = text
+	setAnswer(res.reply)
+	local okDis, err = pcall(dispatch, res)
+	if not okDis then
+		setAnswer(res.reply .. "\n[Lỗi thực thi: " .. tostring(err) .. "]")
+	end
+	if not Agent.Running then setStatus("AI: chờ lệnh") end
+end
+
+local function startAgent(goal)
+	task.spawn(handleCommand, goal)
+end
 ---------------- Ô NHẬP + NÚT ----------------
 -- API key được cấu hình cố định trong script; giao diện không còn ô nhập key.
 local GoalBox = panelBox(126, "Mục tiêu cho AI + Enter", -94, function(box)
