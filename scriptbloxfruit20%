@@ -5235,6 +5235,7 @@ function Tele.dieThenSetLastSpawnPoint(islandName)
     if Tele.SpawnLock then
         return false, "Đang xử lý đảo " .. tostring(Tele.SpawnLock)
     end
+
     local targetName = tostring(islandName or "")
     local island = findIsland(targetName, getSea())
     if not island then
@@ -5242,15 +5243,22 @@ function Tele.dieThenSetLastSpawnPoint(islandName)
         return false, Tele.Status
     end
 
-    local character = getCharacter()
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if not character or not humanoid or humanoid.Health <= 0 then
+    local oldCharacter = getCharacter()
+    local humanoid = oldCharacter and oldCharacter:FindFirstChildOfClass("Humanoid")
+    if not oldCharacter or not humanoid or humanoid.Health <= 0 then
         Tele.Status = "Nhân vật chưa sẵn sàng để bắt đầu quy trình"
         return false, Tele.Status
     end
 
-    Tele.SpawnLock = island.name -- khóa các lệnh Tele khác trong suốt quá trình xác nhận
+    Tele.SpawnLock = island.name
+    local activeLockRoot = nil
+    local activeLockPreviousAnchored = false
     local function finish(ok, message)
+        -- Khôi phục đúng trạng thái Anchored trước khi kết thúc nếu bị hủy giữa chừng.
+        if activeLockRoot and activeLockRoot.Parent then
+            pcall(function() activeLockRoot.Anchored = activeLockPreviousAnchored end)
+        end
+        activeLockRoot = nil
         Tele.SpawnLock = nil
         Tele.Status = message
         return ok, message
@@ -5260,7 +5268,10 @@ function Tele.dieThenSetLastSpawnPoint(islandName)
     local diedConnection
     diedConnection = humanoid.Died:Connect(function()
         died = true
-        if diedConnection then diedConnection:Disconnect(); diedConnection = nil end
+        if diedConnection then
+            diedConnection:Disconnect()
+            diedConnection = nil
+        end
     end)
 
     Tele.Status = "Đang chết trước khi đặt đảo: " .. island.name
@@ -5274,45 +5285,96 @@ function Tele.dieThenSetLastSpawnPoint(islandName)
         if humanoid.Health <= 0 then died = true end
     end
     if diedConnection then diedConnection:Disconnect() end
-    if not died then return finish(false, "Không xác nhận được nhân vật đã chết; chưa gửi remote") end
+    if not died then
+        return finish(false, "Không xác nhận được nhân vật đã chết; chưa gửi remote")
+    end
 
-    -- Sau khi chết, gửi lặp lại có giới hạn tần suất. Server mới quyết định vị trí
-    -- xuất hiện; client không thể tự tạo nhân vật tại một đảo bằng cách neo/đổi CFrame.
-    local respawnCharacter = nil
+    -- Gửi remote NGAY SAU KHI xác nhận chết; tiếp tục gửi định kỳ trong lúc hồi sinh.
     local started = os.clock()
     local nextRemote = 0
-    Tele.Status = "Đã chết; đang đặt và xác nhận hồi sinh tại " .. island.name
-    while State.Running do
+    local handledCharacter = nil
+    local stableSince = nil
+    local lockApplied = false
+    local lockEndsAt = 0
+    local lockedRoot = nil
+    local previousAnchored = false
+    local targetPosition = island.pos + Vector3.new(0, 8, 0)
+    Tele.Status = "Đã chết; gửi SetLastSpawnPoint và chờ hồi sinh tại " .. island.name
+
+    while State.Running and os.clock() - started < 180 do
         local now = os.clock()
+
         if now >= nextRemote then
-            local ok = Tele.setLastSpawnPoint(island.name)
-            if not ok then
-                Tele.Status = "Đang thử lại SetLastSpawnPoint: " .. island.name
+            local sent = Tele.setLastSpawnPoint(island.name)
+            if sent then
+                Tele.Status = "Đang giữ remote SetLastSpawnPoint: " .. island.name
             else
-                Tele.Status = "Đã gửi SetLastSpawnPoint; chờ nhận diện " .. island.name
+                Tele.Status = "Remote chưa được chấp nhận; sẽ thử lại: " .. island.name
             end
-            nextRemote = now + 2.0
+            nextRemote = now + 1.0
         end
 
         local current = getCharacter()
-        if current and current ~= character and current.Parent then
-            respawnCharacter = current
+        if current and current ~= oldCharacter and current.Parent then
             local root = getRoot(current)
-            if root then
-                local nearest, distance = nearestIsland(root.Position)
-                if nearest and nearest.name == island.name and distance <= 1200 then
-                    Tele.SpawnName = island.name
-                    Tele.SpawnPos = island.pos
-                    Tele.LastIsland = island.name
-                    Tele.Known[island.name] = true
-                    teleSaveFile()
-                    return finish(true, "Đã nhận diện nhân vật hồi sinh tại " .. island.name .. "; dừng gửi remote")
+            local hum = current:FindFirstChildOfClass("Humanoid")
+
+            -- Khi nhân vật mới vừa xuất hiện: ghim cứng vào tọa độ đảo trong đúng ~1 giây.
+            if root and hum and hum.Health > 0 and handledCharacter ~= current then
+                handledCharacter = current
+                stableSince = nil
+                lockedRoot = root
+                previousAnchored = root.Anchored
+                activeLockRoot = root
+                activeLockPreviousAnchored = previousAnchored
+                lockApplied = true
+                lockEndsAt = now + 1.0
+                pcall(function()
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                    root.CFrame = CFrame.new(targetPosition)
+                    root.Anchored = true
+                end)
+                Tele.Status = "Khóa vị trí 1 giây tại tọa độ đảo " .. island.name .. "; tiếp tục giữ remote"
+            end
+
+            if root and hum and hum.Health > 0 and handledCharacter == current then
+                if lockApplied and now >= lockEndsAt then
+                    pcall(function()
+                        if lockedRoot and lockedRoot.Parent then
+                            lockedRoot.Anchored = previousAnchored
+                            lockedRoot.AssemblyLinearVelocity = Vector3.zero
+                        end
+                    end)
+                    lockApplied = false
+                    lockedRoot = nil
+                    activeLockRoot = nil
+                    stableSince = now
+                    Tele.Status = "Đã nhả khóa vị trí; kiểm tra server có giữ nhân vật trên đảo " .. island.name .. " không"
+                elseif not lockApplied then
+                    local nearest, distance = nearestIsland(root.Position)
+                    if nearest and nearest.name == island.name and distance <= 350 then
+                        stableSince = stableSince or now
+                        -- Chỉ xác nhận sau khi đã nhả Anchored và vị trí vẫn ổn định.
+                        if now - stableSince >= 1.0 then
+                            Tele.SpawnName = island.name
+                            Tele.SpawnPos = island.pos
+                            Tele.LastIsland = island.name
+                            Tele.Known[island.name] = true
+                            teleSaveFile()
+                            return finish(true, "Đã xác nhận nhân vật đứng trên " .. island.name .. "; dừng gửi remote")
+                        end
+                    else
+                        stableSince = nil
+                        Tele.Status = "Server chưa giữ nhân vật trên đảo " .. island.name .. "; tiếp tục gửi remote"
+                    end
                 end
             end
         end
-        task.wait(0.2)
+        task.wait(0.1)
     end
-    return finish(false, "Đã dừng khi chưa xác nhận được đảo " .. island.name)
+
+    return finish(false, "Hết thời gian chờ hoặc đã dừng trước khi xác nhận đứng trên đảo " .. island.name)
 end
 
 addSection(pTele, "ĐIỂM HỒI SINH THEO ĐẢO")
@@ -5330,7 +5392,7 @@ addButton(pTele, "CHẾT TRƯỚC → ĐẶT ĐẢO ĐÃ CHỌN", function()
         notify(ok and "TELE HỒI SINH" or "TELE HỒI SINH LỖI", tostring(message or Tele.Status))
     end)
 end, Colors.Blue)
-addInfo(pTele, "Cách hoạt động", "Chọn đảo → chết → gửi lại SetLastSpawnPoint mỗi 2 giây → đợi hồi sinh và nhận diện đúng đảo mới dừng. Trong lúc chờ sẽ khóa các lệnh Tele khác.")
+addInfo(pTele, "Cách hoạt động", "Chọn đảo → chết → gửi SetLastSpawnPoint ngay sau khi chết và lặp mỗi 1 giây; khi hồi sinh ghim tọa độ đảo 1 giây, sau đó chỉ dừng khi vị trí vẫn được giữ trên đảo. Trong lúc chờ sẽ khóa các lệnh Tele khác.")
 
 local function findNearest(name)
 	local root = getRoot(getCharacter())
