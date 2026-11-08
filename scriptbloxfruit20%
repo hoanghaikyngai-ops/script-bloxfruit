@@ -3143,16 +3143,18 @@ end
 -- BẢNG AI AGENT + DOCK (AI luân phiên với bảng nhạc)
 ------------------------------------------------------------------
 ; (function()
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-local AI_MODEL = "gemini-2.5-flash"
-local AIKey = "AQ.Ab8RN6LB9EflQylTq0UUllw-nrTlXlxy3MRVG9GMi8roP6I9ig" -- Khóa cố định; không chia sẻ script công khai
-local Agent = { Running = false, Goal = "", Plan = "", History = {}, Steps = 0, MaxSteps = 60 }
+--=====================================================================
+-- KHỐI A  (thay đoạn header cũ: httpRequest / AI_MODEL / AIKey / Agent / AllowedRemote)
+--=====================================================================
+local BRAIN_URL = "https://raw.githubusercontent.com/TEN_BAN/REPO/main/HHubBrain.lua" -- << raw bộ não của bạn
+local BRAIN_CACHE = "HHubBrain.cache.lua"
+local Agent = { Running = false, Goal = "", Steps = 0, Log = {}, Resume = false }
 local AllowedRemote = {
-    StartQuest = true, AbandonQuest = true, Buso = true,
-    ZQuestProgress = true, DressrosaQuestProgress = true,
-    TravelDressrosa = true, TravelZou = true, TravelMain = true,
+	StartQuest = true, AbandonQuest = true, Buso = true,
+	ZQuestProgress = true, DressrosaQuestProgress = true,
+	TravelDressrosa = true, TravelZou = true, TravelMain = true,
 }
-
+ 
 ---------------- GIAO DIỆN BẢNG AI ----------------
 AIPanel = make("Frame", {
     Name = "AIPanel",
@@ -3289,404 +3291,451 @@ local function panelBox(y, placeholder, widthOffset, onEnter)
     return box
 end
 
----------------- GEMINI API ----------------
-local function sendGemini(promptText, toolList, functionMode)
-    if not httpRequest then return nil, "Executor không có request()" end
-    if type(AIKey) ~= "string" or AIKey == "" then
-        return nil, "Gemini API key chưa được cấu hình trong script"
-    end
-
-    local requestBody = {
-        contents = {{
-            role = "user",
-            parts = {{ text = tostring(promptText or "") }}
-        }},
-        generationConfig = { temperature = 0.25, maxOutputTokens = 1800 }
-    }
-    if toolList and #toolList > 0 then requestBody.tools = toolList end
-    if functionMode then
-        requestBody.toolConfig = {
-            functionCallingConfig = { mode = functionMode }
-        }
-    end
-
-    -- Gemini REST: truyền API key qua header, không gắn key vào URL.
-    local url = "https://generativelanguage.googleapis.com/v1beta/models/"
-        .. AI_MODEL .. ":generateContent"
-
-    local okRequest, response = pcall(function()
-        return httpRequest({
-            Url = url,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Accept"] = "application/json",
-                ["x-goog-api-key"] = AIKey
-            },
-            Body = HttpService:JSONEncode(requestBody)
-        })
-    end)
-    if not okRequest then
-        return nil, "Không gửi được HTTP request: " .. tostring(response)
-    end
-    if type(response) ~= "table" then
-        return nil, "Executor trả về response không hợp lệ"
-    end
-
-    local statusCode = tonumber(response.StatusCode or response.Status or 0) or 0
-    local responseBody = tostring(response.Body or "")
-    if statusCode < 200 or statusCode >= 300 then
-        local detail = responseBody
-        local decodedOk, decoded = pcall(function()
-            return HttpService:JSONDecode(responseBody)
-        end)
-        if decodedOk and type(decoded) == "table" and decoded.error then
-            detail = tostring(decoded.error.message or decoded.error.status or responseBody)
-        end
-        return nil, string.format("HTTP %d: %s", statusCode, detail:sub(1, 500))
-    end
-
-    local decodedOk, data = pcall(function()
-        return HttpService:JSONDecode(responseBody)
-    end)
-    if not decodedOk or type(data) ~= "table" then
-        return nil, "Gemini trả về JSON không hợp lệ: " .. responseBody:sub(1, 250)
-    end
-    if data.error then
-        return nil, "Gemini API: " .. tostring(data.error.message or data.error.status or "lỗi không xác định")
-    end
-
-    local candidate = data.candidates and data.candidates[1]
-    if not candidate then
-        local reason = data.promptFeedback and data.promptFeedback.blockReason
-        return nil, "Gemini không trả candidate" .. (reason and (": " .. tostring(reason)) or "")
-    end
-
-    local texts, calls = {}, {}
-    for _, part in ipairs(candidate.content and candidate.content.parts or {}) do
-        if type(part.text) == "string" and part.text ~= "" then
-            table.insert(texts, part.text)
-        end
-        if type(part.functionCall) == "table" then
-            table.insert(calls, part.functionCall)
-        end
-    end
-    return {
-        text = table.concat(texts, "\n"),
-        functionCalls = calls,
-        finishReason = candidate.finishReason,
-        raw = data
-    }
+--=====================================================================
+-- KHỐI B  (thay toàn bộ đoạn GEMINI API ... startAgent)
+--=====================================================================
+---------------- NẠP NÃO LOCAL (raw -> cache) ----------------
+local Brain, BrainErr
+do
+	local src
+	local okHttp = pcall(function() src = game:HttpGet(BRAIN_URL) end)
+	if okHttp and type(src) == "string" and #src > 500 then
+		if writefile then pcall(writefile, BRAIN_CACHE, src) end
+	elseif isfile and isfile(BRAIN_CACHE) then
+		src = readfile(BRAIN_CACHE)
+	end
+	if type(src) ~= "string" or #src == 0 then
+		BrainErr = "không tải được raw và chưa có cache"
+	else
+		local okLoad, lib = pcall(function() return loadstring(src)() end)
+		if okLoad and type(lib) == "table" and lib.new then
+			local okNew, inst = pcall(lib.new, {
+				Name = "H-HUB AI",
+				FileName = "HHubAI_BF_" .. LocalPlayer.Name:lower():gsub("[^%w_%-]", "_") .. ".json",
+			})
+			if okNew then Brain = inst else BrainErr = tostring(inst) end
+		else
+			BrainErr = "não lỗi: " .. tostring(lib)
+		end
+	end
 end
-
----------------- QUAN SÁT ----------------
+ 
+---------------- TÍNH NĂNG CỦA HUB MÀ NÃO ĐIỀU KHIỂN ĐƯỢC ----------------
+-- { key trong Config, kind, nhãn, {alias}, min, max }
+local FeatureDefs = {
+	{ "AutoFarm", "toggle", "Auto Farm", { "auto farm", "farm", "cay level", "cay" } },
+	{ "AutoQuest", "toggle", "Auto Quest", { "auto quest", "tu nhan nhiem vu" } },
+	{ "BringMob", "toggle", "Bring Mob", { "bring mob", "gom quai", "keo quai" } },
+	{ "AutoHaki", "toggle", "Auto Haki", { "auto haki", "haki" } },
+	{ "AutoKen", "toggle", "Auto Ken", { "auto ken", "ken" } },
+	{ "AutoStats", "toggle", "Auto Cộng Điểm", { "auto cong diem", "cong diem", "auto stats" } },
+	{ "AutoSkill", "toggle", "Auto Skill", { "auto skill", "skill" } },
+	{ "AutoSea", "toggle", "Auto Sea", { "auto sea", "auto qua sea", "qua sea tu dong" } },
+	{ "AutoHop", "toggle", "Auto Hop", { "auto hop", "server hop tu dong", "tu dong doi server" } },
+	{ "AutoChest", "toggle", "Auto Rương", { "auto ruong", "auto chest", "nhat ruong tu dong" } },
+	{ "AutoFruit", "toggle", "Auto Nhặt Trái", { "auto trai", "auto fruit", "nhat trai tu dong" } },
+	{ "AutoStore", "toggle", "Auto Cất Trái", { "auto cat trai", "cat trai" } },
+	{ "FruitESP", "toggle", "Fruit ESP", { "fruit esp", "esp trai", "soi trai" } },
+	{ "FullBright", "toggle", "Fullbright", { "fullbright", "full bright", "sang man hinh" } },
+	{ "LowEffects", "toggle", "Giảm Hiệu Ứng", { "giam hieu ung", "low effects", "giam lag" } },
+	{ "MobHighlight", "toggle", "Highlight Quái", { "highlight quai", "highlight" } },
+	{ "AutoPumpkin", "toggle", "Auto Bí Ngô", { "auto bi ngo", "bi ngo", "pumpkin" } },
+	{ "AutoRejoin", "toggle", "Auto Rejoin", { "auto rejoin" } },
+	{ "MultiHit", "toggle", "Multi-Hit", { "multi hit", "multihit" } },
+ 
+	{ "TweenSpeed", "value", "Tốc Độ Bay", { "toc do bay", "speed bay", "tween speed" }, 100, 400 },
+	{ "HitRange", "value", "Tầm Đánh", { "tam danh", "hit range" }, 30, 200 },
+	{ "BringRadius", "value", "Bán Kính Gom", { "ban kinh gom", "bring radius" }, 50, 600 },
+	{ "HitboxSize", "value", "Hitbox Quái", { "hitbox", "kich thuoc hitbox" }, 10, 80 },
+	{ "SafeHP", "value", "Máu An Toàn", { "mau an toan", "safe hp", "hoi mau" }, 0, 60 },
+	{ "TargetLevel", "value", "Level Mục Tiêu", { "level muc tieu", "target level", "muc tieu level" }, 0, 2800 },
+	{ "FarmHeightLate", "value", "Độ Cao Farm", { "do cao farm", "do cao" }, 5, 60 },
+ 
+	{ "ServerHop", "command", "Đổi Server", { "doi server", "server hop", "hop server" } },
+	{ "ResetChar", "command", "Reset Nhân Vật", { "reset nhan vat", "reset char" } },
+	{ "RejoinNow", "command", "Vào Lại Server", { "vao lai server", "rejoin", "join lai" } },
+}
+ 
+if Brain then
+	for _, d in ipairs(FeatureDefs) do
+		Brain:AddFeature(d[1], d[4], { kind = d[2], label = d[3], min = d[5], max = d[6] })
+	end
+end
+ 
+local ToggleSpecial = { LowEffects = setLowEffects, FullBright = setFullbright }
+local CommandRun = {
+	ServerHop = function() serverHop("AI yêu cầu đổi server") end,
+	ResetChar = function()
+		local h = getHumanoid()
+		if h then h.Health = 0 end
+	end,
+	RejoinNow = function()
+		TeleportService:Teleport(game.PlaceId, LocalPlayer)
+	end,
+}
+ 
+local function setFeature(key, value)
+	if type(Config[key]) == "boolean" then
+		local tg = Toggles[key]
+		if tg then
+			tg.Set(value) -- chạy callback của UI (đồng bộ công tắc)
+		else
+			Config[key] = value
+			if ToggleSpecial[key] then pcall(ToggleSpecial[key], value) end
+			saveSoon()
+		end
+	else
+		Config[key] = value
+		saveSoon()
+	end
+end
+ 
+---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
+local function stripName(n)
+	return (tostring(n):gsub("%s*%[.-%]", ""))
+end
+ 
+local KnownMobs = {}
+do
+	local seen = {}
+	for _, e in ipairs(FallbackQuests) do
+		if not seen[e[2]] then
+			seen[e[2]] = true
+			KnownMobs[#KnownMobs + 1] = { name = e[2] }
+		end
+	end
+	for _, boss in ipairs({
+		"Ice Admiral", "rip_indra", "Don Swan", "Saber Expert", "The Gorilla King", "Bobby", "The Saw", "Yeti",
+		"Mob Leader", "Vice Admiral", "Warden", "Chief Warden", "Swan", "Magma Admiral", "Fishman Lord", "Wysper",
+		"Thunder God", "Cyborg", "Diamond", "Jeremy", "Fajita", "Smoke Admiral", "Awakened Ice Admiral", "Tide Keeper",
+		"Darkbeard", "Cake Queen", "Dough King", "Soul Reaper", "Cursed Captain", "Greybeard", "Stone",
+		"Island Empress", "Kilo Admiral", "Captain Elephant", "Beautiful Pirate", "Longma",
+	}) do
+		if not seen[boss] then
+			seen[boss] = true
+			KnownMobs[#KnownMobs + 1] = { name = boss }
+		end
+	end
+end
+ 
 local function findNearest(name)
-    local root = getRoot(getCharacter())
-    local character = getCharacter()
-    if not root then return nil end
-    local wanted, best, bestD = name:lower(), nil, math.huge
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Tool"))
-            and obj.Name:lower():find(wanted, 1, true)
-            and not (character and obj:IsDescendantOf(character)) then
-            local pos = objPos(obj)
-            if not pos and obj:IsA("Tool") then
-                local h = obj:FindFirstChild("Handle")
-                pos = h and h.Position
-            end
-            if pos then
-                local d = (pos - root.Position).Magnitude
-                if d < bestD then best, bestD = { obj = obj, pos = pos }, d end
-            end
-        end
-    end
-    return best
+	local root = getRoot(getCharacter())
+	local character = getCharacter()
+	if not root then return nil end
+	local wanted, best, bestD = name:lower(), nil, math.huge
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if (obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Tool"))
+			and obj.Name:lower():find(wanted, 1, true)
+			and not (character and obj:IsDescendantOf(character)) then
+			local pos = objPos(obj)
+			if not pos and obj:IsA("Tool") then
+				local h = obj:FindFirstChild("Handle")
+				pos = h and h.Position
+			end
+			if pos then
+				local d = (pos - root.Position).Magnitude
+				if d < bestD then best, bestD = { obj = obj, pos = pos }, d end
+			end
+		end
+	end
+	return best
 end
-
-local function perceive()
-    local root = getRoot(getCharacter())
-    local hum = getHumanoid()
-    if not root or not hum then return "Nhân vật chưa spawn." end
-    local o = {
-        pos = string.format("%.0f, %.0f, %.0f", root.Position.X, root.Position.Y, root.Position.Z),
-        hp = math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth),
-        level = getLevel(), sea = getSea(), tool = getEquippedToolName(),
-        questUI = questText() or "không có",
-        enemies = {}, npcs = {}, prompts = {},
-    }
-    local list = scanEnemies(nil)
-    for i = 1, math.min(8, #list) do
-        o.enemies[#o.enemies + 1] = string.format("%s (%d studs, hp %d)", list[i].Name, math.floor(list[i].Distance), math.floor(list[i].Health))
-    end
-    local npcFolder = Workspace:FindFirstChild("NPCs")
-    if npcFolder then
-        for _, n in ipairs(npcFolder:GetChildren()) do
-            local p = objPos(n)
-            if p and #o.npcs < 8 then
-                local d = (p - root.Position).Magnitude
-                if d < 600 then
-                    o.npcs[#o.npcs + 1] = string.format("%s (%d studs)", n.Name, math.floor(d))
-                end
-            end
-        end
-    end
-    for _, d in ipairs(Workspace:GetDescendants()) do
-        if #o.prompts >= 6 then break end
-        if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
-            and (d.Parent.Position - root.Position).Magnitude < 120 then
-            o.prompts[#o.prompts + 1] = d.Parent.Name .. " / " .. d.ActionText
-        end
-    end
-    return HttpService:JSONEncode(o)
+ 
+local function observe()
+	local root, hum = getRoot(getCharacter()), getHumanoid()
+	local env = {
+		enemies = {}, npcs = {}, prompts = {}, fruits = {}, knownMobs = KnownMobs,
+		level = getLevel(), sea = getSea(), tool = getEquippedToolName(),
+		chests = State.ChestCount or 0, questUI = questText() or "không có",
+	}
+	local q = State.Quest or currentQuest()
+	if q then env.quest = { quest = q.quest, idx = q.idx, mob = q.mob, count = q.count } end
+	if not root or not hum then return env end
+ 
+	env.hp, env.hpMax = math.floor(hum.Health), math.floor(hum.MaxHealth)
+	env.pos = { x = math.floor(root.Position.X), y = math.floor(root.Position.Y), z = math.floor(root.Position.Z) }
+ 
+	local list = scanEnemies(nil)
+	for i = 1, math.min(12, #list) do
+		env.enemies[i] = { name = list[i].Name, dist = math.floor(list[i].Distance), hp = math.floor(list[i].Health) }
+	end
+ 
+	local npcFolder = Workspace:FindFirstChild("NPCs")
+	if npcFolder then
+		for _, n in ipairs(npcFolder:GetChildren()) do
+			local p = objPos(n)
+			if p and #env.npcs < 12 then
+				local d = (p - root.Position).Magnitude
+				if d < 600 then env.npcs[#env.npcs + 1] = { name = n.Name, dist = math.floor(d) } end
+			end
+		end
+		table.sort(env.npcs, function(a, b) return a.dist < b.dist end)
+	end
+ 
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if #env.prompts >= 8 then break end
+		if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart") then
+			local dist = (d.Parent.Position - root.Position).Magnitude
+			if dist < 120 then
+				env.prompts[#env.prompts + 1] = { name = d.Parent.Name, action = d.ActionText, dist = math.floor(dist) }
+			end
+		end
+	end
+ 
+	local character = getCharacter()
+	for _, obj in ipairs(Workspace:GetChildren()) do
+		if (obj:IsA("Tool") or obj:IsA("Model")) and obj.Name:find("Fruit")
+			and not (character and obj:IsDescendantOf(character)) then
+			local p = objPos(obj)
+			if not p and obj:IsA("Tool") then
+				local h = obj:FindFirstChild("Handle")
+				p = h and h.Position
+			end
+			if p then
+				env.fruits[#env.fruits + 1] = { name = obj.Name, dist = math.floor((p - root.Position).Magnitude) }
+			end
+		end
+	end
+	table.sort(env.fruits, function(a, b) return a.dist < b.dist end)
+	return env
 end
-
+ 
 ---------------- HÀNH ĐỘNG (WHITELIST) ----------------
 local Actions = {}
 local function agentCond() return Agent.Running end
-
+ 
 function Actions.fly_to(a)
-    local root = getRoot(getCharacter())
-    if not root then return "chưa spawn" end
-    flyTo(root, CFrame.new(a.x, a.y, a.z), agentCond)
-    return "đã bay tới"
+	local root = getRoot(getCharacter())
+	if not root then return "chưa spawn" end
+	flyTo(root, CFrame.new(a.x, a.y, a.z), agentCond)
+	return "đã bay tới"
 end
 function Actions.fly_to_object(a)
-    local root = getRoot(getCharacter())
-    local f = findNearest(tostring(a.name))
-    if not root or not f then return "không tìm thấy " .. tostring(a.name) end
-    flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
-    return "đã tới " .. tostring(a.name)
+	local root = getRoot(getCharacter())
+	local f = findNearest(tostring(a.name))
+	if not root or not f then return "không tìm thấy " .. tostring(a.name) end
+	flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+	return "đã tới " .. tostring(a.name)
 end
 function Actions.pickup(a)
-    local root = getRoot(getCharacter())
-    local f = findNearest(tostring(a.name))
-    if not root or not f then return "không thấy " .. tostring(a.name) end
-    flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
-    local part = f.obj:IsA("BasePart") and f.obj or f.obj:FindFirstChildWhichIsA("BasePart", true)
-    if part and firetouchinterest then
-        firetouchinterest(root, part, 0)
-        firetouchinterest(root, part, 1)
-    end
-    return "đã thử nhặt " .. tostring(a.name)
+	local root = getRoot(getCharacter())
+	local f = findNearest(tostring(a.name))
+	if not root or not f then return "không thấy " .. tostring(a.name) end
+	flyTo(root, CFrame.new(f.pos + Vector3.new(0, 3, 0)), agentCond)
+	local part = f.obj:IsA("BasePart") and f.obj or f.obj:FindFirstChildWhichIsA("BasePart", true)
+	if part and firetouchinterest then
+		firetouchinterest(root, part, 0)
+		firetouchinterest(root, part, 1)
+	end
+	return "đã thử nhặt " .. tostring(a.name)
 end
 function Actions.use_prompt(a)
-    local root = getRoot(getCharacter())
-    if not root then return "chưa spawn" end
-    local wanted = tostring(a.name):lower()
-    for _, d in ipairs(Workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
-            and d.Parent.Name:lower():find(wanted, 1, true) then
-            flyTo(root, d.Parent.CFrame + Vector3.new(0, 3, 0), agentCond)
-            if fireproximityprompt then
-                fireproximityprompt(d)
-                return "đã kích hoạt prompt"
-            end
-            return "executor không có fireproximityprompt"
-        end
-    end
-    return "không thấy prompt " .. tostring(a.name)
+	local root = getRoot(getCharacter())
+	if not root then return "chưa spawn" end
+	local wanted = tostring(a.name):lower()
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart")
+			and d.Parent.Name:lower():find(wanted, 1, true) then
+			flyTo(root, d.Parent.CFrame + Vector3.new(0, 3, 0), agentCond)
+			if fireproximityprompt then
+				fireproximityprompt(d)
+				return "đã kích hoạt prompt"
+			end
+			return "executor không có fireproximityprompt"
+		end
+	end
+	return "không thấy prompt " .. tostring(a.name)
 end
 function Actions.kill_mob(a)
-    local need, kills, target = tonumber(a.count) or 1, 0, nil
-    local deadline = os.clock() + (tonumber(a.timeout) or 40)
-    while Agent.Running and State.Running and os.clock() < deadline and kills < need do
-        local root = getRoot(getCharacter())
-        if not root then break end
-        local hum = target and target:FindFirstChildOfClass("Humanoid")
-        if not target or not target.Parent or not hum or hum.Health <= 0 then
-            if target then kills += 1 end
-            if kills >= need then break end
-            local list = scanEnemies(tostring(a.name))
-            target = list[1] and list[1].Model
-            if not target then break end
-        end
-        local part = target:FindFirstChild("HumanoidRootPart")
-        if part then
-            State.BossTarget = target
-            if Config.AutoEquip then equipWeapon() end
-            if Config.AutoHaki then ensureHaki() end
-            local above = part.Position + Vector3.new(0, currentHeight(), 0)
-            if (root.Position - above).Magnitude > 120 then
-                flyTo(root, CFrame.lookAt(above, part.Position), agentCond)
-            end
-            root.CFrame = CFrame.lookAt(above, part.Position)
-            root.AssemblyLinearVelocity = Vector3.zero
-            if not (State.KeyLearned and Config.HitKey ~= "") then
-                clickOnce()
-                screenClick()
-            end
-            attackMobs()
-        end
-        task.wait(0.1)
-    end
-    State.BossTarget = nil
-    return string.format("hạ %d/%d con %s", kills, need, tostring(a.name))
+	local need, kills, target = tonumber(a.count) or 1, 0, nil
+	local deadline = os.clock() + (tonumber(a.timeout) or 40)
+	local name = tostring(a.name)
+	while Agent.Running and State.Running and os.clock() < deadline and kills < need do
+		local root = getRoot(getCharacter())
+		if not root then break end
+		local hum = target and target:FindFirstChildOfClass("Humanoid")
+		if not target or not target.Parent or not hum or hum.Health <= 0 then
+			if target then kills += 1 end
+			target = nil
+			if kills >= need then break end
+			local list = scanEnemies(name)
+			target = list[1] and list[1].Model
+			if not target then
+				-- chưa thấy quái: bay tới điểm spawn rồi chờ
+				local sp = findSpawnPos(name)
+				if sp then
+					flyTo(root, CFrame.new(sp + Vector3.new(0, currentHeight(), 0)), agentCond)
+				end
+				task.wait(0.8)
+			end
+		end
+		local part = target and target:FindFirstChild("HumanoidRootPart")
+		if part then
+			State.BossTarget = target
+			if Config.AutoEquip then equipWeapon() end
+			if Config.AutoHaki then ensureHaki() end
+			local above = part.Position + Vector3.new(0, currentHeight(), 0)
+			if (root.Position - above).Magnitude > 120 then
+				flyTo(root, CFrame.lookAt(above, part.Position), agentCond)
+			end
+			root.CFrame = CFrame.lookAt(above, part.Position)
+			root.AssemblyLinearVelocity = Vector3.zero
+			if not (State.KeyLearned and Config.HitKey ~= "") then
+				clickOnce()
+				screenClick()
+			end
+			attackMobs()
+		end
+		task.wait(0.1)
+	end
+	State.BossTarget = nil
+	return string.format("hạ %d/%d con %s", kills, need, name)
 end
 function Actions.call_remote(a)
-    local args = {}
-    for i, v in ipairs(a.args or {}) do
-        args[i] = tonumber(v) or v
-    end
-    local cmd = args[1]
-    if type(cmd) ~= "string" or not AllowedRemote[cmd] then
-        return "BỊ CHẶN: remote không nằm trong whitelist (" .. tostring(cmd) .. ")"
-    end
-    local commF = getCommF()
-    if not commF then return "không có CommF_" end
-    local ok, res = pcall(function() return commF:InvokeServer(table.unpack(args)) end)
-    return ok and ("kết quả: " .. tostring(res)) or ("lỗi: " .. tostring(res))
+	local args = {}
+	for i, v in ipairs(a.args or {}) do
+		args[i] = tonumber(v) or v
+	end
+	local cmd = args[1]
+	if type(cmd) ~= "string" or not AllowedRemote[cmd] then
+		return "BỊ CHẶN: remote không nằm trong whitelist (" .. tostring(cmd) .. ")"
+	end
+	local commF = getCommF()
+	if not commF then return "không có CommF_" end
+	local ok, res = pcall(function() return commF:InvokeServer(table.unpack(args)) end)
+	return ok and ("kết quả: " .. tostring(res)) or ("lỗi: " .. tostring(res))
 end
 function Actions.wait(a)
-    task.wait(math.clamp(tonumber(a.seconds) or 1, 0.2, 10))
-    return "đã chờ"
+	task.wait(math.clamp(tonumber(a.seconds) or 1, 0.2, 60))
+	return "đã chờ"
 end
-
-local function schema(props, required)
-    return { type = "OBJECT", properties = props, required = required }
-end
-
-local ToolDefs = {
-    { name = "fly_to", description = "Di chuyển tới tọa độ.", parameters = schema({
-        x = { type = "NUMBER" }, y = { type = "NUMBER" }, z = { type = "NUMBER" }
-    }, { "x", "y", "z" }) },
-    { name = "fly_to_object", description = "Tìm đối tượng gần nhất theo tên và di chuyển tới đó.", parameters = schema({
-        name = { type = "STRING" }
-    }, { "name" }) },
-    { name = "pickup", description = "Tìm vật phẩm theo tên, di chuyển tới và thử nhặt.", parameters = schema({
-        name = { type = "STRING" }
-    }, { "name" }) },
-    { name = "use_prompt", description = "Tìm ProximityPrompt theo tên vật chứa và kích hoạt.", parameters = schema({
-        name = { type = "STRING" }
-    }, { "name" }) },
-    { name = "kill_mob", description = "Chọn NPC quái theo tên trong trò chơi.", parameters = schema({
-        name = { type = "STRING" }, count = { type = "INTEGER" }, timeout = { type = "NUMBER" }
-    }, { "name" }) },
-    { name = "call_remote", description = "Gọi CommF_ với lệnh thuộc whitelist hiện có; args[1] là tên lệnh.", parameters = schema({
-        args = { type = "ARRAY", items = { type = "STRING" } }
-    }, { "args" }) },
-    { name = "wait", description = "Chờ một khoảng thời gian ngắn.", parameters = schema({
-        seconds = { type = "NUMBER" }
-    }, { "seconds" }) },
-    { name = "done", description = "Kết thúc tác vụ và tóm tắt kết quả.", parameters = schema({
-        summary = { type = "STRING" }
-    }, { "summary" }) },
-}
-
+ 
 ---------------- ĐIỀU KHIỂN AGENT ----------------
-local function stopAgent(msg)
-    Agent.Running = false
-    State.BossTarget = nil
-    State.ClusterPoint = nil
-    State.TargetMob = nil
-    if State.Busy == "AI Agent" then State.Busy = nil end
-    pcall(resetBring)
-    pcall(stopMovers)
-    setAnswer(msg or "AI đã dừng.")
-    setStatus("AI: chờ lệnh")
+local function stopAgent(msg, resume)
+	Agent.Running = false
+	State.BossTarget = nil
+	State.ClusterPoint = nil
+	State.TargetMob = nil
+	if State.Busy == "AI Agent" then State.Busy = nil end
+	pcall(resetBring)
+	pcall(stopMovers)
+	if resume and Agent.Resume and Toggles.AutoFarm then
+		Agent.Resume = false
+		Toggles.AutoFarm.Set(true)
+	end
+	Agent.Resume = false
+	setAnswer(msg or "AI đã dừng.")
+	setStatus("AI: chờ lệnh")
 end
-
-local function makePlan(goal)
-    local prompt = table.concat({
-        "Bạn lập kế hoạch cho agent trong trò chơi Blox Fruits.",
-        "Trả về các bước ngắn, theo thứ tự. Không bịa tên NPC, vật phẩm hoặc lệnh remote.",
-        "Nếu thông tin không chắc chắn, ghi rõ KHÔNG CHẮC. Chỉ lập kế hoạch, không thực hiện hành động.",
-        "Mục tiêu: " .. tostring(goal),
-        "Sea hiện tại: " .. tostring(getSea()),
-        "Level hiện tại: " .. tostring(getLevel())
-    }, "\n")
-
-    -- Gemini Google Search grounding, không dùng schema web_search của Claude.
-    local data, err = sendGemini(prompt, { { google_search = {} } }, nil)
-    if not data then
-        -- Fallback text-only nếu model/key không hỗ trợ grounding.
-        data, err = sendGemini(prompt, nil, nil)
-    end
-    if not data then return nil, err end
-    if data.text == "" then return nil, "Gemini không trả nội dung kế hoạch" end
-    return data.text
+ 
+local function startPlan(steps)
+	if Agent.Running then
+		setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
+		return
+	end
+	Agent.Running, Agent.Steps, Agent.Log = true, 0, {}
+	Agent.Resume = Config.AutoFarm and true or false
+	Config.AutoFarm, Config.AutoPumpkin = false, false
+	if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
+	if Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false, true) end
+	pcall(resetBring)
+	State.Busy = "AI Agent"
+	task.spawn(function()
+		for i, step in ipairs(steps) do
+			if not (Agent.Running and State.Running) then return end
+			Agent.Steps = i
+			setStatus(string.format("AI: bước %d/%d - %s", i, #steps, tostring(step.text or step.tool)))
+			local fn = Actions[step.tool]
+			local result = "tool không tồn tại"
+			if fn then
+				local ok, r = pcall(fn, step.args or {})
+				result = ok and tostring(r) or ("lỗi: " .. tostring(r))
+			end
+			Agent.Log[#Agent.Log + 1] = string.format("#%d %s -> %s", i, tostring(step.text or step.tool), result)
+			setAnswer(table.concat(Agent.Log, "\n"))
+			task.wait(0.3)
+		end
+		if Agent.Running then
+			stopAgent("Xong " .. #steps .. " bước:\n" .. table.concat(Agent.Log, "\n"), true)
+		end
+	end)
 end
-
-local function agentLoop()
-    while Agent.Running and State.Running and Agent.Steps < Agent.MaxSteps do
-        local hum = getHumanoid()
-        if not hum or hum.Health <= 0 then
-            setStatus("AI: chờ hồi sinh...")
-            task.wait(3)
-        end
-        Agent.Steps += 1
-        setStatus(string.format("AI: bước %d/%d - đang suy nghĩ...", Agent.Steps, Agent.MaxSteps))
-        local prompt = table.concat({
-            "Bạn là agent điều khiển nhân vật trong Blox Fruits.",
-            "Mỗi lượt phải gọi đúng MỘT function trong danh sách được cung cấp.",
-            "Mục tiêu: " .. Agent.Goal,
-            "Kế hoạch tham khảo (có thể sai): " .. Agent.Plan,
-            "Không đoán tên remote ngoài whitelist. Nếu kẹt 3 lượt liền hoặc máu dưới 30% thì gọi done.",
-            "Lịch sử hành động:",
-            table.concat(Agent.History, "\n"),
-            "Quan sát hiện tại:",
-            perceive()
-        }, "\n\n")
-        local data, err = sendGemini(prompt, {
-            { functionDeclarations = ToolDefs }
-        }, "ANY")
-        if not Agent.Running then return end
-        if not data then stopAgent("Lỗi API: " .. tostring(err)) return end
-
-        local call = data.functionCalls and data.functionCalls[1]
-        if not call then
-            local message = data.text ~= "" and data.text or "Gemini không trả functionCall."
-            stopAgent("AI không đưa ra hành động: " .. message:sub(1, 350))
-            return
-        end
-        local callName = tostring(call.name or "")
-        local callArgs = type(call.args) == "table" and call.args or {}
-        if callName == "done" then
-            stopAgent("Xong: " .. tostring(callArgs.summary or "AI kết thúc tác vụ"))
-            return
-        end
-
-        local fn = Actions[callName]
-        local result = "tool không tồn tại"
-        local inputText = HttpService:JSONEncode(callArgs)
-        if fn then
-            setAnswer(string.format("Bước %d: %s %s", Agent.Steps, callName, inputText))
-            setStatus(string.format("AI: bước %d/%d - %s", Agent.Steps, Agent.MaxSteps, callName))
-            local ok, r = pcall(fn, callArgs)
-            result = ok and tostring(r) or ("lỗi: " .. tostring(r))
-        end
-        table.insert(Agent.History, string.format("#%d %s %s -> %s", Agent.Steps, callName, inputText, result))
-        if #Agent.History > 8 then table.remove(Agent.History, 1) end
-        task.wait(0.3)
-    end
-    if Agent.Running then
-        stopAgent(Agent.Steps >= Agent.MaxSteps and "Đã hết giới hạn số bước." or "AI đã dừng.")
-    end
+ 
+---------------- XỬ LÝ LỆNH: observe -> não -> thực thi ----------------
+local function onOff(v) return v and "bật" or "tắt" end
+ 
+local function dispatch(res)
+	local a = res.action
+	if not a then return end
+	local def = a.feature and Brain.features[a.feature]
+	local label = def and def.label or tostring(a.feature)
+ 
+	if a.type == "toggle" then
+		local cur = Config[a.feature] and true or false
+		if cur == a.state then
+			setAnswer(label .. " đang " .. onOff(a.state) .. " sẵn rồi.")
+		else
+			setFeature(a.feature, a.state)
+		end
+	elseif a.type == "flip" then
+		local new = not Config[a.feature]
+		setFeature(a.feature, new)
+		setAnswer("Đã " .. onOff(new) .. " " .. label .. ".")
+	elseif a.type == "set" then
+		setFeature(a.feature, a.value)
+	elseif a.type == "run" then
+		local fn = CommandRun[a.feature]
+		if fn then pcall(fn) end
+	elseif a.type == "all_off" then
+		for _, k in ipairs({ "AutoFarm", "AutoPumpkin", "AutoChest", "AutoFruit", "AutoHop", "AutoSea", "AutoSkill", "AutoStats" }) do
+			if Config[k] then setFeature(k, false) end
+		end
+	elseif a.type == "status" then
+		local on = {}
+		for _, d in ipairs(FeatureDefs) do
+			if d[2] == "toggle" and Config[d[1]] then on[#on + 1] = d[3] end
+		end
+		setAnswer((res.reply ~= "" and res.reply .. " " or "")
+			.. (#on > 0 and ("Đang bật: " .. table.concat(on, ", ")) or "Không có tính năng nào đang bật.")
+			.. string.format(" | AI: %s", Agent.Running and "đang chạy tác vụ" or "rảnh"))
+	elseif a.type == "agent_plan" then
+		if Agent.Running then
+			setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
+		else
+			startPlan(a.steps or {})
+		end
+	elseif a.type == "agent_stop" then
+		if Agent.Running then
+			stopAgent("Đã dừng bởi người dùng.")
+		else
+			setAnswer("Không có tác vụ nào đang chạy.")
+		end
+	end
 end
-
+ 
+local function handleCommand(text)
+	if not Brain then
+		setAnswer("Não chưa nạp được: " .. tostring(BrainErr) .. ". Kiểm tra BRAIN_URL (raw HHubBrain.lua).")
+		return
+	end
+	setStatus("AI: đang quan sát...")
+	local okEnv, env = pcall(observe)
+	setStatus("AI: đang xử lý...")
+	local okRes, res = pcall(function() return Brain:Process(text, okEnv and env or nil) end)
+	if not okRes then
+		setAnswer("Não lỗi: " .. tostring(res))
+		setStatus("AI: chờ lệnh")
+		return
+	end
+	Agent.Goal = text
+	setAnswer(res.reply)
+	pcall(dispatch, res)
+	if not Agent.Running then setStatus("AI: chờ lệnh") end
+end
+ 
 local function startAgent(goal)
-    if Agent.Running then return end
-    if AIKey == "" then setAnswer("Gemini API key chưa được cấu hình trong script.") return end
-    if not httpRequest then setAnswer("Executor không hỗ trợ request().") return end
-    Agent.Running, Agent.Goal, Agent.Steps, Agent.History = true, goal, 0, {}
-    -- Tắt farm/pumpkin bằng công tắc để UI đồng bộ, rồi tạm dừng mọi vòng lặp khác
-    Config.AutoFarm, Config.AutoPumpkin = false, false
-    if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
-    if Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false, true) end
-    pcall(resetBring)
-    State.Busy = "AI Agent"
-    task.spawn(function()
-        setAnswer("Đang tìm kế hoạch trên web...")
-        setStatus("AI: lập kế hoạch...")
-        local plan, err = makePlan(goal)
-        if not Agent.Running then return end
-        if not plan then stopAgent("Không lập được kế hoạch: " .. tostring(err)) return end
-        Agent.Plan = plan
-        setAnswer("Kế hoạch:\n" .. plan:sub(1, 700))
-        task.wait(2)
-        agentLoop()
-    end)
+	task.spawn(handleCommand, goal)
 end
-
 ---------------- Ô NHẬP + NÚT ----------------
 -- API key được cấu hình cố định trong script; giao diện không còn ô nhập key.
 local GoalBox = panelBox(126, "Mục tiêu cho AI + Enter", -94, function(box)
