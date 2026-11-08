@@ -4207,7 +4207,13 @@ local function observe()
 	}
 	local q = State.Quest or currentQuest()
 	if q then env.quest = { quest = q.quest, idx = q.idx, mob = q.mob, count = q.count } end
-	if not root or not hum then return env end
+		env.cfg = {}
+	for _, d in ipairs(FeatureDefs) do
+		if Config[d[1]] ~= nil then env.cfg[d[1]] = Config[d[1]] end
+	end
+	env.agent = Agent.Running
+	env.status = State.Status
+    if not root or not hum then return env end
  
 	env.hp, env.hpMax = math.floor(hum.Health), math.floor(hum.MaxHealth)
 	env.pos = { x = math.floor(root.Position.X), y = math.floor(root.Position.Y), z = math.floor(root.Position.Z) }
