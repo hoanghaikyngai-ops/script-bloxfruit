@@ -1,5 +1,5 @@
 --[[
-    H-HUB // GAME COMPANION v6.4.0 - QUEST HUB + SEA EVENTS + VERIFIED AUTO EQUIP
+    H-HUB // GAME COMPANION v7.0.0 - AI PLAN GUARD + QUEST HUB + DOCK FIX
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -7,6 +7,7 @@
     - v6.0: TAB TELE (chết -> hồi sinh ở điểm đã đặt / requestEntrance / bay), tự dùng khi đổi đảo
     - v6.0: AI Brain v3 (từ vựng lớn, AutoPilot, chuỗi nhiệm vụ Race V2/V3, Dragon Talon, Dojo, Draco, Sea Event...)
     - v6.2.2: giữ bộ tính năng v6.2, khôi phục flyTo/farmStep/seaChainStep từ nền ổn định v5.12.
+    - v7.0: export quest registry đúng scope; AI planner xác thực kết quả, dừng khi bước lỗi/thiếu mục tiêu; dock AI/Music đồng bộ toggle.
     - v6.1: Tele học đảo (lưu file), bay cao băng biển, tele khi đổi quest sang đảo xa,
             Auto Elite Hunter, Auto săn Boss, thêm chuỗi Tushita/Saber/Pole/Dough King/Elite,
             AutoPilot thông minh hơn, sửa lỗi forward-declare resetBring.
@@ -4954,8 +4955,12 @@ function Brain:Autopilot(env)
 	return acts, notes
 end
 
+Brain.Chains = CHAINS
 return Brain
 end)()
+
+-- CHAINS được khai báo local bên trong BrainLib; export rõ ràng để tab Nhiệm vụ/Draco dùng đúng registry.
+local CHAINS = (BrainLib and type(BrainLib.Chains) == "table") and BrainLib.Chains or {}
 local Agent = {
     Running = false, Goal = "", Steps = 0, Log = {}, Resume = false, Continue = false,
     CommandBusy = false, PilotBusy = false, CommandStartedAt = 0,
@@ -5482,6 +5487,13 @@ addInfo(pUtility, "Lưu ý random trái", "Dùng CommF_:InvokeServer('Cousin','B
 addSection(pAI, "H-HUB AI BRAIN")
 addInfo(pAI, "Chế độ AI", "AI AutoPilot điều khiển các tính năng đã bật/được phép")
 addInfo(pAI, "Phạm vi", "Quest • Farm • Boss • Elite • Sea • Fruit • Stats • Server Hop")
+addToggle(pAI, "Hiện bảng AI nổi", false, function(v)
+    setPanel(v and "ai" or nil)
+end, "AIPanelShow")
+addInfo(pAI, "AI Plan Guard v7.0", "Kiểm tra tool/args trước khi chạy; dừng khi bước báo lỗi hoặc kill_mob chưa đủ số lượng. Không tự lặp remote khi chưa xác minh được trạng thái.")
+addToggle(pMusic, "Hiện bảng Music nổi", false, function(v)
+    setPanel(v and "music" or nil)
+end, "MusicPanelShow")
 
 -- Quy trình theo yêu cầu: chết trước, đợi sự kiện Died, rồi mới gửi đảo đã chọn
 -- qua SetLastSpawnPoint để áp dụng cho lần hồi sinh kế tiếp.
@@ -6240,41 +6252,104 @@ local function stopAgent(msg, resume)
 	setStatus("AI: chờ lệnh")
 end
 
+local function classifyPlanResult(step, result)
+    local raw = tostring(result or "")
+    local msg = raw:lower()
+
+    if msg:sub(1, 6) == "abort:" then
+        return false, raw
+    end
+
+    -- kill_mob reports a numeric completion count; do not mark an incomplete hunt as done.
+    if step and step.tool == "kill_mob" then
+        local done, total = msg:match("hạ%s*(%d+)%s*/%s*(%d+)")
+        if done and total and tonumber(done) < tonumber(total) then
+            return false, "Mục tiêu chưa hoàn thành: " .. raw
+        end
+    end
+
+    local failurePrefixes = {
+        "lỗi:", "tool không tồn tại", "không tìm thấy", "không thấy ",
+        "chưa spawn", "chưa có ", "đặt hồi sinh thất bại", "hồi sinh thất bại",
+        "không thể ", "không xác nhận", "không đủ ", "hết thời gian",
+        "đã huỷ", "bị huỷ", "timeout", "thất bại",
+    }
+    for _, prefix in ipairs(failurePrefixes) do
+        if msg:sub(1, #prefix) == prefix then
+            return false, raw
+        end
+    end
+    if msg:find("không tìm", 1, true) or msg:find("không thấy", 1, true)
+        or msg:find("thất bại", 1, true) or msg:find("quá thời gian", 1, true) then
+        return false, raw
+    end
+    return true, raw
+end
+
 local function startPlan(steps)
-	if Agent.Running then
-		setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
-		return
-	end
-	Agent.Running, Agent.Steps, Agent.Log, Agent.Continue = true, 0, {}, false
-	Agent.Resume = Config.AutoFarm and true or false
-	Config.AutoFarm, Config.AutoPumpkin = false, false
-	if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
-	if Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false, true) end
-	pcall(resetBring)
-	State.Busy = "AI Agent"
-	task.spawn(function()
-		for i, step in ipairs(steps) do
-			if not (Agent.Running and State.Running) then return end
-			Agent.Steps = i
-			setStatus(string.format("AI: bước %d/%d - %s", i, #steps, tostring(step.text or step.tool)))
-			local fn = Actions[step.tool]
-			local result = "tool không tồn tại"
-			if fn then
-				local ok, r = pcall(fn, step.args or {})
-				result = ok and tostring(r) or ("lỗi: " .. tostring(r))
-			end
-			Agent.Log[#Agent.Log + 1] = string.format("#%d %s -> %s", i, tostring(step.text or step.tool), result)
-			setAnswer(table.concat(Agent.Log, "\n"))
-			if result:sub(1, 6) == "ABORT:" then
-				stopAgent("Dừng kế hoạch:\n" .. table.concat(Agent.Log, "\n"), true)
-				return
-			end
-			task.wait(0.3)
-		end
-		if Agent.Running then
-			stopAgent("Xong " .. #steps .. " bước:\n" .. table.concat(Agent.Log, "\n"), true)
-		end
-	end)
+    if Agent.Running then
+        setAnswer("AI đang chạy tác vụ khác. Gõ \"dừng\" để hủy.")
+        return false
+    end
+    if type(steps) ~= "table" or #steps == 0 then
+        setAnswer("Kế hoạch rỗng hoặc không hợp lệ; chưa có bước nào để chạy.")
+        return false
+    end
+    if #steps > 60 then
+        setAnswer("Kế hoạch có quá 60 bước. Hãy chia thành các chặng nhỏ để dễ kiểm tra và dừng an toàn.")
+        return false
+    end
+
+    -- Validate the whole plan before changing any running feature.
+    for i, step in ipairs(steps) do
+        if type(step) ~= "table" or type(step.tool) ~= "string" or type(Actions[step.tool]) ~= "function" then
+            setAnswer(string.format("Kế hoạch không hợp lệ tại bước %d: tool không tồn tại.", i))
+            return false
+        end
+        if step.args ~= nil and type(step.args) ~= "table" then
+            setAnswer(string.format("Kế hoạch không hợp lệ tại bước %d: args phải là bảng.", i))
+            return false
+        end
+    end
+
+    Agent.Running, Agent.Steps, Agent.Log, Agent.Continue = true, 0, {}, false
+    Agent.Resume = Config.AutoFarm and true or false
+    Config.AutoFarm, Config.AutoPumpkin = false, false
+    if Toggles.AutoFarm then Toggles.AutoFarm.Set(false, true) end
+    if Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false, true) end
+    pcall(resetBring)
+    State.Busy = "AI Agent"
+
+    task.spawn(function()
+        local completed = 0
+        for i, step in ipairs(steps) do
+            if not (Agent.Running and State.Running) then
+                return
+            end
+            Agent.Steps = i
+            setStatus(string.format("AI: bước %d/%d - %s", i, #steps, tostring(step.text or step.tool)))
+
+            local fn = Actions[step.tool]
+            local ok, value = pcall(fn, step.args or {})
+            local result = ok and tostring(value or "") or ("lỗi: " .. tostring(value))
+            local passed, reason = classifyPlanResult(step, result)
+            Agent.Log[#Agent.Log + 1] = string.format("#%d %s -> %s", i, tostring(step.text or step.tool), result)
+            setAnswer(table.concat(Agent.Log, "\n"))
+
+            if not passed then
+                Agent.Log[#Agent.Log + 1] = "⛔ DỪNG: " .. tostring(reason)
+                stopAgent("Kế hoạch dừng tại bước " .. i .. "/" .. #steps .. ":\n" .. table.concat(Agent.Log, "\n"), true)
+                return
+            end
+
+            completed += 1
+            task.wait(0.3)
+        end
+        if Agent.Running then
+            stopAgent("Hoàn tất " .. completed .. "/" .. #steps .. " bước:\n" .. table.concat(Agent.Log, "\n"), true)
+        end
+    end)
+    return true
 end
 
 ------------------------------------------------------------------
@@ -6581,6 +6656,8 @@ local function paintDock()
         button.TextColor3 = active and Colors.Accent or Colors.Muted
         button.BackgroundTransparency = active and 0.05 or 0.45
     end
+    if Toggles.AIPanelShow then Toggles.AIPanelShow.Set(AIPanel.Visible, true) end
+    if Toggles.MusicPanelShow then Toggles.MusicPanelShow.Set(MusicPanel.Visible, true) end
 end
 
 function setPanel(which)
