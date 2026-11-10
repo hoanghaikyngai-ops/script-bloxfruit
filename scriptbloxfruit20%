@@ -15072,11 +15072,12 @@ spawn(function()
                     {"Shadow Fruit", "Shadow-Shadow"},
                     {"Venom Fruit", "Venom-Venom"},
                     {"Gas Fruit", "Gas-Gas"},
-                    {"Control Fruit", "Control-Control"},
                     {"Spirit Fruit", "Spirit-Spirit"},
-                    {"Leopard Fruit", "Leopard-Leopard"},
+                    {"Tiger Fruit", "Tiger-Tiger"},
                     {"Yeti Fruit", "Yeti-Yeti"},
+                    {"Magnet Fruit", "Magnet-Magnet"},
                     {"Kitsune Fruit", "Kitsune-Kitsune"},
+                    {"Control Fruit", "Control-Control"},
                     {"Dragon Fruit", "Dragon-Dragon"}
                 }) do
                     local v1081 = v1080[1]
