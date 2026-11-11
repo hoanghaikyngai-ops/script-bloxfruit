@@ -2159,9 +2159,10 @@ local function fightBoss(mob, root)
     local part = mob:FindFirstChild("HumanoidRootPart")
     if not part then return false end
     State.BossTarget = mob
-    if Config.AutoEquip then
+    -- Boss thuộc chuỗi AutoSea cũng phải xác minh vũ khí trước khi đánh.
+    do
         local equipped, detail = equipWeapon()
-        if not equipped then State.Status = "Chờ vũ khí: " .. tostring(detail); return false end
+        if not equipped then State.Status = "Chờ xác minh vũ khí: " .. tostring(detail); return false end
     end
     if Config.AutoHaki then ensureHaki() end
     local height = currentHeight()
@@ -3066,10 +3067,13 @@ local function farmStep()
         return
     end
 
-    if Config.AutoEquip then
+    -- HARD GATE: AutoFarm luôn phải trang bị và xác minh vũ khí đã chọn.
+    -- Config.AutoEquip chỉ còn là tuỳ chọn cho các tính năng phụ, không được
+    -- phép bỏ qua điều kiện an toàn trước khi AutoFarm tấn công.
+    do
         local equipped, detail = equipWeapon()
         if not equipped then
-            State.Status = "Tạm dừng farm: " .. tostring(detail)
+            State.Status = "Tạm dừng farm - chưa xác minh vũ khí: " .. tostring(detail)
             return
         end
     end
@@ -5280,7 +5284,7 @@ local FeatureDefs = {
 	{ "FullBright", "toggle", "Fullbright", { "fullbright", "full bright", "sang man hinh", "sang hon", "ban dem sang", "do sang" } },
 	{ "LowEffects", "toggle", "Giảm Hiệu Ứng", { "giam hieu ung", "low effects", "giam lag", "bot lag", "toi uu do hoa", "fps boost" } },
 	{ "MobHighlight", "toggle", "Highlight Quái", { "highlight quai", "highlight", "danh dau quai", "to sang quai" } },
-	{ "AutoPumpkin", "toggle", "Auto Bí Ngô", { "auto bi ngo", "bi ngo", "pumpkin", "halloween", "thu bi ngo" } },
+	{ "AutoPumpkin", "toggle", "Auto Bí Ngô", { "auto bi ngo", "bi ngo", "pumpkin", "thu bi ngo" } },
 	{ "AutoRejoin", "toggle", "Auto Rejoin", { "auto rejoin", "tu vao lai", "tu rejoin" } },
 	{ "MultiHit", "toggle", "Multi-Hit", { "multi hit", "multihit", "danh nhieu muc tieu", "danh dien rong", "aoe" } },
 	{ "AutoEquip", "toggle", "Auto Equip", { "auto equip", "tu cam vu khi", "cam vu khi", "equip" } },
@@ -5559,29 +5563,61 @@ addToggle(pUtility, "Bỏ qua Fruit1 khi nhặt", Config.SkipFruit1, function(va
     saveSoon()
 end, "SkipFruit1")
 
--- Random Fruit Gacha (Cousin): dùng CommF_ RemoteFunction của game.
+-- Random Fruit Gacha: Gacha là RemoteEvent trong Modules.Net,
+-- xử lý theo kiểu RegisterAttack: FireServer(), tuyệt đối không InvokeServer.
 local AutoRandomFruitEnabled = false
 local RandomFruitBusy = false
 local RandomFruitNextAt = 0
 local RANDOM_FRUIT_COOLDOWN = 2 * 60 * 60
+
+local function findGachaRemoteEvent()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local net = modules and modules:FindFirstChild("Net")
+    if not net then return nil end
+
+    -- Ưu tiên tên có tiền tố RE giống RE/RegisterAttack.
+    local candidates = { "RE/Gacha", "Gacha" }
+    for _, name in ipairs(candidates) do
+        local remote = net:FindFirstChild(name)
+        if remote and remote:IsA("RemoteEvent") then
+            return remote
+        end
+    end
+
+    -- Một số bản game đặt RemoteEvent sâu hơn trong Modules.Net.
+    for _, obj in ipairs(net:GetDescendants()) do
+        if obj:IsA("RemoteEvent") and (obj.Name == "Gacha" or obj.Name == "RE/Gacha") then
+            return obj
+        end
+    end
+    return nil
+end
+
 local function randomFruitOnce()
-    if RandomFruitBusy then return false, "Đang gửi yêu cầu random trái" end
+    if RandomFruitBusy then return false, "Đang gửi yêu cầu Gacha" end
     if os.clock() < RandomFruitNextAt then
         return false, "Đang hồi chiêu random trái; còn " .. math.ceil(RandomFruitNextAt - os.clock()) .. " giây"
     end
-    local commF = getCommF()
-    if not commF then return false, "Không tìm thấy CommF_" end
+
+    local gachaRemote = findGachaRemoteEvent()
+    if not gachaRemote then
+        return false, "Không tìm thấy RemoteEvent Gacha trong ReplicatedStorage.Modules.Net"
+    end
+
     RandomFruitBusy = true
     local ok, result = pcall(function()
-        return commF:InvokeServer("Cousin", "Buy")
+        -- Cùng kiểu gọi RemoteEvent như RE/RegisterAttack.
+        gachaRemote:FireServer()
     end)
     RandomFruitBusy = false
-    if not ok then return false, "Remote Cousin/Buy lỗi: " .. tostring(result) end
+    if not ok then return false, "RemoteEvent Gacha lỗi: " .. tostring(result) end
+
     RandomFruitNextAt = os.clock() + RANDOM_FRUIT_COOLDOWN
-    return true, "Đã gửi yêu cầu random trái. Phản hồi: " .. tostring(result)
+    return true, "Đã gửi Gacha bằng RemoteEvent: " .. gachaRemote:GetFullName()
 end
+
 addSection(pUtility, "RANDOM TRÁI ÁC QUỶ")
-addButton(pUtility, "RANDOM TRÁI NGAY (COUSIN)", function()
+addButton(pUtility, "RANDOM TRÁI NGAY (GACHA)", function()
     task.spawn(function()
         local ok, message = randomFruitOnce()
         notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
@@ -5601,7 +5637,7 @@ addToggle(pUtility, "Tự random khi hết hồi chiêu 2 giờ", false, functio
         end)
     end
 end)
-addInfo(pUtility, "Lưu ý random trái", "Dùng CommF_:InvokeServer('Cousin','Buy'); cần đủ điều kiện/tiền trong game. Tự động thử lại theo hồi chiêu 2 giờ.")
+addInfo(pUtility, "Lưu ý random trái", "Gửi RemoteEvent Gacha bằng FireServer() theo cấu trúc RegisterAttack; không dùng CommF_:InvokeServer(). Cần xác minh đúng tên remote trong phiên bản game hiện tại.")
 
 addSection(pAI, "H-HUB AI BRAIN")
 addInfo(pAI, "Chế độ AI", "AI chỉ phân tích và gợi ý; không được quyền thao tác")
@@ -11092,49 +11128,196 @@ spawn(function()
         end
     end
 end)
-local _ = v485:AddSection({"Valentine"})
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local CommF = Remotes:WaitForChild("CommF_")
+local _ = v485:AddSection({"Halloween Event"})
 
-_G.AutoValentineGacha = false
+-- Halloween Event chạy độc lập với Auto Pumpkin.
+-- Tìm prompt E trên Workspace; không dựa vào tên folder/RemoteEvent chưa xác minh.
+_G.AutoHalloweenEvent = false
+_G.HalloweenEventStatus = "ĐANG CHỜ BẬT"
+_G.HalloweenDoorCooldowns = _G.HalloweenDoorCooldowns or {}
+
+local HalloweenEventConfig = {
+    DoorCooldown = 20,
+    ScanInterval = 0.35,
+    InteractDistance = 8,
+    DialogueWait = 1.0,
+    MaxUiClicksPerStep = 3,
+}
+local HalloweenBusy = false
+
+local function halloweenKey(prompt)
+    local ok, path = pcall(function() return prompt:GetFullName() end)
+    return ok and path or tostring(prompt)
+end
+
+local function halloweenCooling(prompt)
+    local untilAt = _G.HalloweenDoorCooldowns[halloweenKey(prompt)]
+    return untilAt and os.clock() < untilAt
+end
+
+local function halloweenMark(prompt)
+    _G.HalloweenDoorCooldowns[halloweenKey(prompt)] = os.clock() + HalloweenEventConfig.DoorCooldown
+end
+
+local function halloweenRoot()
+    local char = getCharacter()
+    return char and getRoot(char)
+end
+
+local function isHalloweenPrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    if prompt.KeyboardKeyCode ~= Enum.KeyCode.E then return false end
+    if not prompt.Enabled then return false end
+    local part = prompt.Parent
+    if not part or not part:IsA("BasePart") then
+        part = prompt:FindFirstAncestorWhichIsA("BasePart")
+    end
+    if not part then return false end
+    -- Bỏ các prompt gắn vào character/player và prompt không thuộc Workspace.
+    if LocalPlayer.Character and prompt:IsDescendantOf(LocalPlayer.Character) then return false end
+    return prompt:IsDescendantOf(Workspace)
+end
+
+local function visibleTextButton(button)
+    if not button:IsA("TextButton") or not button.Visible or not button.Active then return false end
+    local textValue = tostring(button.Text or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
+    if not textValue or textValue == "" then return false end
+    local node = button
+    while node and node ~= PlayerGui do
+        local n = tostring(node.Name):lower()
+        if n:find("hhub", 1, true) or n:find("toggle", 1, true)
+            or n:find("switch", 1, true) or n:find("checkbox", 1, true) then
+            return false
+        end
+        node = node.Parent
+    end
+    local lower = textValue:lower()
+    -- Bỏ nút bật/tắt cấu hình phổ biến; không đụng vào toggle của H-HUB.
+    if lower:match("^auto%s") or lower:match("^enable%s") or lower:match("^disable%s")
+        or lower:match("^on$") or lower:match("^off$") then return false end
+    return true, textValue
+end
+
+local function clickHalloweenDialogueButtons()
+    local gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not gui then return 0 end
+    local clicked, candidates = 0, {}
+    local preferred = {
+        "continue", "next", "open", "enter", "accept", "yes", "claim",
+        "collect", "reward", "start", "talk", "complete", "submit",
+        "tiếp tục", "tiếp", "mở", "vào", "đồng ý", "nhận", "thu thập",
+        "phần thưởng", "bắt đầu", "nói chuyện", "hoàn thành", "xác nhận"
+    }
+    for _, item in ipairs(gui:GetDescendants()) do
+        local ok, label = visibleTextButton(item)
+        if ok then
+            local low = label:lower()
+            local score = 0
+            for _, word in ipairs(preferred) do
+                if low:find(word, 1, true) then score = score + 1 end
+            end
+            if score > 0 then candidates[#candidates + 1] = {button=item, score=score} end
+        end
+    end
+    table.sort(candidates, function(a,b) return a.score > b.score end)
+    for _, entry in ipairs(candidates) do
+        if clicked >= HalloweenEventConfig.MaxUiClicksPerStep then break end
+        local button = entry.button
+        if button.Parent and button.Visible and firesignal then
+            local ok = pcall(function() firesignal(button.MouseButton1Click) end)
+            if ok then
+                clicked = clicked + 1
+                task.wait(0.18)
+            end
+        end
+    end
+    return clicked
+end
+
+local function findNearestHalloweenPrompt(root)
+    local best, bestDistance = nil, math.huge
+    for _, item in ipairs(Workspace:GetDescendants()) do
+        if isHalloweenPrompt(item) and not halloweenCooling(item) then
+            local part = item.Parent:IsA("BasePart") and item.Parent or item:FindFirstAncestorWhichIsA("BasePart")
+            if part then
+                local distance = (root.Position - part.Position).Magnitude
+                if distance < bestDistance then best, bestDistance = item, distance end
+            end
+        end
+    end
+    return best, bestDistance
+end
+
+local function runHalloweenDoor(prompt, root)
+    local part = prompt.Parent:IsA("BasePart") and prompt.Parent or prompt:FindFirstAncestorWhichIsA("BasePart")
+    if not part then return false, "Prompt không có BasePart" end
+    local target = part.CFrame + Vector3.new(0, 2.5, 0)
+    _G.HalloweenEventStatus = "ĐANG BAY TỚI: " .. tostring(prompt.ObjectText or part.Name)
+    -- Dùng cùng hệ thống bay sẵn có của H-HUB; ngắt ngay khi tắt toggle.
+    flyTo(root, target, function() return State.Running and _G.AutoHalloweenEvent end)
+    if not _G.AutoHalloweenEvent then return false, "Đã tắt" end
+    root = halloweenRoot() or root
+    if (root.Position - part.Position).Magnitude > math.max(prompt.MaxActivationDistance, HalloweenEventConfig.InteractDistance) + 4 then
+        return false, "Chưa tới đủ gần cửa"
+    end
+    _G.HalloweenEventStatus = "ĐANG MỞ CỬA: " .. tostring(prompt.ObjectText or part.Name)
+    if not fireproximityprompt then return false, "Executor thiếu fireproximityprompt" end
+    local ok, err = pcall(function() fireproximityprompt(prompt) end)
+    if not ok then return false, "Không kích hoạt được prompt: " .. tostring(err) end
+    -- Cooldown bắt đầu ngay sau lần gửi tương tác, tránh spam/mở lặp cùng cửa.
+    halloweenMark(prompt)
+    task.wait(HalloweenEventConfig.DialogueWait)
+    -- Quét chữ trong nút giao diện; chỉ click lựa chọn hội thoại/nhiệm vụ có nhãn rõ.
+    -- Không quét/click toggle, checkbox, switch hoặc bất kỳ thành phần H-HUB nào.
+    for _ = 1, 4 do
+        if not _G.AutoHalloweenEvent then break end
+        local count = clickHalloweenDialogueButtons()
+        if count == 0 then break end
+        task.wait(0.45)
+    end
+    return true, "Đã tương tác cửa và xử lý lựa chọn hội thoại nhận diện được"
+end
 
 v485:AddToggle({
-    Name = "Auto Valentine Random",
-    Description = "Auto Gacha Valentine Roll",
+    Name = "Auto Halloween Event",
+    Description = "Quét prompt E trên bản đồ, bay tới cửa, mở cửa, xử lý nút hội thoại và cooldown 20 giây",
     Default = false,
     Callback = function(Value)
-        _G.AutoValentineGacha = Value
+        _G.AutoHalloweenEvent = Value
+        _G.HalloweenEventStatus = Value and "ĐANG QUÉT CỬA E" or "ĐÃ TẮT"
     end
 })
 
-local function fireActivity()
-    local reportRemote = ReplicatedStorage:FindFirstChild("ReportActivity", true)
-    if reportRemote and reportRemote:IsA("RemoteEvent") then
-        pcall(function()
-            reportRemote:FireServer("GachaWindow")
-        end)
-    end
-end
+-- Status label nếu UI framework hỗ trợ; nếu không trạng thái vẫn có ở global.
+pcall(function()
+    v485:AddParagraph({Title = "Halloween Status", Content = "Bật Auto Halloween Event để quét cửa E."})
+end)
 
 task.spawn(function()
-    while task.wait(2.5) do
-        if not _G.AutoValentineGacha then continue end
-
-        pcall(function()
-            CommF:InvokeServer("Cousin")
-            task.wait(0.1)
-
-            fireActivity()
-            task.wait(0.1)
-
-            CommF:InvokeServer("Cousin", "CheckCanBuyType", "ValentinesGacha26")
-            task.wait(0.1)
-
-            CommF:InvokeServer("Cousin", "ValentinesGacha26")
+    while State.Running do
+        task.wait(HalloweenEventConfig.ScanInterval)
+        if not _G.AutoHalloweenEvent or HalloweenBusy then continue end
+        HalloweenBusy = true
+        local ok, err = pcall(function()
+            local root = halloweenRoot()
+            if not root then _G.HalloweenEventStatus = "ĐANG CHỜ NHÂN VẬT SPAWN"; return end
+            local prompt, distance = findNearestHalloweenPrompt(root)
+            if not prompt then
+                _G.HalloweenEventStatus = "KHÔNG CÓ CỬA E SẴN SÀNG / ĐANG COOLDOWN"
+                return
+            end
+            local success, message = runHalloweenDoor(prompt, root)
+            _G.HalloweenEventStatus = success and message or ("TẠM DỪNG: " .. tostring(message))
+            if success then task.wait(0.6) end
         end)
+        if not ok then _G.HalloweenEventStatus = "LỖI: " .. tostring(err) end
+        HalloweenBusy = false
     end
 end)
+
+_G.HHalloweenDoorIsCoolingDown = halloweenCooling
+_G.HHalloweenMarkDoorOpened = halloweenMark
+
 
 if World3 then
 local _ = v485:AddSection({"Kill Player"})
@@ -15062,13 +15245,16 @@ v491:AddToggle({
     end
 })
 spawn(function()
-    pcall(function()
-        while wait() do
-            if _G.RandomAuto then
-                game:GetService("ReplicatedStorage").Remotes.CommF_:InvokeServer("Cousin", "Buy")
+    while task.wait(5) do
+        if _G.RandomAuto and State.Running and os.clock() >= RandomFruitNextAt and not RandomFruitBusy then
+            local ok, message = randomFruitOnce()
+            if notify then
+                pcall(function()
+                    notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
+                end)
             end
         end
-    end)
+    end
 end)
 v491:AddToggle({
     Title = "Auto Store Fruits",
