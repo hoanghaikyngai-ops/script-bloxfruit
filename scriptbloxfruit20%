@@ -5347,9 +5347,37 @@ local tabFor = {
     FruitESP=pVisual, FullBright=pVisual, LowEffects=pVisual, MobHighlight=pVisual,
     AutoRejoin=pSettings,
 }
+
+-- Tạo điều khiển giao diện cho các mục đã khai báo trong FeatureDefs.
+local valueFor = {
+    TargetLevel = pFarm, FarmHeightLate = pFarm, TweenSpeed = pFarm,
+    HitRange = pCombat, BringRadius = pCombat, HitboxSize = pCombat, SafeHP = pCombat,
+    TeleSafeY = pTele, TeleThreshold = pTele,
+}
+for _, d in ipairs(FeatureDefs) do
+    local key, kind, label = d[1], d[2], d[3]
+    if kind == "toggle" and tabFor[key] and Config[key] ~= nil then
+        addToggle(tabFor[key], label, Config[key], function(v)
+            Config[key] = v
+            if v and key == "AutoFarm" and Toggles.AutoPumpkin then Toggles.AutoPumpkin.Set(false) end
+            if v and key == "AutoPumpkin" and Toggles.AutoFarm then Toggles.AutoFarm.Set(false) end
+            if key == "LowEffects" then setLowEffects(v) end
+            if key == "FullBright" then setFullbright(v) end
+            if key == "FruitESP" and not v then clearFruitMarks() end
+            if key == "MobHighlight" and not v then clearHighlights() end
+            saveSoon()
+        end, key)
+    elseif kind == "value" and valueFor[key] and Config[key] ~= nil then
+        local step = math.max(1, math.floor((d[6] - d[5]) / 20))
+        addStepper(valueFor[key], label, d[5], d[6], step, Config[key], function(v)
+            Config[key] = v
+            saveSoon()
+        end)
+    end
+end
+
 -- H-HUB merge: legacy feature widgets are mounted by the core adapter below.
 -- Script 2 retains the tab pages, AI advisor panel, Sea Event panel and Music Dock.
-end
 
 -- MUSIC TAB: playlist controls are placed directly in the main tab list.
 -- Custom track inputs (session-only playlist additions).
@@ -6536,19 +6564,13 @@ local function recommendationFor(action)
     if action.steps then details[#details + 1] = "Kế hoạch gồm " .. tostring(#action.steps) .. " bước." end
     if action.list then details[#details + 1] = "Có " .. tostring(#action.list) .. " đề xuất thành phần." end
     table.insert(details, 1, "Loại đề xuất: " .. kind)
-    return "GỢI Ý CỦA AI — không có thao tác nào được thực hiện.
-" .. table.concat(details, "
-")
+    return "GỢI Ý CỦA AI — không có thao tác nào được thực hiện.\n" .. table.concat(details, "\n")
 end
 
 local function dispatch(res)
     if res and res.action then
-        setAnswer(tostring(res.reply or "") .. "
-
-" .. recommendationFor(res.action)
-            .. "
-
-Bạn tự chọn nút tương ứng nếu muốn thực hiện.")
+        setAnswer(tostring(res.reply or "") .. "\n\n" .. recommendationFor(res.action)
+            .. "\n\nBạn tự chọn nút tương ứng nếu muốn thực hiện.")
     end
 end
 local function handleCommand(text)
@@ -6601,7 +6623,7 @@ local function startAgent(goal)
         Agent.CommandBusy = false
         Agent.CommandStartedAt = 0
         if not ok and State.Running then
-            setAnswer("AI gặp lỗi khi xử lý lệnh:\\n" .. tostring(err))
+            setAnswer("AI gặp lỗi khi xử lý lệnh:\n" .. tostring(err))
             setStatus("AI: đã giải phóng khóa, có thể thử lại")
         end
     end)
@@ -6778,6 +6800,9 @@ local function UpdateWorldFlags()
 end
 
 UpdateWorldFlags()
+local isfile = isfile or function() return false end
+local readfile = readfile or function() return "" end
+local writefile = writefile or function() end
 task.spawn(function()
     while task.wait(1) do
         pcall(UpdateWorldFlags)
@@ -10507,7 +10532,9 @@ function vu32:MakeWindow(_)
         end
         function api:AddButton(opts)
             opts = opts or {}
-            return addButton(page, tostring(opts.Title or opts.Name or "H-HUB"), opts.Callback or function() end)
+            local title = opts.Title or opts.Name or opts[1] or "H-HUB"
+            local callback = opts.Callback or opts[2] or function() end
+            return addButton(page, tostring(title), callback)
         end
         function api:AddToggle(opts)
             opts = opts or {}
@@ -10632,6 +10659,7 @@ task.spawn(function()
         end)
     end
 end)
+do
 local _ = v485:AddDropdown({
     Name = "Select Tool",
     Description = "Choose the tool you want to use",
@@ -12248,6 +12276,8 @@ task.spawn(function()
     end
 end)
 
+end
+do
 local _ = v486:AddSection({"Auto Fishing"})
 v486:AddToggle({
     Title = "Auto Fishing",
@@ -12259,10 +12289,16 @@ v486:AddToggle({
 })
 local _ = workspace
 local l_LocalPlayer_10 = game.Players.LocalPlayer
-local l_FishReplicated_0 = game.ReplicatedStorage:WaitForChild("FishReplicated")
-local l_FishingRequest_0 = l_FishReplicated_0:WaitForChild("FishingRequest")
-local l_MaxLaunchDistance_0 = require(l_FishReplicated_0.FishingClient.Config).Rod.MaxLaunchDistance
-local v679 = require(game.ReplicatedStorage.Util.GetWaterHeightAtLocation)
+local l_FishReplicated_0 = game.ReplicatedStorage:FindFirstChild("FishReplicated")
+local l_FishingRequest_0 = l_FishReplicated_0 and l_FishReplicated_0:FindFirstChild("FishingRequest")
+local okFish, l_MaxLaunchDistance_0, v679 = pcall(function()
+    return require(l_FishReplicated_0.FishingClient.Config).Rod.MaxLaunchDistance,
+           require(game.ReplicatedStorage.Util.GetWaterHeightAtLocation)
+end)
+if not (l_FishingRequest_0 and okFish) then
+    l_FishingRequest_0 = { InvokeServer = function() end }
+    l_MaxLaunchDistance_0, v679 = 0, function() return 0 end
+end
 task.spawn(function()
     while task.wait() do
         if _G.AutoFishing then
@@ -13974,6 +14010,8 @@ v487:AddToggle({
     end
 })
 end
+end
+do
 local _ = v489:AddSection({"Sea Events"})
 v489:AddToggle({
     Name = "Auto Drive Boats",
@@ -15012,6 +15050,8 @@ spawn(function()
     end)
 end)
 
+end
+do
 local _ = v491:AddSection({"Fruits"})
 v491:AddToggle({
     Name = "Auto Random Fruits",
@@ -15427,6 +15467,8 @@ spawn(function()
     end
 end)
 end
+end
+do
 local _ = v493:AddSection({"Teleport Island"})
 local function v1116(v1114)
     pcall(function()
@@ -15628,6 +15670,8 @@ v493:AddButton({
 })
 
 
+end
+do
 local TyrantStatus = v499:AddParagraph({
     Title = "Tyrant of the Skies",
     Desc = "Status: "
@@ -15883,9 +15927,16 @@ v497:AddToggle({
     end
 })
 
+end
+do
 local _ = v494:AddSection({"Aimbot Nearest"})
 
-local v1 = loadstring(game:HttpGet("https://raw.githubusercontent.com/PlockScripts/Aimbot-skill-config/refs/heads/main/Aimbot.lua"))()
+local okAim, v1 = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/PlockScripts/Aimbot-skill-config/refs/heads/main/Aimbot.lua"))()
+end)
+if not okAim or type(v1) ~= "table" then
+    v1 = setmetatable({}, { __index = function() return function() end end })
+end
 
 local AimbotEnabled = false
 local AimPlayers = false
@@ -15991,7 +16042,6 @@ v494:AddToggle({
 })
 
 local _ = v494:AddSection({"Aimbot skill V2"})
-local v1 = loadstring(game:HttpGet("https://raw.githubusercontent.com/PlockScripts/Aimbot-skill-config/refs/heads/main/Aimbot.lua"))()
 
 local AimbotEnabled = false
 local AimPlayers = false
@@ -16405,6 +16455,8 @@ v494:AddButton({
     end
 })
 
+end
+do
 local _ = v495:AddSection({"Fighting Style"})
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16914,6 +16966,8 @@ v495:AddButton({
     end
 })
 
+end
+do
 local _ = v496:AddSection({"Join Server"})
 v496:AddTextBox({
         Name = "Job ID",
@@ -17711,4 +17765,5 @@ v496:AddToggle({
 
 -- H-HUB merged build: no separate RedzLib instance.
 
+end
 end)()
