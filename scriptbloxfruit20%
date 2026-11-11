@@ -3767,7 +3767,16 @@ local function Unload()
 end
 genv.HHubBloxFruits = { Unload = Unload, Config = Config, State = State }
 
-topButton("X", -38, Color3.fromRGB(190, 50, 70), Unload)
+-- X chỉ ẩn giao diện chính, KHÔNG Unload toàn bộ session.
+-- Nút H nổi vẫn còn để mở lại giao diện; Unload chỉ dùng khi cần dừng hẳn script.
+topButton("X", -38, Color3.fromRGB(190, 50, 70), function()
+    if Gui and Gui.Parent then
+        Main.Visible = false
+        if FloatingButton and FloatingButton.Parent then
+            FloatingButton.Visible = true
+        end
+    end
+end)
 topButton("−", -72, Colors.Panel2, function()
     setMinimized(not IsMinimized)
 end)
