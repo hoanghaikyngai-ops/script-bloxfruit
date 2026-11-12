@@ -8,11 +8,11 @@ This file is a combined source build; test in a private development place before
 ]]
 
 --[[
-    H-HUB // GAME COMPANION v7.0.0 - AI PLAN GUARD + QUEST HUB + DOCK FIX
+    H-HUB // GAME COMPANION v7.1.0 - REDZ QUEST/Fruit GACHA MERGE + SCOPE FIX
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
-    - Auto Collect Pumpkin, Aggro Tracker, Farm Level tới 2800, Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
+    - Auto Collect Pumpkin, Aggro Tracker, Farm Level 2800 mặc định / tối đa 3000 qua tuyến ẩn Submerged Island (Sea 3), Auto Skill/Stats/Chest/Fruit/Store, Server Hop...
     - v6.0: TAB TELE (chết -> hồi sinh ở điểm đã đặt / requestEntrance / bay), tự dùng khi đổi đảo
     - v6.0: AI Brain v3 (từ vựng lớn, AI Advisor, chuỗi nhiệm vụ Race V2/V3, Dragon Talon, Dojo, Draco, Sea Event...)
     - v6.2.2: giữ bộ tính năng v6.2, khôi phục flyTo/farmStep/seaChainStep từ nền ổn định v5.12.
@@ -179,7 +179,7 @@ local function loadConfig()
 end
 loadConfig()
 Config.FarmHeightLate = math.clamp(tonumber(Config.FarmHeightLate) or 25, 5, 60)
-Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 2800)
+Config.TargetLevel = math.clamp(tonumber(Config.TargetLevel) or 2800, 0, 3000)
 Config.TeleThreshold = math.clamp(tonumber(Config.TeleThreshold) or 700, 300, 5000)
 Config.TeleSafeY = math.clamp(tonumber(Config.TeleSafeY) or 350, 150, 1500)
 if Config.FarmMode ~= "Level Quest" and Config.FarmMode ~= "Quái gần nhất" then
@@ -2988,22 +2988,42 @@ local function handleSpecialFarmEntrance(quest, root)
         if now - (SpecialRouteCooldown[key] or 0) >= 12 then
             SpecialRouteCooldown[key] = now
             local activated = false
-            for _, descendant in ipairs(worker:GetDescendants()) do
-                if descendant:IsA("ProximityPrompt") and fireproximityprompt then
-                    local ok = pcall(fireproximityprompt, descendant)
-                    activated = activated or ok
-                elseif descendant:IsA("ClickDetector") and fireclickdetector then
-                    local ok = pcall(fireclickdetector, descendant)
-                    activated = activated or ok
+            local remoteResult = nil
+
+            -- Redz dùng RemoteFunction này để yêu cầu Submerged Island.
+            -- Gọi có cooldown; nếu remote không tồn tại/lỗi thì mới thử prompt/click cục bộ.
+            local modules = ReplicatedStorage:FindFirstChild("Modules")
+            local net = modules and modules:FindFirstChild("Net")
+            local speakRemote = net and net:FindFirstChild("RF/SubmarineWorkerSpeak")
+            if speakRemote and speakRemote:IsA("RemoteFunction") then
+                local ok, result = pcall(function()
+                    return speakRemote:InvokeServer("TravelToSubmergedIsland")
+                end)
+                activated = ok
+                remoteResult = result
+            end
+
+            if not activated then
+                for _, descendant in ipairs(worker:GetDescendants()) do
+                    if descendant:IsA("ProximityPrompt") and fireproximityprompt then
+                        local ok = pcall(fireproximityprompt, descendant)
+                        activated = activated or ok
+                    elseif descendant:IsA("ClickDetector") and fireclickdetector then
+                        local ok = pcall(fireclickdetector, descendant)
+                        activated = activated or ok
+                    end
                 end
             end
+
             if activated then
-                State.Status = "Đã kích hoạt tương tác Submarine Worker; chờ chuyển đảo"
-                specialRouteNotice(key, "Đã gửi tương tác tới Submarine Worker. Đang chờ game xác nhận quyền vào Submerged Island.", 15)
+                State.Status = "Đã gửi yêu cầu Submerged Island; chờ server xác nhận"
+                specialRouteNotice(key,
+                    "Đã gửi yêu cầu tới Submarine Worker. Quyền vào đảo và điều kiện Tyrant of the Skies vẫn do server xác nhận. Phản hồi: " .. tostring(remoteResult),
+                    15)
             else
                 State.Status = "Đã tới Submarine Worker – cần tương tác NPC"
                 specialRouteNotice(key,
-                    "Đã tới Submarine Worker. Nếu NPC mở hội thoại thay vì prompt, hãy tương tác thủ công và hoàn tất điều kiện Tyrant of the Skies.",
+                    "Chưa gọi được remote Submarine Worker; hãy tương tác NPC thủ công và hoàn tất điều kiện Tyrant of the Skies.",
                     20)
             end
         else
@@ -4307,7 +4327,7 @@ local CHAINS = {
 		id = "full_progression",
 		names = { "len max", "max level", "full tu dong", "choi giup", "cay thue", "lam tat ca", "len cap toi da", "tu dong het" },
 		title = "Cày thuê: lên max level",
-		info = "Cày thuê: bật Auto Farm + Auto Sea và cày tới Lv 2800 (Sea 1 -> 2 -> 3 theo chuỗi Ice Admiral / rip_indra). Mỗi lần đổi Sea game dịch chuyển bạn sang server mới nên script cần chạy lại (hoặc để auto-execute).",
+		info = "Tuyến chính mặc định tới Lv 2800. Có thể đặt TargetLevel tối đa 3000; từ Lv 2600 tuyến ẩn Submerged Island dùng Submarine Worker và Grand Devotee sau Lv 2725. Auto Sea vẫn theo chuỗi Sea 1 -> 2 -> 3; mỗi lần đổi Sea có thể cần chạy lại script.",
 		steps = {
 			{ tool = "set_config", args = { feature = "AutoSea", value = true }, text = "Bật Auto Sea" },
 			{ tool = "farm_to_level", args = { level = 2800 }, text = "Cày tới Lv 2800" },
@@ -4819,7 +4839,7 @@ function Brain:_clause(text, env, ctx, raw)
 	-- mục tiêu level: "lên level 1500", "cày tới 2000"
 	if not hasAny({ "muc tieu" }) and num and (hasAny({ "len level", "cay toi", "cay den", "len lv", "dat level", "farm toi", "farm den" })
 		or (hasAny({ "cay", "farm", "len" }) and hasAny({ "level", "lv" }))) then
-		local n = math.clamp(num, 0, 2800)
+		local n = math.clamp(num, 0, 3000)
 		local lv, sea = env.level or 1, env.sea or 1
 		if n <= lv and n > 0 then return R("Bạn đã Lv " .. lv .. " rồi (mục tiêu " .. n .. ").") end
 		local list = {
@@ -5302,7 +5322,7 @@ local FeatureDefs = {
 	{ "BringRadius", "value", "Bán Kính Gom", { "ban kinh gom", "bring radius", "pham vi gom" }, 50, 600 },
 	{ "HitboxSize", "value", "Hitbox Quái", { "hitbox", "kich thuoc hitbox", "hit box" }, 10, 80 },
 	{ "SafeHP", "value", "Máu An Toàn", { "mau an toan", "safe hp", "hoi mau", "nguong mau" }, 0, 60 },
-	{ "TargetLevel", "value", "Level Mục Tiêu", { "level muc tieu", "target level", "muc tieu level", "cap muc tieu" }, 0, 2800 },
+	{ "TargetLevel", "value", "Level Mục Tiêu", { "level muc tieu", "target level", "muc tieu level", "cap muc tieu" }, 0, 3000 },
 	{ "FarmHeightLate", "value", "Độ Cao Farm", { "do cao farm", "do cao", "bay cao", "do cao dung" }, 5, 60 },
 	{ "TeleThreshold", "value", "Ngưỡng Tele (stud)", { "nguong tele", "tele threshold", "khoang cach tele", "tele tu bao xa" }, 300, 5000 },
 
@@ -5485,7 +5505,7 @@ end
 addInfo(pMusic, "Trạng thái", "Bảng nổi ♪ vẫn có thể mở/đóng bằng nút dock. Tab Music này luôn nằm trong danh sách tab chính.")
 
 selectTab("Farm")
-Footer.Text = "H-HUB v6.2.9 | Pre-Death Tele Remote + Random Fruit + Music | RightShift: ẩn/hiện"
+Footer.Text = "H-HUB v7.1.0 | Cousin Random Fruit + Farm 3000 + Halloween | RightShift: ẩn/hiện"
 
 ---------------- QUAN SÁT (cảm biến -> gửi về não) ----------------
 local KnownMobs = {}
@@ -5563,81 +5583,75 @@ addToggle(pUtility, "Bỏ qua Fruit1 khi nhặt", Config.SkipFruit1, function(va
     saveSoon()
 end, "SkipFruit1")
 
--- Random Fruit Gacha: Gacha là RemoteEvent trong Modules.Net,
--- xử lý theo kiểu RegisterAttack: FireServer(), tuyệt đối không InvokeServer.
-local AutoRandomFruitEnabled = false
-local RandomFruitBusy = false
-local RandomFruitNextAt = 0
-local RANDOM_FRUIT_COOLDOWN = 2 * 60 * 60
+-- RANDOM FRUIT: trích đúng luồng Redz đã có bằng CommF_:InvokeServer("Cousin", "Buy").
+-- Không dùng RemoteEvent Gacha tự suy đoán; khóa 2 giờ để tránh spam Cousin.
+do
+    local AutoRandomFruitEnabled = false
+    local RandomFruitBusy = false
+    local RandomFruitNextAt = tonumber(genv.HHubRandomFruitNextAt) or 0
+    local RANDOM_FRUIT_COOLDOWN = 2 * 60 * 60
 
-local function findGachaRemoteEvent()
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    if not net then return nil end
-
-    -- Ưu tiên tên có tiền tố RE giống RE/RegisterAttack.
-    local candidates = { "RE/Gacha", "Gacha" }
-    for _, name in ipairs(candidates) do
-        local remote = net:FindFirstChild(name)
-        if remote and remote:IsA("RemoteEvent") then
-            return remote
+    local function randomFruitOnce()
+        if not State.Running then
+            return false, "H-HUB đã dừng"
         end
-    end
-
-    -- Một số bản game đặt RemoteEvent sâu hơn trong Modules.Net.
-    for _, obj in ipairs(net:GetDescendants()) do
-        if obj:IsA("RemoteEvent") and (obj.Name == "Gacha" or obj.Name == "RE/Gacha") then
-            return obj
+        if RandomFruitBusy then
+            return false, "Yêu cầu random trái đang xử lý"
         end
-    end
-    return nil
-end
 
-local function randomFruitOnce()
-    if RandomFruitBusy then return false, "Đang gửi yêu cầu Gacha" end
-    if os.clock() < RandomFruitNextAt then
-        return false, "Đang hồi chiêu random trái; còn " .. math.ceil(RandomFruitNextAt - os.clock()) .. " giây"
-    end
+        local now = os.time()
+        if now < RandomFruitNextAt then
+            local remaining = RandomFruitNextAt - now
+            return false, "Còn " .. formatDuration(remaining) .. " trước lượt random tiếp theo"
+        end
 
-    local gachaRemote = findGachaRemoteEvent()
-    if not gachaRemote then
-        return false, "Không tìm thấy RemoteEvent Gacha trong ReplicatedStorage.Modules.Net"
-    end
+        local commF = getCommF()
+        if not commF or not commF:IsA("RemoteFunction") then
+            return false, "Không tìm thấy Remotes.CommF_ (RemoteFunction)"
+        end
 
-    RandomFruitBusy = true
-    local ok, result = pcall(function()
-        -- Cùng kiểu gọi RemoteEvent như RE/RegisterAttack.
-        gachaRemote:FireServer()
-    end)
-    RandomFruitBusy = false
-    if not ok then return false, "RemoteEvent Gacha lỗi: " .. tostring(result) end
-
-    RandomFruitNextAt = os.clock() + RANDOM_FRUIT_COOLDOWN
-    return true, "Đã gửi Gacha bằng RemoteEvent: " .. gachaRemote:GetFullName()
-end
-
-addSection(pUtility, "RANDOM TRÁI ÁC QUỶ")
-addButton(pUtility, "RANDOM TRÁI NGAY (GACHA)", function()
-    task.spawn(function()
-        local ok, message = randomFruitOnce()
-        notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
-    end)
-end, Colors.Blue)
-addToggle(pUtility, "Tự random khi hết hồi chiêu 2 giờ", false, function(value)
-    AutoRandomFruitEnabled = value
-    if value then
-        task.spawn(function()
-            while AutoRandomFruitEnabled and State.Running do
-                if os.clock() >= RandomFruitNextAt and not RandomFruitBusy then
-                    local ok, message = randomFruitOnce()
-                    notify(ok and "RANDOM TRÁI" or "RANDOM TRÁI", message)
-                end
-                task.wait(5)
-            end
+        RandomFruitBusy = true
+        local ok, result = pcall(function()
+            return commF:InvokeServer("Cousin", "Buy")
         end)
+        RandomFruitBusy = false
+
+        if not ok then
+            return false, "Cousin Buy thất bại: " .. tostring(result)
+        end
+
+        RandomFruitNextAt = os.time() + RANDOM_FRUIT_COOLDOWN
+        genv.HHubRandomFruitNextAt = RandomFruitNextAt
+
+        local detail = result == nil and "server không trả nội dung" or tostring(result)
+        return true, "Đã gửi Cousin Buy. Phản hồi: " .. detail
     end
-end)
-addInfo(pUtility, "Lưu ý random trái", "Gửi RemoteEvent Gacha bằng FireServer() theo cấu trúc RegisterAttack; không dùng CommF_:InvokeServer(). Cần xác minh đúng tên remote trong phiên bản game hiện tại.")
+
+    addSection(pUtility, "RANDOM TRÁI ÁC QUỶ")
+    addButton(pUtility, "RANDOM TRÁI NGAY (COUSIN)", function()
+        task.spawn(function()
+            local ok, message = randomFruitOnce()
+            notify("RANDOM TRÁI", message)
+        end)
+    end, Colors.Blue)
+
+    addToggle(pUtility, "Tự random khi hết hồi chiêu 2 giờ", false, function(value)
+        AutoRandomFruitEnabled = value
+        if value then
+            task.spawn(function()
+                while AutoRandomFruitEnabled and State.Running do
+                    if os.time() >= RandomFruitNextAt and not RandomFruitBusy then
+                        local ok, message = randomFruitOnce()
+                        notify("RANDOM TRÁI", message)
+                    end
+                    task.wait(10)
+                end
+            end)
+        end
+    end)
+
+    addInfo(pUtility, "Luồng Random Fruit", "Dùng đúng RemoteFunction Remotes.CommF_:InvokeServer('Cousin', 'Buy') theo Redz. Có khóa 2 giờ, chống gọi chồng và không sử dụng RemoteEvent Gacha không xác minh.")
+end
 
 addSection(pAI, "H-HUB AI BRAIN")
 addInfo(pAI, "Chế độ AI", "AI chỉ phân tích và gợi ý; không được quyền thao tác")
@@ -6355,7 +6369,7 @@ function Actions.farm_for(a)
 	return "đã farm " .. seconds .. "s"
 end
 function Actions.farm_to_level(a)
-	local target = math.clamp(tonumber(a.level) or 2800, 1, 2800)
+	local target = math.clamp(tonumber(a.level) or 2800, 1, 3000)
 	Config.TargetLevel = target
 	State.Busy = nil
 	if Toggles.AutoFarm then Toggles.AutoFarm.Set(true) else Config.AutoFarm = true end
@@ -11128,7 +11142,7 @@ spawn(function()
         end
     end
 end)
-local _ = v485:AddSection({"Halloween Event"})
+do -- HALLOWEEN MODULE SCOPE: giới hạn local/upvalue\nlocal _ = v485:AddSection({"Halloween Event"})
 
 -- Halloween Event chạy độc lập với Auto Pumpkin.
 -- Tìm prompt E trên Workspace; không dựa vào tên folder/RemoteEvent chưa xác minh.
@@ -11316,7 +11330,7 @@ task.spawn(function()
 end)
 
 _G.HHalloweenDoorIsCoolingDown = halloweenCooling
-_G.HHalloweenMarkDoorOpened = halloweenMark
+_G.HHalloweenMarkDoorOpened = halloweenMark\nend -- HALLOWEEN MODULE SCOPE
 
 
 if World3 then
