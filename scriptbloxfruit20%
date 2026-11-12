@@ -8,7 +8,7 @@ This file is a combined source build; test in a private development place before
 ]]
 
 --[[
-    H-HUB // GAME COMPANION v7.2.0 - UNIVERSAL ATTACK + REDZ QUEST/Fruit GACHA MERGE
+    H-HUB // GAME COMPANION v7.2.1 - SCOPED LOCALS + UNIVERSAL ATTACK + REDZ QUEST/Fruit GACHA MERGE
     - Giao diện: nền đen trong suốt, viền neon xanh nước biển nhấp nháy + đổi màu
     - Bring Mob: Kéo mượt bằng micro-step, tạm nhả, settled
     - Auto Sea theo chuỗi nhiệm vụ (Sea 2: Military Detective + Ice Admiral; Sea 3: rip_indra)
@@ -3898,6 +3898,10 @@ make("UIGradient", {
     Rotation = 90,
 }, MusicPanel)
 
+-- Giữ các nhãn được bringMobInfo dùng ở phần sau; phần dựng giao diện/visualizer
+-- được cô lập để giải phóng local khỏi scope chính sau khi callback đã capture chúng.
+Music.Labels = {}
+do -- MUSIC PANEL HEADER SCOPE
 local PanelTop = make("Frame", {
     Size = UDim2.new(1, 0, 0, 28),
     BackgroundColor3 = Colors.Panel,
@@ -3932,6 +3936,9 @@ PanelClose.Activated:Connect(function()
 end)
 makeDraggable(PanelTop, MusicPanel)
 
+end -- MUSIC PANEL HEADER SCOPE
+
+do -- MUSIC VISUALIZER SCOPE
 local Viz = make("Frame", {
     Position = UDim2.fromOffset(10, 36),
     Size = UDim2.new(1, -20, 0, 64),
@@ -3956,45 +3963,47 @@ for i = 1, BAR_COUNT do
     VizBars[i] = { frame = bar, h = 0.1 }
 end
 
-local function panelRow(y, title)
-    make("TextLabel", {
-        Position = UDim2.fromOffset(12, y),
-        Size = UDim2.fromOffset(70, 16),
+    do -- MUSIC STATUS LABEL SCOPE
+    local function panelRow(y, title)
+        make("TextLabel", {
+            Position = UDim2.fromOffset(12, y),
+            Size = UDim2.fromOffset(70, 16),
+            BackgroundTransparency = 1,
+            Text = title,
+            TextColor3 = Colors.Muted,
+            Font = Enum.Font.Gotham,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, MusicPanel)
+        return make("TextLabel", {
+            Position = UDim2.fromOffset(84, y),
+            Size = UDim2.new(1, -96, 0, 16),
+            BackgroundTransparency = 1,
+            Text = "--",
+            TextColor3 = Colors.Text,
+            Font = Enum.Font.GothamSemibold,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        }, MusicPanel)
+    end
+    Music.Labels.Track = panelRow(108, "Nhạc")
+    Music.Labels.Quest = panelRow(128, "Nhiệm vụ")
+    Music.Labels.Npc = panelRow(148, "Quái kéo")
+    Music.Labels.Distance = panelRow(168, "Khoảng cách")
+    Music.Labels.Toast = make("TextLabel", {
+        Position = UDim2.fromOffset(12, 190),
+        Size = UDim2.new(1, -24, 0, 16),
         BackgroundTransparency = 1,
-        Text = title,
-        TextColor3 = Colors.Muted,
+        Text = "",
+        TextColor3 = Colors.Accent,
         Font = Enum.Font.Gotham,
-        TextSize = 10,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, MusicPanel)
-    return make("TextLabel", {
-        Position = UDim2.fromOffset(84, y),
-        Size = UDim2.new(1, -96, 0, 16),
-        BackgroundTransparency = 1,
-        Text = "--",
-        TextColor3 = Colors.Text,
-        Font = Enum.Font.GothamSemibold,
         TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
     }, MusicPanel)
-end
-local TrackLabel = panelRow(108, "Nhạc")
-local QuestLabel = panelRow(128, "Nhiệm vụ")
-local NpcLabel = panelRow(148, "Quái kéo")
-local DistLabel = panelRow(168, "Khoảng cách")
-local ToastLabel = make("TextLabel", {
-    Position = UDim2.fromOffset(12, 190),
-    Size = UDim2.new(1, -24, 0, 16),
-    BackgroundTransparency = 1,
-    Text = "",
-    TextColor3 = Colors.Accent,
-    Font = Enum.Font.Gotham,
-    TextSize = 10,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextTruncate = Enum.TextTruncate.AtEnd,
-}, MusicPanel)
 
+    end -- MUSIC STATUS LABEL SCOPE
 local vizTime = 0
 connect(RunService.RenderStepped, function(dt)
     if not MusicPanel.Visible then return end
@@ -4011,6 +4020,7 @@ connect(RunService.RenderStepped, function(dt)
         bar.frame.BackgroundColor3 = Colors.Blue:Lerp(Colors.Accent, h)
     end
 end)
+end -- MUSIC VISUALIZER SCOPE
 
 local function bringMobInfo(quest, root)
     local enemies = Workspace:FindFirstChild("Enemies")
@@ -4041,20 +4051,20 @@ end
 task.spawn(function()
     while State.Running and Gui.Parent do
         pcall(function()
-            TrackLabel.Text = (MusicSound.Playing and "▶ " or "⏸ ") .. Music.CurrentName
+            Music.Labels.Track.Text = (MusicSound.Playing and "▶ " or "⏸ ") .. Music.CurrentName
             local quest = State.Quest or currentQuest()
-            QuestLabel.Text = questLabel(quest)
+            Music.Labels.Quest.Text = questLabel(quest)
             local root = getRoot(getCharacter())
             local info = bringMobInfo(quest, root)
             local bd = State.BringDiagnostics or {}
             if info then
-                NpcLabel.Text = string.format("%s (%d) | Kéo: %d", info.name, info.count, bd.moving or 0)
-                DistLabel.Text = string.format("%d stud", math.floor(info.d))
+                Music.Labels.Npc.Text = string.format("%s (%d) | Kéo: %d", info.name, info.count, bd.moving or 0)
+                Music.Labels.Distance.Text = string.format("%d stud", math.floor(info.d))
             else
-                NpcLabel.Text = "Chưa có quái"
-                DistLabel.Text = "--"
+                Music.Labels.Npc.Text = "Chưa có quái"
+                Music.Labels.Distance.Text = "--"
             end
-            ToastLabel.Text = os.clock() < Music.ToastUntil and Music.Toast or ""
+            Music.Labels.Toast.Text = os.clock() < Music.ToastUntil and Music.Toast or ""
         end)
         task.wait(0.4)
     end
@@ -11142,7 +11152,8 @@ spawn(function()
         end
     end
 end)
-do -- HALLOWEEN MODULE SCOPE: giới hạn local/upvalue\nlocal _ = v485:AddSection({"Halloween Event"})
+do -- HALLOWEEN MODULE SCOPE: giới hạn local/upvalue
+local _ = v485:AddSection({"Halloween Event"})
 
 -- Halloween Event chạy độc lập với Auto Pumpkin.
 -- Tìm prompt E trên Workspace; không dựa vào tên folder/RemoteEvent chưa xác minh.
@@ -11330,7 +11341,8 @@ task.spawn(function()
 end)
 
 _G.HHalloweenDoorIsCoolingDown = halloweenCooling
-_G.HHalloweenMarkDoorOpened = halloweenMark\nend -- HALLOWEEN MODULE SCOPE
+_G.HHalloweenMarkDoorOpened = halloweenMark
+end -- HALLOWEEN MODULE SCOPE
 
 
 if World3 then
